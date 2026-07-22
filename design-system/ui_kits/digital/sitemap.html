@@ -1,0 +1,260 @@
+<!-- @dsCard group="Quest Digital" viewport="1520x1180" name="Quest Digital — Site Structure" subtitle="Proposed sitemap · pages, routes & open questions" -->
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Quest Digital — Site Structure</title>
+<link rel="icon" href="../../assets/favicon.png" />
+<link rel="stylesheet" href="../../styles.css" />
+<style>
+  :root {
+    --ink: #0e2440;
+    --ink2: #15304f;
+    --ink3: #0a1c33;
+    --teal: #2ab3c0;
+    --line: #c9d4e0;
+    --paper: #eef2f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    font-family: var(--font-sans, Roboto, sans-serif);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 56px 48px 72px; }
+
+  /* ── Masthead ── */
+  .mast { display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; flex-wrap: wrap; padding-bottom: 30px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 13px; }
+  .brand img { height: 30px; display: block; }
+  .brand .div { height: 18px; width: 1px; background: rgba(14,36,64,0.25); }
+  .brand .tag { font-size: 13px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--teal); }
+  .eyebrow { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .eyebrow span { width: 28px; height: 2px; background: var(--teal); }
+  .eyebrow b { font-size: 12.5px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--teal); }
+  h1 { margin: 0; font-size: 40px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; }
+  .sub { margin: 12px 0 0; font-size: 16px; font-weight: 300; line-height: 1.6; color: #56657a; max-width: 460px; }
+  .tally { display: flex; gap: 30px; }
+  .tally .n { font-size: 38px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); line-height: 1; }
+  .tally .l { margin-top: 7px; font-size: 12.5px; font-weight: 500; letter-spacing: 0.04em; color: #6a7889; }
+  .tally .teal { color: var(--teal); }
+
+  /* ── Legend ── */
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 26px 0 8px; }
+  .legend .item { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 500; color: #48566a; }
+  .swatch { width: 26px; height: 17px; border-radius: 4px; flex-shrink: 0; }
+  .sw-core { background: var(--ink); }
+  .sw-nav { background: #fff; border: 2px solid var(--ink); }
+  .sw-pillar { background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--teal); }
+  .sw-dyn { background: repeating-linear-gradient(135deg, #fff, #fff 4px, #e2e8f0 4px, #e2e8f0 8px); border: 1px dashed #97a6b8; }
+  .sw-rec { background: rgba(42,179,192,0.08); border: 1.5px dashed var(--teal); }
+
+  /* ── Org tree ── */
+  .tree { margin-top: 14px; text-align: center; overflow-x: auto; padding: 8px 0 4px; }
+  .tree ul { position: relative; padding: 26px 0 0; display: inline-flex; justify-content: center; margin: 0; }
+  .tree li { list-style: none; position: relative; padding: 26px 10px 0; display: flex; flex-direction: column; align-items: center; }
+  .tree li::before, .tree li::after {
+    content: ''; position: absolute; top: 0; right: 50%;
+    border-top: 2px solid var(--line); width: 50%; height: 26px;
+  }
+  .tree li::after { right: auto; left: 50%; border-left: 2px solid var(--line); }
+  .tree li:only-child::after, .tree li:only-child::before { display: none; }
+  .tree li:only-child { padding-top: 0; }
+  .tree li:first-child::before, .tree li:last-child::after { border: 0 none; }
+  .tree li:last-child::before { border-right: 2px solid var(--line); border-radius: 0 6px 0 0; }
+  .tree li:first-child::after { border-radius: 6px 0 0 0; }
+  .tree ul ul::before { content: ''; position: absolute; top: 0; left: 50%; border-left: 2px solid var(--line); width: 0; height: 26px; }
+  .tree > ul { padding-top: 0; }
+
+  /* node card */
+  .node { display: block; width: 190px; text-align: left; border-radius: 11px; padding: 15px 17px; background: #fff; border: 1px solid var(--line); position: relative; }
+  .node .nh { font-size: 15.5px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+  .node .nr { margin-top: 5px; font-size: 12px; font-weight: 500; font-family: var(--font-mono, ui-monospace, monospace); color: #7d8b9c; letter-spacing: 0.01em; }
+  .node .nd { margin-top: 8px; font-size: 12.5px; font-weight: 300; line-height: 1.45; color: #5a6878; }
+
+  .node.core { background: var(--ink); border-color: var(--ink); width: 220px; }
+  .node.core .nh { color: #fff; font-size: 17px; }
+  .node.core .nr { color: rgba(255,255,255,0.55); }
+  .node.core .nd { color: rgba(255,255,255,0.72); }
+  .node.core::before { content: ''; position: absolute; top: 0; left: 17px; right: 17px; height: 3px; background: var(--teal); border-radius: 0 0 3px 3px; }
+
+  .node.nav { border: 2px solid var(--ink); }
+  .node.nav .nh { color: var(--ink); }
+
+  .node.pillar { border-left: 4px solid var(--teal); }
+  .node.pillar .nh { font-size: 14.5px; }
+
+  .node.dyn { border: 1px dashed #97a6b8; background: repeating-linear-gradient(135deg, #fff, #fff 5px, #f1f5f9 5px, #f1f5f9 10px); }
+  .node .pill { display: inline-block; margin-top: 9px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); background: rgba(42,179,192,0.12); padding: 3px 8px; border-radius: 999px; }
+
+  /* ── Lower bands ── */
+  .bands { display: grid; grid-template-columns: 1.25fr 1fr; gap: 24px; margin-top: 48px; }
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 28px 30px; }
+  .panel.dark { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .panel h2 { margin: 0 0 4px; font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+  .panel .lead { margin: 0 0 20px; font-size: 14px; font-weight: 300; line-height: 1.55; color: #5a6878; }
+  .panel.dark .lead { color: rgba(255,255,255,0.7); }
+
+  .routes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .route { border: 1.5px dashed var(--teal); background: rgba(42,179,192,0.06); border-radius: 11px; padding: 15px 16px; }
+  .route .rh { font-size: 14.5px; font-weight: 700; color: var(--ink); }
+  .route .rr { margin-top: 4px; font-size: 11.5px; font-weight: 500; font-family: var(--font-mono, ui-monospace, monospace); color: #6f8a90; }
+  .route .rd { margin-top: 7px; font-size: 12px; font-weight: 300; line-height: 1.45; color: #5a6878; }
+
+  .util { display: flex; flex-wrap: wrap; gap: 9px; }
+  .chip { font-size: 12.5px; font-weight: 500; color: rgba(255,255,255,0.9); border: 1px solid rgba(255,255,255,0.22); padding: 8px 14px; border-radius: 999px; }
+  .chip .c { font-family: var(--font-mono, ui-monospace, monospace); color: rgba(255,255,255,0.5); font-size: 11px; margin-left: 7px; }
+
+  .open { margin-top: 24px; background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 28px 30px; }
+  .open h2 { margin: 0 0 4px; font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+  .open .lead { margin: 0 0 18px; font-size: 14px; font-weight: 300; color: #5a6878; }
+  .qgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 30px; }
+  .q { display: flex; gap: 13px; align-items: flex-start; padding: 4px 0; }
+  .q .dot { flex-shrink: 0; width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid var(--teal); display: flex; align-items: center; justify-content: center; color: var(--teal); font-size: 13px; font-weight: 700; margin-top: 1px; }
+  .q .qt { font-size: 13.5px; font-weight: 400; line-height: 1.5; color: #3f4d5e; }
+  .q .qt b { font-weight: 700; color: var(--ink); }
+
+  .foot { margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 12.5px; color: #7a8899; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Masthead -->
+  <div class="mast">
+    <div>
+      <div class="brand">
+        <img src="../../assets/logos/quest-primary.png" alt="Quest" onerror="this.src='../../assets/favicon.png'" />
+        <span class="div"></span>
+        <span class="tag">Digital</span>
+      </div>
+      <div class="eyebrow" style="margin-top:22px"><span></span><b>Information architecture</b></div>
+      <h1>Site structure</h1>
+      <p class="sub">The proposed page map for the Quest Digital website — primary navigation, service pillars, conversion routes and supporting pages.</p>
+    </div>
+    <div class="tally">
+      <div><div class="n">13</div><div class="l">Pages to build</div></div>
+      <div><div class="n teal">2</div><div class="l">Conversion routes</div></div>
+      <div><div class="n">5</div><div class="l">Utility pages</div></div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="item"><span class="swatch sw-core"></span>Core page</div>
+    <div class="item"><span class="swatch sw-nav"></span>Primary navigation</div>
+    <div class="item"><span class="swatch sw-pillar"></span>Service pillar</div>
+    <div class="item"><span class="swatch sw-dyn"></span>Dynamic / templated</div>
+    <div class="item"><span class="swatch sw-rec"></span>Recommended addition</div>
+  </div>
+
+  <!-- Org tree -->
+  <div class="tree">
+    <ul>
+      <li>
+        <div class="node core">
+          <div class="nh">Home</div>
+          <div class="nr">/</div>
+          <div class="nd">Positioning, four pillars, two tracks, selected work, contact.</div>
+        </div>
+        <ul>
+          <!-- Services -->
+          <li>
+            <div class="node nav">
+              <div class="nh">Services</div>
+              <div class="nr">/services</div>
+              <div class="nd">Overview of the four pillars.</div>
+            </div>
+            <ul>
+              <li><div class="node pillar"><div class="nh">Web, Software &amp; Apps</div><div class="nr">/services/web-software-apps</div><div class="nd">Primary capability. Enterprise builds &amp; smart sites.</div></div></li>
+              <li><div class="node pillar"><div class="nh">Hosting &amp; Managed Services</div><div class="nr">/services/hosting</div><div class="nd">Tiered plans: Essentials, Business, Enterprise.</div></div></li>
+              <li><div class="node pillar"><div class="nh">Marketing &amp; Growth</div><div class="nr">/services/marketing</div><div class="nd">SEO, paid, social, email. Retainer tiers.</div></div></li>
+              <li><div class="node pillar"><div class="nh">Brand &amp; Design</div><div class="nr">/services/brand-design</div><div class="nd">Identity, print, collateral. Supporting offer.</div></div></li>
+            </ul>
+          </li>
+          <!-- Work -->
+          <li>
+            <div class="node nav">
+              <div class="nh">Work</div>
+              <div class="nr">/work</div>
+              <div class="nd">Case-study index, filterable by sector &amp; service.</div>
+            </div>
+            <ul>
+              <li><div class="node dyn"><div class="nh">Case study</div><div class="nr">/work/[slug]</div><span class="pill">Template · 1 per project</span></div></li>
+            </ul>
+          </li>
+          <!-- About -->
+          <li>
+            <div class="node nav">
+              <div class="nh">About</div>
+              <div class="nr">/about</div>
+              <div class="nd">Flow Media story, team, how we work, ISO 27001.</div>
+            </div>
+          </li>
+          <!-- Contact -->
+          <li>
+            <div class="node nav">
+              <div class="nh">Contact</div>
+              <div class="nr">/contact</div>
+              <div class="nd">Enquiry form, direct contact, location.</div>
+            </div>
+          </li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Lower bands -->
+  <div class="bands">
+    <div class="panel">
+      <h2>Conversion routes</h2>
+      <p class="lead">Two audience-specific landing pages that sit outside the main nav. They give each track a tailored pitch and feed into Services, Work and Contact — the core of the "two client tracks" positioning.</p>
+      <div class="routes">
+        <div class="route">
+          <div class="rh">Enterprise &amp; Complex Platforms</div>
+          <div class="rr">/enterprise</div>
+          <div class="rd">Bespoke software, portals, integrations, compliance-grade infrastructure for large organisations.</div>
+        </div>
+        <div class="route">
+          <div class="rh">Small Business</div>
+          <div class="rr">/small-business</div>
+          <div class="rd">Fast, lightweight sites with booking, inventory and portals built in properly, not bolted on. For sole traders to 50-person teams.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel dark">
+      <h2 style="color:#fff">Utility &amp; system pages</h2>
+      <p class="lead">Required supporting pages, linked from the footer.</p>
+      <div class="util">
+        <span class="chip">Privacy Policy<span class="c">/privacy</span></span>
+        <span class="chip">Cookie Policy<span class="c">/cookies</span></span>
+        <span class="chip">Terms<span class="c">/terms</span></span>
+        <span class="chip">Accessibility<span class="c">/accessibility</span></span>
+        <span class="chip">404<span class="c">/404</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Open questions -->
+  <div class="open">
+    <h2>Decisions that shape the map</h2>
+    <p class="lead">Live questions from the service definition that affect which pages we build.</p>
+    <div class="qgrid">
+      <div class="q"><span class="dot">?</span><div class="qt"><b>Sectors page?</b> Add a dedicated /sectors page (healthcare, legal, finance, logistics) or weave sector experience into case studies. Affects nav + page count.</div></div>
+      <div class="q"><span class="dot">?</span><div class="qt"><b>Pricing visibility.</b> Hosting tiers &amp; marketing retainers — shown on each service page, or a standalone /pricing page?</div></div>
+      <div class="q"><span class="dot">?</span><div class="qt"><b>Case studies to bring across.</b> Which refreshed Flow Media projects populate /work at launch?</div></div>
+      <div class="q"><span class="dot">?</span><div class="qt"><b>Insights / blog?</b> Optional /insights section supports SEO &amp; the Marketing pillar's credibility. In or out for v1?</div></div>
+      <div class="q"><span class="dot">?</span><div class="qt"><b>flowmedia.co.uk.</b> Redirect to Quest Digital, keep separate, or retire? Determines redirects, not pages.</div></div>
+      <div class="q"><span class="dot">?</span><div class="qt"><b>Domain.</b> questdesign.co.uk noted as preferred — confirm before build.</div></div>
+    </div>
+  </div>
+
+  <div class="foot">Quest Digital · Information architecture · Working draft, June 2026. Page counts exclude items still under consideration above.</div>
+
+</div>
+</body>
+</html>

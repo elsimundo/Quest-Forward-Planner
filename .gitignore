@@ -1,0 +1,26 @@
+# dependencies
+node_modules
+
+# next.js
+.next
+out
+
+# env
+.env
+.env.*.local
+
+# misc
+.DS_Store
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# design system source archive — the extracted design-system/ folder is what's used
+Quest Medical Design System.zip
+
+# personal/local assistant tooling config — not shared
+.claude/settings.local.json

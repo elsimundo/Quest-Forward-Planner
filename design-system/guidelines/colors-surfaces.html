@@ -1,0 +1,24 @@
+<!-- @dsCard group="Colors" viewport="700x170" name="Surfaces & Overlays" subtitle="Page fills and the navy photo overlay" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; font-family: var(--font-sans); background: #fff; }
+  .row { display: flex; gap: 12px; padding: 20px; }
+  .sw { flex: 1; height: 120px; border-radius: var(--radius-sm); display: flex; flex-direction: column; justify-content: flex-end; padding: 12px; box-sizing: border-box; }
+  .sw .name { font-size: 13px; font-weight: 700; }
+  .sw .hex { font-size: 11px; opacity: 0.85; font-weight: 400; }
+  .border { border: 1px solid var(--quest-border); }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="sw border" style="background: var(--quest-surface); color:var(--quest-heading);"><span class="name">Surface</span><span class="hex">#ffffff</span></div>
+    <div class="sw border" style="background: var(--quest-surface-alt); color:var(--quest-heading);"><span class="name">Surface Alt</span><span class="hex">#f7f9fc</span></div>
+    <div class="sw" style="background: var(--quest-blue-tint); color:var(--quest-blue-dark); border:1px solid var(--quest-blue);"><span class="name">Blue Tint</span><span class="hex">#f0f7ff · card hover</span></div>
+    <div class="sw" style="background: var(--quest-overlay-gradient), url(../assets/images/partnership.jpg); background-size: cover; color:#fff;"><span class="name">Photo overlay</span><span class="hex">navy 88–100%</span></div>
+  </div>
+</body>
+</html>

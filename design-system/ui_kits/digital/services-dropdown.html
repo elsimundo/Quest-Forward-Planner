@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="design_doc_mode" content="canvas" />
+<title>Quest Digital — Services dropdown</title>
+<link rel="stylesheet" href="../../styles.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" />
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+  :root{
+    --ink:#0e2440; --ink2:#15304f; --ink3:#0a1c33;
+    --teal:#2ab3c0; --line:rgba(255,255,255,0.10);
+    --ease:cubic-bezier(.4,0,.2,1); --dur:.2s;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:"Roboto",system-ui,sans-serif;color:#fff;-webkit-font-smoothing:antialiased;}
+  .label{font:600 13px/1 "Roboto",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#6b7a90;margin:0 0 12px 2px;}
+  .label small{display:block;margin-top:7px;font:300 13px/1.5 "Roboto",sans-serif;letter-spacing:0;text-transform:none;color:#8a99ad;max-width:560px;}
+
+  /* page mock card */
+  .frame{position:relative;background:
+      radial-gradient(120% 90% at 80% -10%, #14304f 0%, rgba(20,48,79,0) 55%),
+      var(--ink);
+    border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden;
+    box-shadow:0 40px 90px -50px rgba(0,0,0,.8);}
+  .pagehint{position:absolute;left:40px;top:120px;right:40px;opacity:.5;}
+  .pagehint .eyebrow{display:flex;align-items:center;gap:14px;margin-bottom:18px;}
+  .pagehint .eyebrow span{width:30px;height:2px;background:var(--teal);}
+  .pagehint .eyebrow b{font:700 13px/1 "Roboto";letter-spacing:.2em;text-transform:uppercase;color:rgba(255,255,255,.7);}
+  .pagehint h1{margin:0;font:700 clamp(34px,4vw,52px)/1.05 "Roboto";letter-spacing:-.02em;color:rgba(255,255,255,.16);max-width:620px;}
+
+  /* header */
+  .hdr{position:relative;z-index:5;background:rgba(10,28,51,.96);border-bottom:1px solid rgba(255,255,255,.08);}
+  .hdr-in{max-width:1280px;margin:0 auto;padding:20px 40px;display:flex;align-items:center;justify-content:space-between;}
+  .logo{display:flex;align-items:center;gap:13px;text-decoration:none;}
+  .logo img{height:28px;width:auto;display:block;}
+  .logo .div{height:18px;width:1px;background:rgba(255,255,255,.32);}
+  .logo .dgt{font:700 13px/1 "Roboto";letter-spacing:.22em;text-transform:uppercase;color:var(--teal);}
+  nav{display:flex;align-items:center;gap:34px;}
+  .nl{font:500 15px/1 "Roboto";color:rgba(255,255,255,.82);text-decoration:none;padding-bottom:3px;border-bottom:2px solid transparent;display:inline-flex;align-items:center;gap:6px;}
+  .nl.active{color:#fff;border-bottom-color:var(--teal);}
+  .nl .chev{width:15px;height:15px;transition:transform .25s var(--ease);}
+  .svc{position:relative;}
+  .svc .nl{color:#fff;border-bottom-color:var(--teal);}
+  .svc .chev{transform:rotate(180deg);}
+  .cta{display:inline-flex;align-items:center;gap:8px;font:600 15px/1 "Roboto";color:var(--ink);background:var(--teal);padding:11px 22px;border-radius:999px;text-decoration:none;}
+
+  /* shared dropdown shell */
+  .dd{position:absolute;top:calc(100% + 16px);background:var(--ink2);
+      border:1px solid var(--line);border-radius:18px;
+      box-shadow:0 30px 70px -30px rgba(0,0,0,.85);overflow:hidden;}
+  .dd::before{content:"";position:absolute;top:-7px;width:14px;height:14px;background:var(--ink2);
+      border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg);}
+
+  .ic{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:12px;
+      background:rgba(42,179,192,.12);border:1px solid rgba(42,179,192,.28);color:var(--teal);flex:0 0 auto;}
+  .ic svg{width:21px;height:21px;}
+
+  /* ── A: refined list ── */
+  .ddA{left:0;width:380px;padding:10px;}
+  .ddA::before{left:34px;}
+  .rowA{display:flex;align-items:center;gap:14px;padding:12px;border-radius:12px;text-decoration:none;transition:background var(--dur) var(--ease);}
+  .rowA:hover{background:rgba(255,255,255,.05);}
+  .rowA .t{font:500 15px/1.25 "Roboto";color:#fff;}
+  .rowA .s{font:300 13px/1.4 "Roboto";color:rgba(255,255,255,.6);margin-top:3px;}
+  .ddA .foot{margin:6px 6px 4px;padding:13px 12px 4px;border-top:1px solid var(--line);
+      display:flex;align-items:center;justify-content:space-between;}
+  .ddA .foot a{font:600 14px/1 "Roboto";color:var(--teal);text-decoration:none;display:inline-flex;align-items:center;gap:8px;}
+
+  /* ── B: mega panel ── */
+  .ddB{right:0;width:760px;padding:0;display:grid;grid-template-columns:1fr 250px;}
+  .ddB::before{right:120px;}
+  .ddB .grid{padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+  .cardB{display:block;padding:16px;border-radius:14px;text-decoration:none;transition:background var(--dur) var(--ease);}
+  .cardB:hover{background:rgba(255,255,255,.05);}
+  .cardB .top{display:flex;align-items:center;gap:12px;margin-bottom:11px;}
+  .cardB .num{font:700 12px/1 "Roboto";letter-spacing:.12em;color:var(--teal);margin-left:auto;}
+  .cardB .t{font:500 16px/1.2 "Roboto";color:#fff;}
+  .cardB .d{font:300 13px/1.55 "Roboto";color:rgba(255,255,255,.62);}
+  .railB{background:linear-gradient(180deg,#173a5f,#10294a);padding:26px 24px;display:flex;flex-direction:column;}
+  .railB .eb{font:700 12px/1 "Roboto";letter-spacing:.18em;text-transform:uppercase;color:var(--teal);margin-bottom:14px;}
+  .railB h4{margin:0 0 10px;font:700 22px/1.2 "Roboto";letter-spacing:-.01em;}
+  .railB p{margin:0 0 22px;font:300 14px/1.6 "Roboto";color:rgba(255,255,255,.74);}
+  .railB .pill{margin-top:auto;display:inline-flex;align-items:center;justify-content:center;gap:8px;font:600 14px/1 "Roboto";color:var(--ink);background:var(--teal);padding:13px 18px;border-radius:999px;text-decoration:none;}
+
+  /* ── C: numbered list + feature ── */
+  .ddC{right:0;width:680px;padding:0;display:grid;grid-template-columns:1.15fr 1fr;}
+  .ddC::before{right:120px;}
+  .ddC .list{padding:14px;}
+  .rowC{display:flex;align-items:flex-start;gap:16px;padding:14px;border-radius:12px;text-decoration:none;transition:background var(--dur) var(--ease);}
+  .rowC:hover{background:rgba(255,255,255,.05);}
+  .rowC .num{font:700 13px/1.6 "Roboto";letter-spacing:.1em;color:var(--teal);width:24px;flex:0 0 auto;}
+  .rowC .t{font:500 15px/1.3 "Roboto";color:#fff;display:flex;align-items:center;gap:9px;}
+  .rowC .t svg{width:16px;height:16px;color:var(--teal);}
+  .rowC .s{font:300 13px/1.45 "Roboto";color:rgba(255,255,255,.6);margin-top:4px;}
+  .featC{margin:14px 14px 14px 0;border-radius:14px;overflow:hidden;position:relative;display:flex;flex-direction:column;justify-content:flex-end;min-height:230px;
+      background:repeating-linear-gradient(135deg,#16365a,#16365a 10px,#13314f 10px,#13314f 20px);}
+  .featC .ph{position:absolute;top:14px;left:14px;font:500 11px/1 ui-monospace,monospace;letter-spacing:.06em;color:rgba(255,255,255,.5);background:rgba(0,0,0,.3);padding:6px 9px;border-radius:6px;}
+  .featC .body{position:relative;padding:20px;background:linear-gradient(180deg,rgba(14,36,64,0),rgba(10,28,51,.92));}
+  .featC .eb{font:700 11px/1 "Roboto";letter-spacing:.18em;text-transform:uppercase;color:var(--teal);margin-bottom:9px;}
+  .featC h4{margin:0 0 12px;font:700 18px/1.25 "Roboto";letter-spacing:-.01em;}
+  .featC a{font:600 13px/1 "Roboto";color:#fff;text-decoration:none;display:inline-flex;align-items:center;gap:7px;}
+  .featC a svg{width:15px;height:15px;}
+</style>
+</head>
+<body>
+
+<!-- ════════════ OPTION A — Refined list ════════════ -->
+<div style="position:absolute;left:0;top:0;width:1320px;">
+  <div class="label" data-drags-parent="1">Option A · Refined list
+    <small>Compact and quiet. A single tidy column — icon, name, one-line summary — with a “view all” footer. Lightest-touch, best when the rest of the nav stays simple.</small>
+  </div>
+  <div class="frame" style="height:430px;">
+    <div class="pagehint">
+      <div class="eyebrow"><span></span><b>What we do</b></div>
+      <h1>Everything you need.<br>Nothing you don’t.</h1>
+    </div>
+    <header class="hdr"><div class="hdr-in">
+      <a class="logo" href="#"><img src="../../assets/logos/quest-primary-white.png" alt="Quest"><span class="div"></span><span class="dgt">Digital</span></a>
+      <nav>
+        <span class="svc">
+          <a class="nl" href="#">Services <i data-lucide="chevron-down" class="chev"></i></a>
+          <div class="dd ddA">
+            <a class="rowA" href="#"><span class="ic"><i data-lucide="code-2"></i></span><span><span class="t">Web, Software &amp; Apps</span><span class="s">Bespoke platforms, sites &amp; portals</span></span></a>
+            <a class="rowA" href="#"><span class="ic"><i data-lucide="server"></i></span><span><span class="t">Hosting &amp; Managed Services</span><span class="s">Uptime, security &amp; support, owned</span></span></a>
+            <a class="rowA" href="#"><span class="ic"><i data-lucide="trending-up"></i></span><span><span class="t">Marketing &amp; Growth</span><span class="s">SEO, paid, social &amp; email</span></span></a>
+            <a class="rowA" href="#"><span class="ic"><i data-lucide="palette"></i></span><span><span class="t">Brand &amp; Design</span><span class="s">Identity, guidelines &amp; collateral</span></span></a>
+            <div class="foot"><a href="#">View all services <i data-lucide="arrow-right" style="width:15px;height:15px;"></i></a></div>
+          </div>
+        </span>
+        <a class="nl" href="#">Work</a>
+        <a class="nl" href="#">About</a>
+        <a class="nl" href="#">Contact</a>
+        <a class="cta" href="#">Start a project</a>
+      </nav>
+    </div></header>
+  </div>
+</div>
+
+<!-- ════════════ OPTION B — Mega panel ════════════ -->
+<div style="position:absolute;left:0;top:600px;width:1320px;">
+  <div class="label" data-drags-parent="1">Option B · Mega panel
+    <small>Full-width mega-menu: a 2×2 card grid with short descriptions plus a teal conversion rail. Most confident and “studio” — gives Services real weight as the primary nav item.</small>
+  </div>
+  <div class="frame" style="height:560px;">
+    <div class="pagehint">
+      <div class="eyebrow"><span></span><b>What we do</b></div>
+      <h1>Everything you need.<br>Nothing you don’t.</h1>
+    </div>
+    <header class="hdr"><div class="hdr-in">
+      <a class="logo" href="#"><img src="../../assets/logos/quest-primary-white.png" alt="Quest"><span class="div"></span><span class="dgt">Digital</span></a>
+      <nav>
+        <span class="svc">
+          <a class="nl" href="#">Services <i data-lucide="chevron-down" class="chev"></i></a>
+          <div class="dd ddB">
+            <div class="grid">
+              <a class="cardB" href="#"><div class="top"><span class="ic"><i data-lucide="code-2"></i></span><span class="num">01</span></div><div class="t">Web, Software &amp; Apps</div><div class="d">Bespoke enterprise platforms and fast Next.js sites with booking &amp; portals built in.</div></a>
+              <a class="cardB" href="#"><div class="top"><span class="ic"><i data-lucide="server"></i></span><span class="num">02</span></div><div class="t">Hosting &amp; Managed Services</div><div class="d">We own the uptime, security, maintenance and support. Everything under one roof.</div></a>
+              <a class="cardB" href="#"><div class="top"><span class="ic"><i data-lucide="trending-up"></i></span><span class="num">03</span></div><div class="t">Marketing &amp; Growth</div><div class="d">Performance-led SEO, paid media, social and email that turn visitors into enquiries.</div></a>
+              <a class="cardB" href="#"><div class="top"><span class="ic"><i data-lucide="palette"></i></span><span class="num">04</span></div><div class="t">Brand &amp; Design</div><div class="d">Logo, brand guidelines, print and collateral — so it looks as good as it works.</div></a>
+            </div>
+            <div class="railB">
+              <div class="eb">Not sure where to start?</div>
+              <h4>One partner, brand to build to hosted.</h4>
+              <p>Tell us what you’re trying to do and we’ll point you to the right team.</p>
+              <a class="pill" href="#">Talk to our team <i data-lucide="arrow-right" style="width:15px;height:15px;"></i></a>
+            </div>
+          </div>
+        </span>
+        <a class="nl" href="#">Work</a>
+        <a class="nl" href="#">About</a>
+        <a class="nl" href="#">Contact</a>
+        <a class="cta" href="#">Start a project</a>
+      </nav>
+    </div></header>
+  </div>
+</div>
+
+<!-- ════════════ OPTION C — List + feature ════════════ -->
+<div style="position:absolute;left:0;top:1340px;width:1320px;">
+  <div class="label" data-drags-parent="1">Option C · List + feature
+    <small>A numbered service list paired with a featured slot — drop in latest work or a promo. Editorial middle-ground: richer than A, lighter than B, and merchandises something alongside the menu.</small>
+  </div>
+  <div class="frame" style="height:540px;">
+    <div class="pagehint">
+      <div class="eyebrow"><span></span><b>What we do</b></div>
+      <h1>Everything you need.<br>Nothing you don’t.</h1>
+    </div>
+    <header class="hdr"><div class="hdr-in">
+      <a class="logo" href="#"><img src="../../assets/logos/quest-primary-white.png" alt="Quest"><span class="div"></span><span class="dgt">Digital</span></a>
+      <nav>
+        <span class="svc">
+          <a class="nl" href="#">Services <i data-lucide="chevron-down" class="chev"></i></a>
+          <div class="dd ddC">
+            <div class="list">
+              <a class="rowC" href="#"><span class="num">01</span><span><span class="t"><i data-lucide="code-2"></i>Web, Software &amp; Apps</span><span class="s">Bespoke platforms, sites &amp; portals</span></span></a>
+              <a class="rowC" href="#"><span class="num">02</span><span><span class="t"><i data-lucide="server"></i>Hosting &amp; Managed Services</span><span class="s">Uptime, security &amp; support, owned</span></span></a>
+              <a class="rowC" href="#"><span class="num">03</span><span><span class="t"><i data-lucide="trending-up"></i>Marketing &amp; Growth</span><span class="s">SEO, paid, social &amp; email</span></span></a>
+              <a class="rowC" href="#"><span class="num">04</span><span><span class="t"><i data-lucide="palette"></i>Brand &amp; Design</span><span class="s">Identity, guidelines &amp; collateral</span></span></a>
+            </div>
+            <div class="featC">
+              <span class="ph">featured work · 16:9</span>
+              <div class="body">
+                <div class="eb">Featured work</div>
+                <h4>Booking &amp; patient portal</h4>
+                <a href="#">See the case study <i data-lucide="arrow-right"></i></a>
+              </div>
+            </div>
+          </div>
+        </span>
+        <a class="nl" href="#">Work</a>
+        <a class="nl" href="#">About</a>
+        <a class="nl" href="#">Contact</a>
+        <a class="cta" href="#">Start a project</a>
+      </nav>
+    </div></header>
+  </div>
+</div>
+
+<script>
+  window.addEventListener("load", () => { if (window.lucide) lucide.createIcons(); });
+</script>
+</body>
+</html>

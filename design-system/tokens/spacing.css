@@ -1,0 +1,37 @@
+/* Quest Medical — Spacing, radii & layout tokens */
+
+:root {
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;       /* section vertical padding (py-24) */
+
+  /* Radii — controls are fully pill (rounded-full); content cards step
+     12 → 16 → 20px. A 4px radius survives only on small mobile chips. */
+  --radius-xs: 4px;       /* @kind radius */ /* small mobile chips */
+  --radius-sm: 8px;       /* @kind radius */ /* logo tiles, photo crops */
+  --radius-stat: 12px;    /* @kind radius */ /* stat cards (rounded-xl) */
+  --radius-division: 16px;/* @kind radius */ /* division cards (rounded-2xl) */
+  --radius-news: 20px;    /* @kind radius */ /* news cards */
+  --radius-card: 16px;    /* @kind radius */ /* default content card */
+  --radius-control: 999px;/* @kind radius */ /* buttons & inputs — pill */
+  --radius-pill: 999px;   /* @kind radius */ /* avatars, circular controls */
+
+  /* Layout */
+  --container: 1100px;    /* primary content column */
+  --container-wide: 1300px; /* header / footer width */
+  --gutter: 24px;
+  --gutter-lg: 40px;
+
+  /* Section rhythm */
+  --section-py: var(--space-24);
+}

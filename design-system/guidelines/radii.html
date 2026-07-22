@@ -1,0 +1,23 @@
+<!-- @dsCard group="Spacing" viewport="700x160" name="Corner Radii" subtitle="Pill controls; content cards step 12 → 16 → 20px" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; font-family: var(--font-sans); background: #fff; padding: 24px; }
+  .row { display: flex; gap: 20px; align-items: flex-end; }
+  .box { width: 96px; height: 90px; background: var(--quest-blue-tint); border: 1.5px solid var(--quest-blue); display:flex; align-items:flex-start; justify-content:flex-start; }
+  .lbl { font-size: 11px; color: var(--quest-body); margin-top: 8px; text-align:center; }
+  .pill { width: 96px; height: 48px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div><div class="box pill" style="border-radius: var(--radius-control);"></div><div class="lbl">pill · buttons, inputs</div></div>
+    <div><div class="box" style="border-radius: var(--radius-stat);"></div><div class="lbl">12px · stat cards</div></div>
+    <div><div class="box" style="border-radius: var(--radius-division);"></div><div class="lbl">16px · division cards</div></div>
+    <div><div class="box" style="border-radius: var(--radius-news);"></div><div class="lbl">20px · news cards</div></div>
+  </div>
+</body>
+</html>

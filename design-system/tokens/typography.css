@@ -1,0 +1,46 @@
+/* Quest Medical — Typography tokens
+   Roboto throughout. Headings are bold (700) and dark (#333); body copy is
+   light (300) at a generous 18px / 1.6. Matches the live site exactly. */
+
+:root {
+  --font-sans: "Roboto", "Helvetica Neue", Arial, sans-serif;
+
+  /* Weights */
+  --fw-light: 300; /* @kind font */     /* body copy, hero subtitles */
+  --fw-regular: 400; /* @kind font */   /* buttons, UI labels */
+  --fw-medium: 500; /* @kind font */    /* nav links, emphasis */
+  --fw-bold: 700; /* @kind font */      /* all headings, stats */
+
+  /* Type scale (desktop) — h1/h2/h3 mirror globals.css */
+  --fs-h1: 60px;       /* hero title */
+  --fs-h2: 48px;       /* section heading */
+  --fs-h3: 24px;       /* sub-heading / card title */
+  --fs-display: 60px;  /* stat counters (font-black) */
+  --fs-lead: 18px;     /* lead paragraph, default body */
+  --fs-body: 16px;     /* UI body, card copy */
+  --fs-sm: 14px;       /* meta, labels */
+  --fs-xs: 12px;       /* fine print, footer legal */
+
+  /* Line heights */
+  --lh-tight: 1.2; /* @kind font */     /* headings */
+  --lh-snug: 1.35; /* @kind font */
+  --lh-body: 1.6; /* @kind font */      /* paragraphs */
+
+  /* Letter spacing */
+  --ls-none: 0; /* @kind font */
+  --ls-wide: 0.05em; /* @kind font */   /* uppercase footer headings */
+
+  /* Semantic */
+  --text-heading-weight: var(--fw-bold); /* @kind font */
+  --text-body-weight: var(--fw-light); /* @kind font */
+}
+
+/* Mobile scale */
+@media (max-width: 768px) {
+  :root {
+    --fs-h1: 38px;
+    --fs-h2: 32px;
+    --fs-h3: 22px;
+    --fs-display: 52px;
+  }
+}

@@ -1,0 +1,12 @@
+/* Quest Medical — Webfonts
+   The site uses Roboto (loaded via next/font/google). No binaries ship with
+   the codebase, so we load Roboto from Google Fonts here.
+   SUBSTITUTION NOTE: this is the genuine brand font, sourced from Google Fonts.
+   The QUEST logo wordmark itself is a custom serif lockup delivered as PNG/SVG
+   art (see assets/logos/) — it is never set in live type. */
+@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap");
+
+:root {
+  /* Primary UI typeface — every heading, label and paragraph */
+  --font-sans: "Roboto", "Helvetica Neue", Arial, sans-serif;
+}

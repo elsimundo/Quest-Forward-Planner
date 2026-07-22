@@ -1,0 +1,25 @@
+<!-- @dsCard group="Spacing" viewport="700x170" name="Elevation & Borders" subtitle="Restrained — hairline borders, soft header/menu shadows only" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; font-family: var(--font-sans); background: #fff; padding: 28px 24px; }
+  .row { display: flex; gap: 22px; }
+  .box { flex:1; height: 92px; background:#fff; border-radius: var(--radius-sm); display:flex; align-items:flex-end; padding:12px; box-sizing:border-box; font-size:11px; color:var(--quest-body); }
+  .hairline { border: var(--border-hairline); }
+  .blue { border: var(--border-blue); }
+  .header { box-shadow: var(--shadow-header); }
+  .menu { box-shadow: var(--shadow-menu); }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="box hairline">Hairline · #e6e6e6</div>
+    <div class="box blue">Blue outline · #2b7bb9</div>
+    <div class="box header">shadow-header</div>
+    <div class="box menu">shadow-menu</div>
+  </div>
+</body>
+</html>

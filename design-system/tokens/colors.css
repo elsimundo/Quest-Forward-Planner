@@ -1,0 +1,60 @@
+/* Quest Medical — Color tokens
+   Brand-defined: Quest Blue #214b7f, Battleship Gray #58595b.
+   The live site additionally uses a brighter Quest Blue (#2b7bb9) for
+   interactive elements and a crimson accent (#b13a3a) in the division lockups. */
+
+:root {
+  /* ── Brand core ── */
+  --quest-navy: #214b7f;        /* Quest Blue (brand) — primary brand color, deep navy */
+  --quest-navy-dark: #1a3d69;   /* Darker navy — footers, mega-menu, deep panels */
+  --quest-blue: #2b7bb9;        /* Bright Quest Blue — links, primary buttons, stats */
+  --quest-blue-dark: #1f5a87;   /* Hover / pressed blue, button borders */
+  --quest-blue-tint: #f0f7ff;   /* Pale blue — light card hover */
+  --quest-blue-sky: #7ec8f5;    /* Sky blue — accents on dark backgrounds */
+  --quest-accent: #b13a3a;      /* Division-lockup crimson (Hub pulse, sub-brand names) */
+
+  /* ── Division accent colors ── (sampled from each division's glyph)
+     One signature color per Quest division — use as the accent when a surface
+     is themed to a specific division (badges, glyph tint, section accents). */
+  --division-hub: #b13a3a;          /* crimson — also the master --quest-accent */
+  --division-engineering: #5a5a5a;  /* steel gray */
+  --division-logistics: #e0a826;    /* amber */
+  --division-projects: #6a4c93;     /* violet */
+  --division-meditech: #f17f42;     /* orange */
+  --division-digital: #2ab3c0;      /* teal */
+  --division-power: #3d7f53;        /* green */
+
+  /* ── Neutrals ── */
+  --quest-gray: #58595b;        /* Battleship Gray (brand) */
+  --quest-heading: #333333;     /* Heading text */
+  --quest-body: #757575;        /* Body text */
+  --quest-border: #e6e6e6;      /* Hairline borders, dividers */
+  --quest-surface: #ffffff;     /* Page / card surface */
+  --quest-surface-alt: #f7f9fc; /* Subtle section / panel fill */
+  --quest-white: #ffffff;
+  --quest-black: #1a1a1a;
+
+  /* ── Semantic aliases ── */
+  --color-bg: var(--quest-surface);
+  --color-bg-alt: var(--quest-surface-alt);
+  --color-surface-card: var(--quest-surface);
+  --color-text: var(--quest-body);
+  --color-heading: var(--quest-heading);
+  --color-text-muted: #9a9a9a;
+  --color-link: var(--quest-blue);
+  --color-link-hover: var(--quest-blue-dark);
+  --color-border: var(--quest-border);
+  --color-primary: var(--quest-blue);
+  --color-primary-hover: var(--quest-blue-dark);
+  --color-secondary: var(--quest-navy);
+  --color-accent: var(--quest-accent);
+
+  /* On-dark (navy panels) */
+  --color-on-dark: #ffffff;
+  --color-on-dark-muted: rgba(255, 255, 255, 0.7);
+  --color-on-dark-border: rgba(255, 255, 255, 0.2);
+
+  /* Overlay used on hero / division photo panels */
+  --quest-overlay-navy: rgba(32, 74, 126, 0.9);
+  --quest-overlay-gradient: linear-gradient(0deg, rgba(32, 76, 126, 0.88) 0%, #214b7f 100%); /* @kind color */
+}

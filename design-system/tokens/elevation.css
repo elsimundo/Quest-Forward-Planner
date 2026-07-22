@@ -1,0 +1,27 @@
+/* Quest Medical — Elevation, borders & motion
+   The brand is restrained: a single soft header shadow, hairline borders, and
+   200ms color transitions. No heavy drop shadows, no glows, no bounce. */
+
+:root {
+  /* Borders */
+  --border-hairline: 1px solid var(--quest-border); /* @kind other */
+  --border-blue: 1px solid var(--quest-blue); /* @kind other */
+  --border-on-dark: 1px solid rgba(255, 255, 255, 0.2); /* @kind other */
+
+  /* Shadows — used sparingly */
+  --shadow-header: 0 1px 3px rgba(0, 0, 0, 0.08);   /* sticky header on scroll */
+  --shadow-card: 0 2px 10px rgba(33, 75, 127, 0.06);
+  --shadow-card-hover: 0 8px 24px rgba(33, 75, 127, 0.12);
+  --shadow-menu: 0 12px 32px rgba(0, 0, 0, 0.18);   /* mega-menu / mobile drawer */
+
+  /* Motion */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --dur-fast: 150ms; /* @kind other */
+  --dur: 200ms; /* @kind other */     /* default color transition */
+  --dur-slow: 300ms; /* @kind other */
+  --dur-image: 500ms; /* @kind other */ /* news-card image zoom */
+
+  /* Decorative compass-rose watermark (assets/decorative/Group-2.png),
+     pinned top-right, fixed-attachment on light sections. */
+  --watermark-position: right top; /* @kind other */
+}

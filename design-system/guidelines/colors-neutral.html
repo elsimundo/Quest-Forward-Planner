@@ -1,0 +1,25 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Neutrals" subtitle="The warm-gray ink scale" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; font-family: var(--font-sans); background: #fff; }
+  .row { display: flex; gap: 12px; padding: 20px; }
+  .sw { flex: 1; height: 110px; border-radius: var(--radius-sm); display: flex; flex-direction: column; justify-content: flex-end; padding: 12px; box-sizing: border-box; }
+  .sw .name { font-size: 13px; font-weight: 700; }
+  .sw .hex { font-size: 12px; opacity: 0.85; font-weight: 400; letter-spacing: 0.03em; }
+  .light { border: 1px solid var(--quest-border); }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="sw" style="background: var(--quest-gray); color:#fff;"><span class="name">Battleship</span><span class="hex">#58595b</span></div>
+    <div class="sw" style="background: var(--quest-body); color:#fff;"><span class="name">Body</span><span class="hex">#757575</span></div>
+    <div class="sw" style="background: var(--color-text-muted); color:#fff;"><span class="name">Muted</span><span class="hex">#9a9a9a</span></div>
+    <div class="sw light" style="background: var(--quest-border); color:var(--quest-heading);"><span class="name">Border</span><span class="hex">#e6e6e6</span></div>
+    <div class="sw light" style="background: var(--quest-surface-alt); color:var(--quest-heading);"><span class="name">Surface Alt</span><span class="hex">#f7f9fc</span></div>
+  </div>
+</body>
+</html>
