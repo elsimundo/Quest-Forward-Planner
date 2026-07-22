@@ -136,6 +136,7 @@ The core operational table.
 | `site_id` | FK → `sites` | |
 | `status` | text | `confirmed` \| `weekend` \| `likely` \| `bidding` \| `service` \| `tbc` \| `cancelled` \| `bankholiday` — SPEC §3 |
 | `notes` | text, null | |
+| `updated_at` | timestamptz, not null, default now() | Not in SPEC §2's table — added because §11's optimistic-lock reconciliation ("save is rejected if another user changed the same booking first") needs a column to compare against. See `docs/DECISIONS.md` #11. |
 | `published_at` | timestamptz, null | Set on publish/lock — SPEC §2b |
 | `published_by` | FK → `users`, null | |
 | `created_by` / `updated_by` | FK → `users` | |
@@ -145,6 +146,18 @@ The core operational table.
 **Constraint:** `UNIQUE (unit_id, date) WHERE deleted_at IS NULL` — a Postgres partial
 unique index. One *live* booking per unit per day; a soft-deleted booking doesn't block a
 new one being created in its place.
+
+> **Repositioning around this index (swaps & chained shifts).** Postgres enforces a
+> unique index *per row* as an `UPDATE` scans — not against the statement's final state —
+> and a *partial* index can't be made `DEFERRABLE`. So a one-shot `UPDATE … SET (unit_id,
+> date) = …` that swaps two rows (or shifts a chain into occupied slots) collides
+> mid-scan. `lib/actions/booking-moves.ts` therefore repositions in **two passes inside
+> the transaction**: first park every moving row in a collision-free sentinel date range
+> (`date + 365000` days, ~999 years out, nothing lives there) to vacate all originals,
+> then place each row at its final slot — now guaranteed empty. `lib/actions/undo.ts`
+> gets the same guarantee differently: it soft-deletes every touched row (removing them
+> from the partial index) before restoring snapshots. Do **not** collapse either into a
+> single `UPDATE` trusting "final-state" uniqueness — that guarantee does not exist here.
 
 ### `booking_events`
 Append-only audit log. **Never soft-deleted or hard-deleted.**
@@ -170,25 +183,43 @@ running the rest of the migration, and set it on every migrated unit. MRI/other
 modalities are added later the same way: a new `modalities` row, then their own units and
 specs — no schema change needed.
 
-One-off script (keep in `data/migrate-from-excel.ts` or similar) parses the source
-workbook:
+`data/migrate-from-excel.ts` parses the source workbook — run with `pnpm db:migrate-excel`
+(idempotent: re-running skips units/specs/bookings that already exist). What it actually
+does, confirmed against the real file (not the pre-implementation guess below the line):
 
-- `CT FP` tab → `units` from the header row; `bookings` from non-empty cells, with
-  `status` decoded from Excel cell fill colour per the mapping in `SPEC.md` §3.
-- `sites` from distinct cell text values — **the source data is messy**: inconsistent
-  whitespace, and status text embedded in the site name itself (e.g. `"SW - CDC- West
-  Swindon - cancelled chargeable"` needs the `" - cancelled chargeable"` suffix stripped
-  into `status`/`notes`, not left in the site name).
-- **Duplicate date rows**: the source sheet contains repeated rows for the same date
-  (confirmed during analysis — e.g. multiple `2025-02-01` rows). Keep the row with the
-  most populated cells per date, discard the rest.
-- `CT inventory checklist` tab → `unit_specs`.
-- The four fill colours found in the data that aren't in the client's documented legend
-  (`F8CBAD`, `B4C6E7`, `E2EFDA`, `E08B8B`) need a client-confirmed mapping before this
-  script is finalised — see `SPEC.md` §13 Q5. Don't guess a mapping and ship it silently.
+- **Real column layout**: `CT FP`'s unit columns run D→AH (`CT15`→`CT45`, 31 units) — the
+  header's own row 1 (richer, concatenated rich-text runs) is used for `units.description`;
+  row 2 is a shorter duplicate and isn't used.
+- **Real day-rows vs. a hidden summary block**: the sheet has a recurring "AVAILABLE IN
+  MONTH / NOT AVAILABLE / RD / OR / EMPTY" block roughly once a month that reuses that
+  month's first date as its row label — a plain "is column A a date" check doesn't exclude
+  it. Real day-rows are identified by column B holding an actual `Mon`–`Sun` abbreviation;
+  everything else is skipped.
+- **Status decoded from fill colour**, with `weekend` decided by day-of-week (Sat/Sun)
+  rather than colour — the sheet uses three different grey fills for it, two of which are
+  Excel theme+tint colours with no RGB code. An explicit status colour (e.g. bidding-red)
+  still overrides the weekend default. See `docs/DECISIONS.md` #10 for the full reasoning.
+- `sites` from distinct cell text values, whitespace-normalised. Only the confirmed
+  `"... – cancelled chargeable"` suffix is stripped into `status`/`notes` — every other
+  dash-suffixed pattern found in the real data (`"– Canon PM"`, `"– 6 monthly"`,
+  `"– unstaffed"`, `"– ENT"` (a department name, not a status)) is left in the site name,
+  since stripping generically would destroy real information.
+- **Duplicate date rows**: none were found in this particular export (730 distinct real
+  dates, zero repeats) — SPEC's warning may describe an earlier version of the file. The
+  "keep the fullest row" dedup logic is still implemented defensively for future re-exports.
+- `CT inventory checklist` tab → `unit_specs`, **exact unit-ID match only**. The checklist
+  and the planner grid disagree on naming in places (`RCT28`/`RCT29` vs. `CT28`/`CT29`) and
+  the checklist has no column for `RCT22` or `CT35`–`CT45` — unmatched units get no specs
+  rather than a guessed mapping, logged clearly by the script.
+- A system user (`migration@system.quest.local`, role `admin`, random unusable password)
+  is upserted to satisfy `bookings.created_by`/`updated_by` and `booking_events.actor_id`
+  for migrated rows. Every inserted booking gets a matching `booking_events` row
+  (`action: 'create'`) in the same transaction, all sharing one `batch_id` for the run.
 
-Run `pnpm db:seed` locally to load migrated data into a dev database once the script
-exists.
+The four fill colours SPEC §13 Q5 flagged as undocumented (`F8CBAD`, `B4C6E7`, `E2EFDA`,
+`E08B8B`, plus a 5th found during the scan, `808080`) turned out to only ever appear in the
+summary block above — they're excluded along with it, not mapped to a status. See
+`docs/DECISIONS.md` #10.
 
 ## Query conventions
 

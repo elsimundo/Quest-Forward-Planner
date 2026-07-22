@@ -508,7 +508,13 @@ Open questions to resolve with the client:
    the DB unique constraint and a possible "book alongside" option.)
 4. When a booking is moved, does its status persist or reset (e.g. to `tbc` pending
    re-confirmation)? (Mock-up: persists.)
-5. Meaning of the four undocumented fill colours (§3).
+5. ~~Meaning of the four undocumented fill colours (§3).~~ **Resolved during the slice-2
+   migration**: `F8CBAD`, `B4C6E7`, `E2EFDA`, `E08B8B` (plus a 5th, `808080`, found during
+   the scan) never appear on a real per-day-per-unit booking cell in the actual workbook —
+   every occurrence is confined to a recurring "AVAILABLE IN MONTH / NOT AVAILABLE / RD /
+   OR / EMPTY" summary block that reuses each month's first date as a row label. The
+   migration script excludes these rows entirely rather than mapping the colours to a
+   status. See `docs/DECISIONS.md` #10 and `data/migrate-from-excel.ts`.
 6. **Other modalities (§2d)** — get the MRI (and any other fleet's) equivalent of the
    `CT FP` and `CT inventory checklist` tabs, confirm its capability list for §2a, and
    confirm whether its sites are the same `sites` records CT already uses (same

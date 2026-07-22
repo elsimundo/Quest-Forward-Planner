@@ -45,10 +45,10 @@ Requires a local Postgres instance (or point `.env` at a Coolify/remote dev data
 | `pnpm db:migrate` | Apply pending Drizzle migrations |
 | `pnpm db:studio` | Drizzle Studio — inspect the DB visually |
 | `pnpm db:create-user` | Bootstrap a local `users` row (SPEC.md §1 — seeded manually for the pilot team) |
+| `pnpm db:migrate-excel` | Import `data/CT_Forward_Planner_23012025.xlsx` — units, unit_specs, sites, bookings. Idempotent. |
 | `pnpm lint` / `pnpm typecheck` | Standard checks — run before opening a PR |
 
-`pnpm db:seed` (loading the migrated Excel data) and a test-suite script land with the
-slice-2 migration and a chosen test framework, respectively — not yet in `package.json`.
+A test-suite script lands once a test framework is chosen — not yet in `package.json`.
 
 ## Project structure
 

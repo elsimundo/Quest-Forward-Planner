@@ -8,6 +8,20 @@
       "when": 1784728294315,
       "tag": "0000_superb_bromley",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784731426480,
+      "tag": "0001_puzzling_omega_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784735535243,
+      "tag": "0002_smooth_killmonger",
+      "breakpoints": true
     }
   ]
 }

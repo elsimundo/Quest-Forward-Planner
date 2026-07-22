@@ -179,6 +179,96 @@ generic from the start, and the generic version doesn't cost meaningfully more t
 today. Also considered: separate planner apps per modality — rejected per the duplicated-
 infrastructure reasoning above, same logic as the single role system in decision #7.
 
+---
+
+### 10. Excel migration: colour mapping, weekend detection, and unit-spec matching
+
+**Decided:** Three rules for `data/migrate-from-excel.ts`, each derived by scanning every
+fill colour in the actual workbook against real day-rows rather than guessed from the
+sheet's legend tab alone:
+
+1. **The four "undocumented" colours from SPEC §13 Q5 aren't mapped to a status at all.**
+   `F8CBAD`, `B4C6E7`, `E2EFDA`, `E08B8B`, and a 5th found during the scan (`808080`) only
+   ever decorate a recurring monthly summary block ("AVAILABLE IN MONTH" / "NOT AVAILABLE"
+   / "RD" / "OR" / "EMPTY") that reuses each month's first date as its row label. The
+   migration excludes these rows (real day-rows are recognised by column B holding an
+   actual Mon–Sun abbreviation, not by the date column alone — the summary rows have a
+   valid-looking date too).
+2. **`weekend` status is decided by day-of-week, not fill colour**, because the sheet uses
+   *three* distinct grey fills for it (one explicit RGB `A6A6A6`, two Excel theme+tint
+   greys that don't carry an RGB code) — day-of-week is the reliable signal. An explicit
+   status colour (e.g. bidding-red on a Saturday) still overrides the weekend default,
+   matching the reference mock-up's own sample data.
+3. **Unit specs import on exact unit-ID match only.** The `CT inventory checklist` tab and
+   the `CT FP` tab disagree on naming for the same physical units in places (`RCT28`/`RCT29`
+   in the checklist vs `CT28`/`CT29` in the grid) and the checklist has no column at all for
+   `RCT22` or `CT35`–`CT45`. Rather than guess a mapping, unmatched units simply get no
+   `unit_specs` rows, logged clearly by the script for admin follow-up.
+
+**Why:** All three are guesses SPEC explicitly asked not to make silently (§13 Q5, and the
+general "flag rather than assume" rule in `CLAUDE.md`). Scanning the real file turned each
+one from a guess into an evidence-backed rule — confirmed with the user before writing the
+migration script itself.
+
+**Not chosen:** Manually mapping `RCT28`→`CT28`/`RCT29`→`CT29` on the assumption they're the
+same unit — plausible, but unverified, and the cost of being wrong (silently attaching one
+unit's cardiac/MAKO capability data to a different physical unit) is high enough that the
+user chose exact-match-only for now.
+
+---
+
+### 11. Two SPEC/schema gaps closed while building the booking drawer
+
+**Decided:** Two places where `SPEC.md` describes a mechanism whose data model isn't
+actually in §2's table definitions:
+
+1. **`bookings.updated_at`** (timestamptz, not null, default now(), bumped on every write) —
+   §11 requires optimistic-lock reconciliation ("the save is rejected... the cell snaps back
+   to the current server value") but no column to compare against was ever defined. Added
+   directly to `bookings` rather than working around its absence.
+2. **§2a's capability-mismatch warning** is logged inside the existing `booking_events.
+   booking_after` jsonb snapshot (as an extra `capabilityWarnings` key alongside the row
+   data) rather than adding a dedicated `metadata` column. `booking_after` is already a
+   flexible jsonb blob capturing "what happened"; a mismatch warning is exactly that kind of
+   fact, and it avoids a schema column that would otherwise sit empty until §2a's warnings
+   actually fire.
+
+**Why:** Both are mechanical gaps, not open product questions — SPEC's own prose already
+states the intended behaviour (§11's reconciliation, §2a's "logged...so it's auditable"),
+the schema just hadn't caught up yet. Same category as `users.password_hash` (decision
+implicit in slice 1): necessary to build what's already specified, documented in
+`docs/DATABASE.md`, not a silent judgment call on an unresolved SPEC §13 question.
+
+**Not chosen:** Leaving optimistic locking unimplemented until someone explicitly asks for
+`updated_at` — rejected because SPEC §11 is unambiguous that concurrent edits must never
+silently overwrite each other, and shipping the drawer without that check would violate an
+explicit requirement, not just skip a nice-to-have.
+
+### 12. Two-pass sentinel reposition for swaps/chained shifts
+
+**Decided:** `moveBookings` repositions rows in two `UPDATE`s inside its transaction:
+pass 1 parks every moving row in a collision-free sentinel date range (`date + 365000`
+days), vacating all originals; pass 2 places each row at its final `(unit_id, date)`,
+which is now guaranteed empty. `undoBatch` achieves the same collision-safety by
+soft-deleting all touched rows (removing them from the partial unique index) before
+restoring their snapshots.
+
+**Why:** An earlier implementation did the reposition as a single CASE-mapped `UPDATE`,
+on the belief that "Postgres checks a unique index against the statement's final state,
+not row-by-row." **That belief is false.** A non-deferrable unique index is enforced per
+row as the scan proceeds, and a *partial* index (`WHERE deleted_at IS NULL`) can't be made
+`DEFERRABLE` at all — so swapping two bookings (A→B while B is still live at B) threw
+`duplicate key value violates unique constraint` and rolled the whole action back. It only
+ever passed testing because every prior test moved into an *empty* cell. The sentinel pass
+sidesteps the constraint honestly instead of relying on a guarantee Postgres doesn't give.
+
+**Not chosen:** (a) Making the constraint a `DEFERRABLE` unique *constraint* — impossible
+while it must stay partial for soft-delete. (b) `NULLS NOT DISTINCT` full index on
+`(unit_id, date, deleted_at)` — more invasive schema change, and still not deferrable
+per-row without extra ceremony. (c) Per-row UPDATEs ordered to avoid collisions — fragile
+(correct order is operation-dependent) and loses the single-statement atomicity the batch
+already needs.
+
 <!--
 Template for new entries:
 

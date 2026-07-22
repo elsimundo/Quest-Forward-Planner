@@ -34,12 +34,20 @@ how the pieces connect.
 ## Core data flow: booking a unit
 
 1. User clicks an empty cell in the grid → drawer opens with site/status/notes fields.
-2. Save → a Server Action validates input, checks the actor's role, writes a `bookings`
-   row (or updates one), and appends a `booking_events` entry in the same transaction.
-3. The grid's local state updates optimistically; if the server rejects (conflict,
-   validation, permission), the UI rolls back and shows an error toast — see `SPEC.md`
-   §11.
-4. Other open sessions pick up the change on their next poll cycle (~10s — see
+2. Save → a Server Action validates input, re-checks the actor's *current* role from the
+   DB (not the session's JWT claim), writes a `bookings` row (or updates one), and appends
+   a `booking_events` entry in the same transaction.
+3. **Not optimistic in this slice** — the Save/Clear buttons show a disabled/loading state
+   and wait for the Server Action's response, rather than applying the change to the grid
+   immediately and rolling back on failure. SPEC.md §11 describes true optimistic updates;
+   this is a deliberate v1 simplification, revisit if the ~one round-trip latency proves
+   annoying in practice.
+4. On success, the Server Action calls `revalidatePath("/")` (server-side cache
+   invalidation) **and** the client explicitly calls `router.refresh()` — both are needed.
+   `revalidatePath` alone does not cause an already-mounted client page to re-fetch; only
+   `router.refresh()` does that. Every future mutation (drag-and-drop, publish/unpublish)
+   needs this same pair, not just the first one.
+5. Other open sessions pick up the change on their next poll cycle (~10s — see
    `DECISIONS.md` #5).
 
 ## Core data flow: moving/swapping bookings
