@@ -99,8 +99,20 @@ See `SPEC.md` §2c. Architecturally, this means:
   `super_admin`) is read from the session and re-validated server-side on every mutation
   — never trust a role claim the client sends.
 - The `Credentials` provider's verification step is isolated behind a single function
-  (`lib/auth/verify-credentials.ts` or similar) so swapping the identity source from the
-  local `users` table to TMS later is a one-file change — see `DECISIONS.md` #4.
+  (`lib/auth/verify-credentials.ts`) — as of `DECISIONS.md` #17, this now checks the
+  submitted username/email + password against **TMS** (MySQL, read-only,
+  `lib/db/mysql-auth.ts`) instead of a local password. Everything else — Auth.js itself,
+  session handling, route protection, and role storage — is unchanged, exactly as #4
+  originally planned for this swap.
+- Login also requires TMS's `enable_scheduling_access = 1`. On a first successful login
+  with no matching local `users` row, one is auto-provisioned — `admin` if TMS's
+  `permission_group` is `superuser`, otherwise `viewer` — as a one-time default, not an
+  ongoing sync. A super_admin
+  can pre-authorize a higher role for an email ahead of time via the admin "Add staff"
+  flow or `pnpm db:create-user`. Role itself always stays local — TMS has no concept of
+  it.
+- A local row's `deleted_at` (deactivation) is checked independently of TMS and blocks
+  login even for an otherwise-valid TMS identity.
 
 ## Reference data sync (future)
 

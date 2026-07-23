@@ -11,13 +11,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
       },
-      authorize: async (credentials) => {
+      authorize: async (credentials, request) => {
         const email = credentials?.email;
         const password = credentials?.password;
         if (typeof email !== "string" || typeof password !== "string") {
           return null;
         }
-        return verifyCredentials(email, password);
+        const clientIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+        return verifyCredentials(email, password, clientIp);
       },
     }),
   ],

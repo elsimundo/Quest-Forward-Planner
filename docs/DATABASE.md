@@ -114,17 +114,20 @@ pattern by design.
 | `required` | bool, default true | |
 
 ### `users`
-App-local, even once TMS provides credentials (SPEC §1, `DECISIONS.md` #4).
+App-local *role* assignment even now that TMS provides credentials (SPEC §1,
+`DECISIONS.md` #4, #17). Identity and password verification happen against TMS
+(read-only, `lib/db/mysql-auth.ts`) — this table records what someone can *do* in the
+planner, not who they are.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | serial, PK | |
-| `name` | text | |
-| `email` | text, unique | |
-| `password_hash` | text | Not in SPEC §2's table — added because the Credentials provider needs something to verify against today. Becomes unused (but not dropped — old sessions/history may still reference the row) once/if the verify-credentials function is repointed at TMS. |
-| `role` | text | `viewer` \| `scheduler` \| `admin` \| `super_admin` — SPEC §7 |
-| `tms_synced_at` | timestamptz, null | Set only if TMS becomes the identity source |
-| `deleted_at` | timestamptz, null | "Deactivate staff" (SPEC §7) — soft delete, same pattern as everywhere else (§2c). A deactivated user can't sign in (`verifyCredentials` filters `deleted_at IS NULL`) and every mutation endpoint's `requireRole` re-check does the same, so a still-live session can't outlast deactivation. |
+| `name` | text | Synced from TMS forename/surname on first login (auto-provision); not kept in sync afterward |
+| `email` | text, unique | Matched case-insensitively against TMS's `email_address` to find/provision this row |
+| `password_hash` | text, null | No longer set for TMS-authenticated users (`DECISIONS.md` #17) — `verifyCredentials` checks TMS's `password_digest`, not this column. Made nullable in migration `0004`; kept for any legacy locally-authenticated row. |
+| `role` | text | `viewer` \| `scheduler` \| `admin` \| `super_admin` — SPEC §7. **Always local** — TMS has no concept of these roles. On auto-provision (first login), defaults to `admin` if TMS's `permission_group = 'superuser'`, else `viewer` — a one-time default, not an ongoing sync, so a later local role change is never overwritten by TMS on a subsequent login. A super_admin can also pre-authorize a higher role for an email before someone's first TMS login (admin "Add staff" / `pnpm db:create-user`). |
+| `tms_synced_at` | timestamptz, null | Bumped on every successful TMS login |
+| `deleted_at` | timestamptz, null | "Deactivate staff" (SPEC §7) — soft delete, same pattern as everywhere else (§2c). Independent of TMS: a deactivated row blocks login here even if the person's TMS account is fine, and every mutation endpoint's `requireRole` re-check does the same, so a still-live session can't outlast deactivation. |
 | `deleted_by` | FK → `users`, null | |
 
 ### `bookings`

@@ -20,7 +20,10 @@ export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
+  // Nullable — TMS owns the real password once §13.1's auth integration is wired in
+  // (DECISIONS.md #17). Unset for any user whose identity is verified against TMS;
+  // still used for the (now rare) locally-authenticated fallback path, if any.
+  passwordHash: text("password_hash"),
   role: text("role", { enum: ROLES }).notNull().default("viewer"),
   tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
   // "Deactivate staff" (SPEC.md §7) follows the same soft-delete pattern as every other

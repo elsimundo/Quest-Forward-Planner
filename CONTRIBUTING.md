@@ -7,14 +7,19 @@ technical choice was made see `docs/DECISIONS.md`.
 
 ```bash
 pnpm install
-cp .env.example .env          # fill in DATABASE_URL, AUTH_SECRET, NEXTAUTH_URL
+cp .env.example .env          # fill in DATABASE_URL, AUTH_SECRET, NEXTAUTH_URL, MYSQL_AUTH_DATABASE_URL
 pnpm db:migrate                # apply Drizzle migrations
-pnpm db:create-user -- --name "Jane Doe" --email jane@quest.co.uk --password *** --role super_admin
+pnpm db:create-user -- --name "Jane Doe" --email jane@quest.co.uk --role super_admin
 pnpm dev                       # http://localhost:3000
 ```
 
 Requires a local Postgres instance (`createdb quest_ct_forward_planner_dev`, or point
 `.env` at a remote dev database).
+
+Login is verified against TMS (MySQL, read-only — `MYSQL_AUTH_DATABASE_URL`), not a local
+password (`DECISIONS.md` #17); `db:create-user` only pre-authorizes a role for an email
+ahead of that person's first real TMS login. Ask an admin for the local TMS connection
+string. **Never write to the TMS connection, under any circumstance.**
 
 ## Before opening a PR
 

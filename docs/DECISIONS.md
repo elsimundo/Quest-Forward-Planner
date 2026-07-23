@@ -374,6 +374,53 @@ script-triggered focus following a prior mouse interaction), which cost time cha
 "broken" fix that was actually fine. Real keyboard `Tab` presses are the only reliable way
 to test this.
 
+### 17. TMS auth integration: identity/password move to TMS, role stays local
+
+**Decided:** `verifyCredentials` (`lib/auth/verify-credentials.ts`) — the one function
+DECISIONS.md #4 always intended to get repointed — now checks the submitted
+username/email + password against TMS's MySQL `users` table (read-only, via
+`lib/db/mysql-auth.ts`) instead of our own local `password_hash`. Specifically:
+
+- Look up the TMS user by username OR case-insensitive email; `bcrypt.compare` the
+  password against TMS's `password_digest` (bcryptjs is hash-format-compatible with
+  Ruby's native `bcrypt` gem that produced it).
+- **Gate on `enable_scheduling_access = 1`** — a real, purpose-built TMS column for "this
+  person may use scheduling apps," discovered by inspecting the actual local TMS schema
+  rather than assuming the reference app's own `permission_group` staff/engineer block
+  applied here (it doesn't — that was a different app's unrelated business rule). Checked
+  only *after* the password is confirmed, so a wrong-password attempt can't be used to
+  probe whether an account has scheduling access.
+- On success, find (or auto-provision) the matching row in our own local `users` table by
+  email, and return **that** row's role for the session — TMS has no concept of
+  `viewer`/`scheduler`/`admin`/`super_admin`, so role assignment stays Quest-app-specific,
+  exactly as SPEC.md §1 always said it would. Auto-provisioning defaults to `admin` when
+  TMS's `permission_group` is `superuser`, else `viewer` — a **one-time default at first
+  login only**, not an ongoing sync, so a super_admin's later role change for that person
+  is never silently reverted by their TMS tag on some future login.
+- A local row's own `deleted_at` (deactivation) still blocks login independently of
+  anything TMS says — the two are separate concerns (TMS: "is this a valid Quest
+  identity with scheduling access", us: "have we deactivated them in this app").
+- Simple in-memory login rate limiter (5 attempts / 15 min per IP+username), matching the
+  reference app's pattern.
+- `users.password_hash` is now nullable (migration `0004`) — meaningless for anyone
+  authenticating via TMS. The admin "Add staff" flow and `pnpm db:create-user` no longer
+  collect a password; they just pre-authorize a role for an email ahead of that person's
+  first real TMS login (defaults to `viewer` automatically if nobody pre-authorizes them).
+
+**Why:** This is exactly the swap DECISIONS.md #4 planned for when "TMS read-access
+exists" — sessions, route protection, and Auth.js itself don't change, only the one
+function that answers "is this password correct." The `enable_scheduling_access` gate was
+a judgment call surfaced back to the user rather than assumed, since the obvious reference
+(the sibling app's auth guide) used a different, not-applicable rule; the real schema had
+a better-fitting, purpose-built column once actually inspected.
+
+**Not chosen:** Replicating the reference app's own hand-rolled session mechanism
+(HMAC-signed cookies, no JWT library, custom `requireSession`/`permissions` helpers). That
+app doesn't use Auth.js; we already do, and it already does the identical job (issue a
+session, read it on each request, redirect when absent) — swapping it out for a bespoke
+equivalent would be reinventing already-correct, already-tested infrastructure for no
+benefit. Only the credential-verification *logic* was reusable, not the whole auth stack.
+
 <!--
 Template for new entries:
 

@@ -56,20 +56,19 @@ export function UsersPanel({ users, currentUserId }: { users: StaffUser[]; curre
 function CreateUserForm({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("viewer");
   const [pending, setPending] = useState(false);
   const router = useRouter();
 
   async function handleCreate() {
     setPending(true);
-    const result = await createStaffUser({ name, email, password, role });
+    const result = await createStaffUser({ name, email, role });
     setPending(false);
     if (!result.ok) {
       toast.error(result.error);
       return;
     }
-    toast.success(`Created ${name}`);
+    toast.success(`Pre-authorized ${name}`);
     router.refresh();
     onDone();
   }
@@ -86,15 +85,8 @@ function CreateUserForm({ onDone }: { onDone: () => void }) {
         <input
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="Email"
+          placeholder="Email (must match their TMS account)"
           type="email"
-          className="rounded-lg border border-[#e6e6e6] px-3 py-2 text-[13px] outline-none focus:border-[#2b7bb9]"
-        />
-        <input
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Initial password (min. 8 chars)"
-          type="password"
           className="rounded-lg border border-[#e6e6e6] px-3 py-2 text-[13px] outline-none focus:border-[#2b7bb9]"
         />
         <select
@@ -110,15 +102,16 @@ function CreateUserForm({ onDone }: { onDone: () => void }) {
         </select>
       </div>
       <p className="mt-2 text-xs text-[#9a9a9a]">
-        No email is sent — share the password with them directly. They can&apos;t reset it
-        themselves yet.
+        They sign in with their existing TMS username and password — this just grants the
+        role ahead of their first login. Anyone who logs in without being pre-authorized
+        gets Viewer access automatically.
       </p>
       <button
         onClick={handleCreate}
-        disabled={pending || !name.trim() || !email.trim() || password.length < 8}
+        disabled={pending || !name.trim() || !email.trim()}
         className="mt-3 rounded-full bg-[#1a3d69] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       >
-        Create account
+        Pre-authorize
       </button>
     </div>
   );
