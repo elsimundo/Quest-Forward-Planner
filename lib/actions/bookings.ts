@@ -10,6 +10,7 @@ import {
   sites,
   unitSpecs,
   siteCapabilityRequirements,
+  users,
   type Status,
 } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
@@ -17,6 +18,14 @@ import { computeCapabilityWarnings, type CapabilityWarning } from "@/lib/capabil
 import { EDITABLE_STATUSES } from "@/lib/statuses";
 
 const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
+
+// SPEC.md §11: the conflict toast should name who got there first ("changed by [name]"),
+// not just say "someone else" — worth the extra lookup since it's the whole point of
+// telling the user what happened instead of silently rejecting the save.
+async function nameOfEditor(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], userId: number): Promise<string> {
+  const [row] = await tx.select({ name: users.name }).from(users).where(eq(users.id, userId)).limit(1);
+  return row?.name ?? "someone else";
+}
 
 export type SaveBookingInput = {
   unitId: string;
@@ -83,9 +92,10 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
     }
 
     if (existingBooking && input.expectedUpdatedAt !== existingBooking.updatedAt.toISOString()) {
+      const name = await nameOfEditor(tx, existingBooking.updatedBy);
       return {
         ok: false,
-        error: "This booking was changed by someone else — refresh to see the latest.",
+        error: `This booking was changed by ${name} — refresh to see the latest.`,
         code: "CONFLICT",
       };
     }
@@ -172,9 +182,10 @@ export async function clearBooking(input: ClearBookingInput): Promise<ClearBooki
       return { ok: false, error: "This booking is published and locked. Unlock it first.", code: "LOCKED" };
     }
     if (input.expectedUpdatedAt !== existing.updatedAt.toISOString()) {
+      const name = await nameOfEditor(tx, existing.updatedBy);
       return {
         ok: false,
-        error: "This booking was changed by someone else — refresh to see the latest.",
+        error: `This booking was changed by ${name} — refresh to see the latest.`,
         code: "CONFLICT",
       };
     }

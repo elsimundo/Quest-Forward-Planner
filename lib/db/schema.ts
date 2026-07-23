@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
   jsonb,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 export const ROLES = ["viewer", "scheduler", "admin", "super_admin"] as const;
@@ -22,6 +23,12 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   role: text("role", { enum: ROLES }).notNull().default("viewer"),
   tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
+  // "Deactivate staff" (SPEC.md §7) follows the same soft-delete pattern as every other
+  // destructive-looking action in the app (§2c) — never a hard DELETE. A deactivated
+  // user can't sign in (see verifyCredentials) but their history (booking_events,
+  // audit trail) stays attributable.
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedBy: integer("deleted_by").references((): AnyPgColumn => users.id),
 });
 
 // ── Reference data — mirrored from TMS once §13.1's read-sync exists;
@@ -163,4 +170,21 @@ export const bookingEvents = pgTable("booking_events", {
   batchId: uuid("batch_id").notNull(),
   bookingBefore: jsonb("booking_before"),
   bookingAfter: jsonb("booking_after"),
+});
+
+// Append-only audit trail for role changes — SPEC.md §7: "every change is still written
+// to booking_events-style audit logging (actor, target user, old role, new role,
+// timestamp) so 'who made X an admin' is always answerable." Kept as its own table
+// rather than folded into booking_events, which is specifically about bookings.
+export const userRoleEvents = pgTable("user_role_events", {
+  id: serial("id").primaryKey(),
+  actorId: integer("actor_id")
+    .notNull()
+    .references(() => users.id),
+  targetUserId: integer("target_user_id")
+    .notNull()
+    .references(() => users.id),
+  oldRole: text("old_role", { enum: ROLES }).notNull(),
+  newRole: text("new_role", { enum: ROLES }).notNull(),
+  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
 });

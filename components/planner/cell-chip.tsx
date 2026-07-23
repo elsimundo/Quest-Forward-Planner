@@ -24,11 +24,14 @@ export function CellChip({
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
 }) {
+  // Longhand only — the base styles below set `borderColor`, so mixing in the `border`
+  // shorthand here makes React warn when the preview clears (shorthand removed while the
+  // longhand persists). Keep every border property in longhand form on both sides.
   const previewStyle =
     preview === "ok"
-      ? { border: "1.5px solid #3d7f53", background: "#e9f4ec" }
+      ? { borderColor: "#3d7f53", borderStyle: "solid", borderWidth: "1.5px", background: "#e9f4ec" }
       : preview === "bad"
-        ? { border: "1.5px solid #b13a3a", background: "#f9ebeb" }
+        ? { borderColor: "#b13a3a", borderStyle: "solid", borderWidth: "1.5px", background: "#f9ebeb" }
         : null;
 
   if (!booking) {
@@ -37,7 +40,7 @@ export function CellChip({
         type="button"
         onClick={onClick}
         title="Available — click to assign"
-        className="flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background] duration-150"
+        className="flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
         style={{
           borderColor: isOpen ? "#2b7bb9" : "#e6e6e6",
           background: isOpen ? "#f0f7ff" : "transparent",
@@ -62,7 +65,7 @@ export function CellChip({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${warning ? " · ⚠ capability mismatch" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
-      className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150"
+      className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         cursor: locked ? "pointer" : "grab",
         borderColor: checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : borderColour,

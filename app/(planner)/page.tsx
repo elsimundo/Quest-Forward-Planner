@@ -8,6 +8,9 @@ import {
 } from "@/lib/db/queries";
 import { enumerateDays } from "@/lib/dates";
 import { PlannerGrid } from "@/components/planner/planner-grid";
+import { auth } from "@/auth";
+import { ROLES, type Role } from "@/lib/db/schema";
+import { UserMenu } from "@/components/user-menu";
 
 // This page reads live scheduling data straight from Postgres via Drizzle, which Next
 // can't detect as a "dynamic" data source the way it does fetch()/cookies()/searchParams
@@ -24,8 +27,12 @@ function fallbackRange(): { from: string; to: string } {
 }
 
 export default async function PlannerPage() {
-  const modalities = await getActiveModalities();
+  const [modalities, session] = await Promise.all([getActiveModalities(), auth()]);
   const ctModality = modalities.find((m) => m.name === "CT") ?? modalities[0];
+  // UI role-gating only — every mutation re-checks role server-side (SPEC.md §11). The
+  // session claim can be stale, so we fall back to the least-privileged role if absent.
+  const sessionRole = session?.user?.role;
+  const role: Role = ROLES.includes(sessionRole as Role) ? (sessionRole as Role) : "viewer";
 
   return (
     <div className="flex h-full flex-col">
@@ -37,6 +44,7 @@ export default async function PlannerPage() {
             Forward Planner
           </span>
         </div>
+        <UserMenu name={session?.user?.name ?? "?"} role={role} />
       </header>
 
       {!ctModality ? (
@@ -44,7 +52,7 @@ export default async function PlannerPage() {
           No modalities configured yet — nothing to show.
         </main>
       ) : (
-        <PlannerBody modalityId={ctModality.id} modalities={modalities} />
+        <PlannerBody modalityId={ctModality.id} modalities={modalities} role={role} />
       )}
     </div>
   );
@@ -53,9 +61,11 @@ export default async function PlannerPage() {
 async function PlannerBody({
   modalityId,
   modalities,
+  role,
 }: {
   modalityId: number;
   modalities: { id: number; name: string }[];
+  role: Role;
 }) {
   const units = await getActiveUnits(modalityId);
   const range = (await getBookingDateRange(modalityId)) ?? fallbackRange();
@@ -76,6 +86,7 @@ async function PlannerBody({
         bookings={bookings}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
+        role={role}
       />
     </div>
   );

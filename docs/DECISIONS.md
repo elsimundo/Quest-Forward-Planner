@@ -269,6 +269,111 @@ per-row without extra ceremony. (c) Per-row UPDATEs ordered to avoid collisions 
 (correct order is operation-dependent) and loses the single-statement atomicity the batch
 already needs.
 
+### 13. Publish/unlock are undoable; the unlock is admin-gated but Ctrl+Z isn't
+
+**Decided:** Publishing (scheduler+) and unlocking (admin+) both go through `booking_events`
+(`publish` / `unpublish` actions) and both push a batch onto the client undo/redo stack, so
+Ctrl+Z reverses a publish the same way it reverses a move. `undoBatch`'s "can't undo under a
+lock" guard is relaxed to exempt the row a batch is itself un-publishing (otherwise undoing
+a publish would be blocked by the very lock it just applied). The drawer's unlock is a
+two-step confirm and only rendered for `admin`/`super_admin`; the server re-checks the role
+regardless (`lib/actions/publish.ts`).
+
+**Why:** The client asked to keep the mock-up's behaviour, where publish/unlock sit in the
+same undo history as everything else — it's the least surprising model for a scheduler who
+mis-clicks "Publish selected". The seeming tension with SPEC §2b's "only admin can unlock" is
+narrow in practice: the undo stack is per-session client state that doesn't survive a reload,
+so Ctrl+Z only reverses a publish the current user made moments ago in this session. Anything
+published in an earlier session (or by someone else) still requires the deliberate,
+admin-only, confirmed unlock. So the admin gate holds for the case it exists to protect —
+"TMS already has the old version" — while same-session undo stays frictionless.
+
+**Not chosen:** Keeping publish/unlock entirely off the undo stack (my initial instinct, and
+the stricter reading of §2b). Rejected because the client explicitly preferred the mock-up
+behaviour once the trade-off was spelled out, and the per-session scoping keeps the admin
+gate meaningful anyway. If the client later wants publishes to be irreversible except via
+admin unlock, it's a one-line change (don't `pushUndo` the publish batchId).
+
+### 14. Admin page: two schema gaps closed, "invite" built as direct creation
+
+**Decided:** Building SPEC §7's admin page surfaced two mechanical gaps, closed the same way
+as decision #11's (the SPEC's intent is clear, the schema just hadn't caught up):
+
+1. **`users.deleted_at`/`deleted_by`** — added so "deactivate staff" can follow the same
+   soft-delete pattern as every other destructive-looking action (§2c), instead of being the
+   one exception. `verifyCredentials` and `requireRole` both filter it out, so a deactivated
+   account can neither log in nor keep mutating on a still-live session.
+2. **`user_role_events` table** — §7 requires role changes to be audited (actor, target,
+   old/new role, timestamp) but `booking_events` is specifically about bookings, so a
+   sibling append-only table was added rather than overloading that one.
+
+Separately, **"invite" is built as direct account creation** (`super_admin` sets name,
+email, and an initial password — the same mechanism `pnpm db:create-user` already used) —
+no email is sent.
+
+**Why:** There is no email/SMTP infrastructure anywhere in the stack (no provider in
+`package.json`, nothing in `.env.example`), and SPEC §7 says only the single word "invite"
+with no mechanics specified — a real invite flow (signup token, expiry, email delivery)
+would be new infrastructure invented from nothing, not a spec gap closed. Direct creation
+reuses a pattern that already exists and ships the actual capability (a super_admin can get
+a new starter into the system today); it's also strictly easier to *extend* into an email
+invite later than to walk back if I'd built token/email machinery the client didn't ask for.
+
+**Not chosen:** Building a token-based email-invite flow — rejected as scope invention
+without a spec basis, and blocked anyway on a decision (which email provider) that's the
+user's to make, not mine to assume. Flagging this rather than silently picking one, per
+project ground rules.
+
+### 15. Booking drawer freezes its optimistic-lock reference at mount
+
+**Decided:** `BookingDrawerBody` snapshots `booking?.updatedAt` into local state
+(`initialUpdatedAt`) once, at mount, and `handleSave`/`handleClear` send *that* as
+`expectedUpdatedAt` — never the live `booking` prop.
+
+**Why:** Adding ~10s live-update polling (§11, this slice) surfaced a real data-loss bug:
+the drawer previously read `booking?.updatedAt` straight off its prop at save-time. Once
+the grid started polling and refreshing `bookings` every ~10s, an *open* drawer's "expected"
+value would silently drift forward to whatever the server currently held — so if another
+user edited the same booking while the drawer sat open, the next background poll would
+quietly update `expectedUpdatedAt` to match their edit, and the original user's save would
+sail through the optimistic-lock check and clobber it outright. Verified live: without the
+fix, editing a booking already changed by another user through an open drawer succeeded
+silently, overwriting their status change; with the fix, the same sequence is correctly
+rejected with "This booking was changed by [name] — refresh to see the latest," and the
+DB is untouched. This is exactly the SPEC §11 guarantee ("never silently overwrite a
+concurrent edit") — polling had quietly reopened a hole in it.
+
+**Not chosen:** Pausing polling entirely while any drawer is open — would work but is a
+blunter tool (starves every *other* open tab/user of live updates for as long as one person
+leaves a drawer open) for a problem that's really about one specific field's provenance,
+not about polling being active at all.
+
+### 16. Focus-visible outlines added via `outline`, not Tailwind `ring`
+
+**Decided:** Every hand-rolled interactive element (grid cell chips, toolbar pills,
+Undo/Redo, Publish buttons, admin action buttons, nav links) got an explicit
+`focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2
+focus-visible:outline-[color]` class. Elements already built from the shadcn `Button`/
+`Input` primitives didn't need it — those already ship a proper `focus-visible:ring`.
+
+**Why:** SPEC.md §12 requires visible keyboard focus; auditing found the grid's `CellChip`
+(the single most important interactive surface in the app) had **no visible focus
+indicator at all** — confirmed empirically (`outlineStyle: none`, `boxShadow: none` on
+focus) before the fix, then confirmed fixed via real keyboard Tab navigation afterward
+(`outlineStyle: solid`, `2px`, matches `:focus-visible`). The `outline` CSS property was
+used deliberately instead of Tailwind's `ring` utility (which is `box-shadow`-based)
+because several of these components already use inline `style={{ boxShadow: ... }}` for
+selection/hover states (e.g. the checked/preview treatment on `CellChip`) — inline styles
+always win over classes for the same CSS property, so a `ring` utility would have been
+silently overridden by the existing selection indicator. `outline` is a separate property
+and composes cleanly with both.
+
+**Not chosen:** Verifying via a programmatic `element.focus()` call in the browser tool —
+this produced a false negative (Chromium's `:focus-visible` heuristic doesn't grant it for
+script-triggered focus following a prior mouse interaction), which cost time chasing a
+"broken" fix that was actually fine. Real keyboard `Tab` presses are the only reliable way
+to test this.
+
 <!--
 Template for new entries:
 

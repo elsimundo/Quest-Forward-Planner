@@ -20,6 +20,7 @@ import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import type { GridBooking } from "@/lib/db/queries";
 import type { Status } from "@/lib/db/schema";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
+import { unpublishBooking } from "@/lib/actions/publish";
 import { searchSites } from "@/lib/actions/sites";
 
 export type DrawerTarget = { unitId: string; date: string; unitDescription: string | null };
@@ -29,6 +30,7 @@ export function BookingDrawer({
   booking,
   unitSpecs,
   siteCapabilityRequirements,
+  canUnlock,
   onClose,
   onMutated,
 }: {
@@ -36,6 +38,7 @@ export function BookingDrawer({
   booking: GridBooking | null;
   unitSpecs: Record<string, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
+  canUnlock: boolean;
   onClose: () => void;
   onMutated: (batchId: string) => void;
 }) {
@@ -51,6 +54,7 @@ export function BookingDrawer({
             booking={booking}
             unitSpecs={unitSpecs}
             siteCapabilityRequirements={siteCapabilityRequirements}
+            canUnlock={canUnlock}
             onClose={onClose}
             onMutated={onMutated}
           />
@@ -65,6 +69,7 @@ function BookingDrawerBody({
   booking,
   unitSpecs,
   siteCapabilityRequirements,
+  canUnlock,
   onClose,
   onMutated,
 }: {
@@ -72,6 +77,7 @@ function BookingDrawerBody({
   booking: GridBooking | null;
   unitSpecs: Record<string, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
+  canUnlock: boolean;
   onClose: () => void;
   onMutated: (batchId: string) => void;
 }) {
@@ -85,7 +91,17 @@ function BookingDrawerBody({
   );
   const [notes, setNotes] = useState(booking?.notes ?? "");
   const [saving, setSaving] = useState(false);
+  const [confirmingUnlock, setConfirmingUnlock] = useState(false);
   const router = useRouter();
+
+  // Frozen at mount, NOT read live from the `booking` prop on save/clear. The grid polls
+  // for live updates (SPEC.md §11) and refreshes `bookings` every ~10s, which would
+  // otherwise silently slide this drawer's optimistic-lock reference forward to whatever
+  // the server currently holds — defeating the entire point of the check (proving "I
+  // started editing from state X") and letting a save silently clobber a concurrent edit
+  // instead of being rejected. This is the one field that must reflect only what the user
+  // actually saw when they opened the drawer.
+  const [initialUpdatedAt] = useState(() => booking?.updatedAt ?? null);
 
   useEffect(() => {
     if (siteQuery.trim().length < 2 || selectedSite?.name === siteQuery) return;
@@ -118,7 +134,7 @@ function BookingDrawerBody({
       site,
       status,
       notes,
-      expectedUpdatedAt: booking?.updatedAt ? booking.updatedAt.toISOString() : null,
+      expectedUpdatedAt: initialUpdatedAt ? initialUpdatedAt.toISOString() : null,
     });
     setSaving(false);
     if (!result.ok) {
@@ -133,16 +149,37 @@ function BookingDrawerBody({
   }
 
   async function handleClear() {
-    if (!booking) return;
+    if (!booking || !initialUpdatedAt) return;
     setSaving(true);
     const result = await clearBooking({
       unitId: target.unitId,
       date: target.date,
-      expectedUpdatedAt: booking.updatedAt.toISOString(),
+      expectedUpdatedAt: initialUpdatedAt.toISOString(),
     });
     setSaving(false);
     if (!result.ok) {
       toast.error(result.error);
+      return;
+    }
+    toast.success(result.message);
+    onMutated(result.batchId);
+    router.refresh();
+    onClose();
+  }
+
+  async function handleUnlock() {
+    // Two-step confirm (SPEC.md §2b: unlocking is destructive and must be confirmed) —
+    // the first click arms it, the second actually unlocks.
+    if (!confirmingUnlock) {
+      setConfirmingUnlock(true);
+      return;
+    }
+    setSaving(true);
+    const result = await unpublishBooking({ unitId: target.unitId, date: target.date });
+    setSaving(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      setConfirmingUnlock(false);
       return;
     }
     toast.success(result.message);
@@ -204,7 +241,7 @@ function BookingDrawerBody({
                       setSiteQuery(m.name);
                       setMatches([]);
                     }}
-                    className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc]"
+                    className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
                   >
                     {m.name}
                   </button>
@@ -230,7 +267,7 @@ function BookingDrawerBody({
                     key={key}
                     type="button"
                     onClick={() => setStatus(key)}
-                    className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors"
+                    className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2b7bb9]"
                     style={{
                       borderColor: on ? st.bar : "#e6e6e6",
                       background: on ? st.bg : "#fff",
@@ -257,17 +294,31 @@ function BookingDrawerBody({
         </>
       )}
 
-      <SheetFooter className="flex-row border-t p-4">
+      <SheetFooter className="flex-col items-stretch border-t p-4">
         {locked ? (
-          <Button
-            variant="destructive"
-            className="flex-1"
-            onClick={() => toast.info("Unlock lands with the publish workflow.")}
-          >
-            Unlock to edit
-          </Button>
+          canUnlock ? (
+            <>
+              {confirmingUnlock && (
+                <p className="mb-2 text-center text-xs text-[#9a4d1e]">
+                  This unlocks the booking for editing here. It won&apos;t un-forward it from TMS.
+                </p>
+              )}
+              <Button
+                variant="destructive"
+                className="w-full"
+                disabled={saving}
+                onClick={handleUnlock}
+              >
+                {confirmingUnlock ? "Confirm unlock" : "Unlock to edit"}
+              </Button>
+            </>
+          ) : (
+            <p className="text-center text-[13px] text-[#757575]">
+              Only an admin can unlock a published booking.
+            </p>
+          )
         ) : (
-          <>
+          <div className="flex flex-row gap-2">
             <Button className="flex-1" disabled={!siteQuery.trim() || saving} onClick={handleSave}>
               Save booking
             </Button>
@@ -276,7 +327,7 @@ function BookingDrawerBody({
                 Clear
               </Button>
             )}
-          </>
+          </div>
         )}
       </SheetFooter>
     </>

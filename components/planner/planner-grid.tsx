@@ -11,13 +11,22 @@ import type { Status } from "@/lib/db/schema";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { moveBookings, type MoveMode, type MoveSpec } from "@/lib/actions/booking-moves";
 import { undoBatch } from "@/lib/actions/undo";
+import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
+import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip } from "./cell-chip";
 import { PlannerToolbar } from "./toolbar";
 import { StatusLegend } from "./status-legend";
 import { SelectionBar } from "./selection-bar";
 import { ClashDialog, type Clash } from "./clash-dialog";
+import { PublishRangeDialog } from "./publish-range-dialog";
 import { BookingDrawer, type DrawerTarget } from "./booking-drawer";
+
+// Publishing (forward to TMS) is scheduler+; unlocking a published booking is admin-only
+// (SPEC.md §2b). These mirror the server-side gates in lib/actions/publish.ts — the UI
+// checks are a convenience, never the boundary.
+const PUBLISH_ROLES: Role[] = ["scheduler", "admin", "super_admin"];
+const UNLOCK_ROLES: Role[] = ["admin", "super_admin"];
 
 const DATE_COL_WIDTH = 190;
 const UNIT_COL_WIDTH = 132;
@@ -48,6 +57,7 @@ export function PlannerGrid({
   bookings,
   unitSpecs,
   siteCapabilityRequirements,
+  role,
 }: {
   modalities: { id: number; name: string }[];
   activeModalityId: number;
@@ -56,8 +66,11 @@ export function PlannerGrid({
   bookings: GridBooking[];
   unitSpecs: Record<string, Record<string, string>>;
   siteCapabilityRequirements: Record<number, CapabilityRequirement[]>;
+  role: Role;
 }) {
   const router = useRouter();
+  const canPublish = PUBLISH_ROLES.includes(role);
+  const canUnlock = UNLOCK_ROLES.includes(role);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<Status | null>(null);
   const [showLegend, setShowLegend] = useState(false);
@@ -71,6 +84,7 @@ export function PlannerGrid({
   const [anchor, setAnchor] = useState<{ date: string; unitId: string } | null>(null);
   const [drag, setDrag] = useState<DragPreview | null>(null);
   const [conflict, setConflict] = useState<{ moves: MoveSpec[]; clashes: Clash[] } | null>(null);
+  const [publishRange, setPublishRange] = useState<{ from: string; to: string } | null>(null);
   const [pending, setPending] = useState(false);
   const dragRef = useRef<{ origin: { date: string; unitId: string }; keys: string[] } | null>(null);
   const [undoStack, setUndoStack] = useState<string[]>([]);
@@ -318,6 +332,69 @@ export function PlannerGrid({
     setConflict(null);
   }
 
+  // ── publish / lock ──
+  // Live, unpublished bookings within [from, to] — the eligible targets for a range sweep.
+  const eligibleInRange = useCallback(
+    (from: string, to: string): PublishTarget[] => {
+      const out: PublishTarget[] = [];
+      for (const b of bookings) {
+        if (b.date >= from && b.date <= to && !b.publishedAt) {
+          out.push({ unitId: b.unitId, date: b.date });
+        }
+      }
+      return out;
+    },
+    [bookings],
+  );
+
+  const countEligibleInRange = useCallback(
+    (from: string, to: string) => eligibleInRange(from, to).length,
+    [eligibleInRange],
+  );
+
+  // How many of the current selection are actually publishable (booked & not yet locked).
+  const publishableSelected = useMemo(() => {
+    let n = 0;
+    for (const k of checked) {
+      const b = bookingLookup.get(k);
+      if (b && !b.publishedAt) n++;
+    }
+    return n;
+  }, [checked, bookingLookup]);
+
+  async function applyPublish(targets: PublishTarget[]) {
+    if (!targets.length) return;
+    setPending(true);
+    const result = await publishBookings(targets);
+    setPending(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    if (result.count === 0 || !result.batchId) {
+      toast.info(result.message);
+      return;
+    }
+    toast.success(result.message);
+    pushUndo(result.batchId);
+    router.refresh();
+  }
+
+  async function publishSelected() {
+    const targets: PublishTarget[] = [];
+    for (const k of checked) {
+      const b = bookingLookup.get(k);
+      if (b && !b.publishedAt) targets.push({ unitId: b.unitId, date: b.date });
+    }
+    await applyPublish(targets);
+    clearSelection();
+  }
+
+  async function confirmPublishRange(from: string, to: string) {
+    setPublishRange(null);
+    await applyPublish(eligibleInRange(from, to));
+  }
+
   // ── undo / redo — both call the same server action; redo is just "undo the undo" ──
   async function handleUndo() {
     if (!undoStack.length) {
@@ -367,6 +444,7 @@ export function PlannerGrid({
         setDrawerTarget(null);
         endDrag();
         setConflict(null);
+        setPublishRange(null);
         return;
       }
       if (typing || pending) return;
@@ -383,6 +461,22 @@ export function PlannerGrid({
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearSelection, endDrag, undoStack, redoStack, pending]);
+
+  // ── live updates (SPEC.md §1/§11: ~10s polling) ──
+  // Skipped while a mutation is in flight or a drag is live, so a background refresh can't
+  // race the in-progress write or yank the drag preview's data out from under it. Reads
+  // `pending`/`drag` from refs (kept in sync below) rather than effect deps, so the
+  // interval itself is set up once instead of restarting on every state change.
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  const dragActiveRef = useRef(false);
+  dragActiveRef.current = !!drag;
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!pendingRef.current && !dragActiveRef.current) router.refresh();
+    }, 10_000);
+    return () => clearInterval(id);
+  }, [router]);
 
   return (
     <div className="flex h-full flex-col">
@@ -406,8 +500,18 @@ export function PlannerGrid({
         canRedo={redoStack.length > 0 && !pending}
         onUndo={() => void handleUndo()}
         onRedo={() => void handleRedo()}
+        canPublish={canPublish}
+        onPublishUpcoming={() =>
+          setPublishRange({ from: days[0]?.date ?? "", to: days[days.length - 1]?.date ?? "" })
+        }
       />
-      <SelectionBar count={checked.size} onClear={clearSelection} />
+      <SelectionBar
+        count={checked.size}
+        publishableCount={publishableSelected}
+        canPublish={canPublish}
+        onPublish={() => void publishSelected()}
+        onClear={clearSelection}
+      />
       {showLegend && <StatusLegend />}
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto bg-white">
@@ -518,11 +622,22 @@ export function PlannerGrid({
         booking={drawerBooking}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
+        canUnlock={canUnlock}
         onClose={() => setDrawerTarget(null)}
         onMutated={pushUndo}
       />
 
       <ClashDialog clashes={conflict?.clashes ?? null} onResolve={(c) => void resolveConflict(c)} />
+
+      <PublishRangeDialog
+        open={!!publishRange}
+        days={days}
+        defaultFrom={publishRange?.from ?? days[0]?.date ?? ""}
+        defaultTo={publishRange?.to ?? days[days.length - 1]?.date ?? ""}
+        countEligible={countEligibleInRange}
+        onConfirm={(from, to) => void confirmPublishRange(from, to)}
+        onClose={() => setPublishRange(null)}
+      />
     </div>
   );
 }

@@ -11,7 +11,7 @@ const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
 
 export type UndoResult =
   | { ok: true; message: string; newBatchId: string }
-  | { ok: false; error: string; code: "PERMISSION" | "NOT_FOUND" | "LOCKED" };
+  | { ok: false; error: string; code: "PERMISSION" | "NOT_FOUND" | "LOCKED" | "CONFLICT" };
 
 // Undoing (or redoing — redo is just "undo the undo batch") is derived from
 // booking_events, not a client-side snapshot, so it survives reloads and works the same
@@ -24,6 +24,10 @@ function inverseAction(action: BookingAction): BookingAction {
       return "create";
     case "overwrite":
       return "update";
+    case "publish":
+      return "unpublish";
+    case "unpublish":
+      return "publish";
     default:
       return action; // update/move/swap invert to the same kind of event
   }
@@ -36,6 +40,7 @@ type Snapshot = {
   siteId: number;
   status: Status;
   notes: string | null;
+  updatedAt: string;
   publishedAt: string | null;
   publishedBy: number | null;
   deletedAt: string | null;
@@ -67,8 +72,39 @@ export async function undoBatch(batchId: string): Promise<UndoResult> {
       ),
     ];
     const currentRows = await tx.select().from(bookings).where(sql`${bookings.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
-    if (currentRows.some((r) => r.publishedAt)) {
+    // Undo can't rewrite history that sits under a lock — but undoing the publish *itself*
+    // must be allowed (its inverse is exactly the unlock the user is asking for). So a
+    // currently-published row only blocks the undo when this batch isn't the one that
+    // published it; if the batch has a `publish` event for that row, undoing it will clear
+    // the lock, which is fine.
+    const publishedByThisBatch = new Set(
+      events
+        .filter((e) => e.action === "publish")
+        .map((e) => (e.bookingAfter as Snapshot | null)?.id)
+        .filter((x): x is number => typeof x === "number"),
+    );
+    if (currentRows.some((r) => r.publishedAt && !publishedByThisBatch.has(r.id))) {
       return { ok: false, error: "Can't undo — one of these bookings is now published and locked.", code: "LOCKED" };
+    }
+
+    // SPEC.md §11: "if the booking being undone has changed since the undo step was
+    // recorded, the undo fails safely" rather than clobbering someone else's newer edit.
+    // Only events with a recorded "after" state can be checked this way — a `delete`
+    // event's bookingAfter is null, but nothing else can touch that specific soft-deleted
+    // row id (a new booking on the same unit/date gets a fresh row via INSERT), so there's
+    // nothing to reconcile there.
+    const currentById = new Map(currentRows.map((r) => [r.id, r]));
+    for (const e of events) {
+      const after = e.bookingAfter as Snapshot | null;
+      if (!after) continue;
+      const current = currentById.get(after.id);
+      if (current && current.updatedAt.toISOString() !== after.updatedAt) {
+        return {
+          ok: false,
+          error: "Can't undo — this booking was changed since then. Refresh to see the latest.",
+          code: "CONFLICT",
+        };
+      }
     }
 
     // Phase 1: soft-delete every touched row, which removes them all from the partial

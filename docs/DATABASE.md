@@ -124,6 +124,8 @@ App-local, even once TMS provides credentials (SPEC §1, `DECISIONS.md` #4).
 | `password_hash` | text | Not in SPEC §2's table — added because the Credentials provider needs something to verify against today. Becomes unused (but not dropped — old sessions/history may still reference the row) once/if the verify-credentials function is repointed at TMS. |
 | `role` | text | `viewer` \| `scheduler` \| `admin` \| `super_admin` — SPEC §7 |
 | `tms_synced_at` | timestamptz, null | Set only if TMS becomes the identity source |
+| `deleted_at` | timestamptz, null | "Deactivate staff" (SPEC §7) — soft delete, same pattern as everywhere else (§2c). A deactivated user can't sign in (`verifyCredentials` filters `deleted_at IS NULL`) and every mutation endpoint's `requireRole` re-check does the same, so a still-live session can't outlast deactivation. |
+| `deleted_by` | FK → `users`, null | |
 
 ### `bookings`
 The core operational table.
@@ -175,6 +177,18 @@ Append-only audit log. **Never soft-deleted or hard-deleted.**
 Undo is implemented as: find the events for a `batch_id`, apply `booking_before` back
 over the current row, write a new event recording the undo itself (so undo actions are
 themselves auditable).
+
+### `user_role_events`
+Append-only audit log for role changes — SPEC §7's "who made X an admin" requirement.
+Separate from `booking_events`, which is specifically about bookings.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | serial, PK | |
+| `actor_id` | FK → `users` | Who made the change (`super_admin` only — enforced server-side) |
+| `target_user_id` | FK → `users` | Whose role changed |
+| `old_role` / `new_role` | text | Same enum as `users.role` |
+| `at` | timestamptz | |
 
 ## Migration & seeding
 

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
@@ -21,7 +21,7 @@ export async function verifyCredentials(
   const [user] = await db
     .select()
     .from(users)
-    .where(eq(users.email, email.toLowerCase().trim()))
+    .where(and(eq(users.email, email.toLowerCase().trim()), isNull(users.deletedAt)))
     .limit(1);
 
   if (!user) return null;

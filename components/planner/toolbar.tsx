@@ -17,7 +17,7 @@ function Pill({
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] transition-colors"
+      className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         borderColor: active ? "#2b7bb9" : "#e6e6e6",
         background: active ? "#2b7bb9" : "#fff",
@@ -52,6 +52,8 @@ export function PlannerToolbar({
   canRedo,
   onUndo,
   onRedo,
+  canPublish,
+  onPublishUpcoming,
 }: {
   modalities: { id: number; name: string }[];
   activeModalityId: number;
@@ -69,6 +71,8 @@ export function PlannerToolbar({
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  canPublish: boolean;
+  onPublishUpcoming: () => void;
 }) {
   return (
     <div className="flex flex-shrink-0 flex-wrap items-center gap-2.5 border-b bg-white px-6 py-3">
@@ -106,7 +110,7 @@ export function PlannerToolbar({
           onClick={onUndo}
           disabled={!canUndo}
           title="Undo (Ctrl/Cmd + Z)"
-          className="inline-flex items-center gap-1.5 rounded-l-full border px-3.5 py-1.5 text-[13px] transition-colors"
+          className="inline-flex items-center gap-1.5 rounded-l-full border px-3.5 py-1.5 text-[13px] transition-colors focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
           style={{
             borderColor: "#e6e6e6",
             background: "#fff",
@@ -120,7 +124,7 @@ export function PlannerToolbar({
           onClick={onRedo}
           disabled={!canRedo}
           title="Redo (Ctrl/Cmd + Shift + Z, or Ctrl + Y)"
-          className="-ml-px inline-flex items-center gap-1.5 rounded-r-full border px-3.5 py-1.5 text-[13px] transition-colors"
+          className="-ml-px inline-flex items-center gap-1.5 rounded-r-full border px-3.5 py-1.5 text-[13px] transition-colors focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
           style={{
             borderColor: "#e6e6e6",
             background: "#fff",
@@ -135,6 +139,14 @@ export function PlannerToolbar({
       <Pill active={selectMode} onClick={onToggleSelectMode}>
         {selectMode ? "Selecting…" : "Select"}
       </Pill>
+      {canPublish && (
+        <button
+          onClick={onPublishUpcoming}
+          className="inline-flex items-center gap-1.5 rounded-full border border-[#1a3d69] bg-[#1a3d69] px-3.5 py-1.5 text-[13px] text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
+        >
+          🔒 Publish upcoming…
+        </button>
+      )}
       <Button variant="outline" size="sm" onClick={onJumpToday}>
         Today
       </Button>

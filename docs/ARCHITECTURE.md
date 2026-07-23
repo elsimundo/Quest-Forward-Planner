@@ -47,8 +47,11 @@ how the pieces connect.
    `revalidatePath` alone does not cause an already-mounted client page to re-fetch; only
    `router.refresh()` does that. Every future mutation (drag-and-drop, publish/unpublish)
    needs this same pair, not just the first one.
-5. Other open sessions pick up the change on their next poll cycle (~10s — see
-   `DECISIONS.md` #5).
+5. Other open sessions pick up the change on their next poll cycle: `PlannerGrid` calls
+   `router.refresh()` every ~10s (SPEC.md §11), paused while a mutation is in flight or a
+   drag is live. The booking drawer freezes its own `expectedUpdatedAt` at mount rather
+   than reading the (now periodically refreshed) `booking` prop live — see `DECISIONS.md`
+   #15 for the concurrency bug this closes.
 
 ## Core data flow: moving/swapping bookings
 
@@ -71,6 +74,14 @@ See `SPEC.md` §2b for the full behaviour. Architecturally: `published_at` is a 
 `bookings`, not a separate table or state machine library — the lifecycle is exactly two
 states (draft / published) plus one transition each way, which doesn't warrant more
 machinery than a nullable timestamp and a role check on the transition.
+
+Both transitions go through `lib/actions/publish.ts` — `publishBookings` (scheduler+, one
+`publish` event per booking under a shared `batch_id`, from either a multi-select or a
+date-range sweep) and `unpublishBooking` (admin+, a single `unpublish` event). Both are on
+the same undo stack as edits/moves — see `DECISIONS.md` #13 for why that's compatible with
+§2b's admin-only unlock. Role is gated in the UI for convenience (`PlannerGrid` receives the
+session role) and re-checked server-side on every call, per the "permissions are the
+boundary" rule.
 
 ## Soft deletes
 
