@@ -754,6 +754,38 @@ triggering sync/import now that a run spans every company — rejected as a boun
 violation, not merely a UX nicety: it would let a company-scoped admin cause TMS reads and
 see aggregate counts for companies they have no access to elsewhere in the app.
 
+### 24. Publish is gated to `confirmed` (and its calendar-derived forms), not any status
+
+**Decided:** `publishBookings` (`lib/actions/publish.ts`) now refuses to forward a booking
+to the live schedule unless its status key is `confirmed`, `weekend`, or `bankholiday` —
+anything still "in discussion" (`bidding`, `tbc`, `likely`, `service`, `cancelled`) is
+silently skipped, same treatment as an already-published or TMS-conflicted target, with a
+distinct summary message ("N booking(s) still need to be Confirmed first"). The three
+publishable keys live in one place, `PUBLISHABLE_STATUS_KEYS` (`lib/statuses.ts`), imported
+by both the server gate and the client's own eligibility counts (`planner-grid.tsx`'s
+`publishableSelected`/`eligibleInRange`) so the "Publish N" button/sweep count never
+promises more than the server will actually publish.
+
+**Why:** Client-confirmed via a team member's meeting notes (2026-07-27, David Emerson):
+"anything that is confirmed will only be able to be published in the live schedule.
+Anything that is currently in discussion, red days etc will not be included." Before this,
+`publishBookings` had no status check at all — a "Bidding for contract" or "Site to be
+confirmed" booking could be forwarded to TMS exactly like a genuinely confirmed one.
+`weekend`/`bankholiday` are included deliberately (client-confirmed, not assumed): they're
+a `confirmed` booking's calendar-derived label for that specific day (SPEC.md §3), not a
+separate in-discussion state — excluding them would have blocked routine weekend/holiday
+work that's otherwise fully confirmed.
+
+**Not chosen:** (a) A new boolean column on `booking_statuses` (e.g. `publishable`) instead
+of a hardcoded key list — rejected as unnecessary weight: `key` is already immutable once a
+status is created (`docs/DATABASE.md`), so keying off the three structurally-significant
+keys the app already special-cases elsewhere (`DEFAULT_STATUS_KEY`, the calendar-derived
+pair) is exactly as stable and needs no schema change or admin UI. (b) Filtering the client
+selection down to only-publishable before calling `publishBookings`, instead of sending the
+full selection and letting the server report what it skipped — rejected for consistency:
+the TMS-conflict skip already works this way, and a scheduler benefits from seeing "N still
+need to be Confirmed" rather than those rows silently vanishing from what they selected.
+
 <!--
 Template for new entries:
 
