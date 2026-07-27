@@ -1,10 +1,12 @@
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { STATUS_CONFIG } from "@/lib/statuses";
+import { useStatusCatalog } from "./status-context";
 import { fmtDate } from "@/lib/dates";
-import type { Status } from "@/lib/db/schema";
 
-export type Clash = { unitId: string; date: string; siteName: string; status: Status };
+// unitLabel is a display string (the unit's registration, e.g. "CT17") — this type is
+// purely informational for the dialog, never sent back to the server (the actual move
+// uses MoveSpec, built separately with numeric unit ids).
+export type Clash = { unitLabel: string; date: string; siteName: string; status: string };
 
 export function ClashDialog({
   clashes,
@@ -13,6 +15,7 @@ export function ClashDialog({
   clashes: Clash[] | null;
   onResolve: (choice: "swap" | "overwrite" | "cancel") => void;
 }) {
+  const catalog = useStatusCatalog();
   const open = !!clashes && clashes.length > 0;
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onResolve("cancel")}>
@@ -34,14 +37,14 @@ export function ClashDialog({
 
         <div className="max-h-[180px] overflow-y-auto px-6 py-3">
           {clashes?.slice(0, 5).map((cl) => {
-            const st = STATUS_CONFIG[cl.status];
+            const st = catalog.get(cl.status);
             return (
               <div
-                key={`${cl.date}|${cl.unitId}`}
+                key={`${cl.date}|${cl.unitLabel}`}
                 className="flex items-center gap-2.5 border-b border-[#f7f9fc] py-1.5"
               >
                 <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: st.bar }} />
-                <span className="min-w-[52px] text-[13px] font-bold text-[#333333]">{cl.unitId}</span>
+                <span className="min-w-[52px] text-[13px] font-bold text-[#333333]">{cl.unitLabel}</span>
                 <span className="min-w-[58px] text-[13px] text-[#757575]">{fmtDate(cl.date)}</span>
                 <span className="flex-1 truncate text-[13px] text-[#333333]">{cl.siteName}</span>
               </div>

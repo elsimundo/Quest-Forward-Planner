@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   pgTable,
+  pgSequence,
   serial,
   text,
   timestamp,
@@ -25,6 +26,13 @@ export const users = pgTable("users", {
   // still used for the (now rare) locally-authenticated fallback path, if any.
   passwordHash: text("password_hash"),
   role: text("role", { enum: ROLES }).notNull().default("viewer"),
+  // TMS users.company_id for THIS PERSON — refreshed on every login, distinct from
+  // companies.tmsCompanyId (which tracks which TMS company a *local company row*
+  // represents). Drives hard company scoping (docs/TMS_INTEGRATION_PLAN.md §2,
+  // docs/DECISIONS.md #22): a non-super_admin is locked server-side to whichever local
+  // company has this same tmsCompanyId — never a client-supplied value. Null for a Quest-
+  // internal TMS account (e.g. `superuser`) with no specific company affiliation.
+  tmsCompanyId: integer("tms_company_id"),
   tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
   // "Deactivate staff" (SPEC.md §7) follows the same soft-delete pattern as every other
   // destructive-looking action in the app (§2c) — never a hard DELETE. A deactivated
@@ -44,23 +52,65 @@ export const modalities = pgTable("modalities", {
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
-export const units = pgTable("units", {
-  id: text("id").primaryKey(),
-  modalityId: integer("modality_id")
-    .notNull()
-    .references(() => modalities.id),
-  displayOrder: integer("display_order").notNull().default(0),
-  description: text("description"),
-  active: boolean("active").notNull().default(true),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+export const companies = pgTable("companies", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  // TMS companies.id — InHealth is 3 (docs/TMS_INTEGRATION_PLAN.md §2). Null until the
+  // first sync run links this row; the app only ever handles one company today.
+  tmsCompanyId: integer("tms_company_id").unique(),
   tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
 });
+
+// `id` is a surrogate key, NOT the registration — TMS registrations ("CT17") are only
+// unique *within* a company, not globally (docs/TMS_INTEGRATION_PLAN.md §4.1: TMS has
+// "CT4" under both InHealth and Canon). Display identity lives in `registration`.
+export const units = pgTable(
+  "units",
+  {
+    id: serial("id").primaryKey(),
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id),
+    registration: text("registration").notNull(),
+    // TMS units.id — the sync's upsert key. Null for a unit that only exists locally
+    // (shouldn't happen once sync is the source of truth, but nothing in the app assumes
+    // it's set). Never written by anything except the sync (lib/db/tms/sync.ts).
+    tmsUnitId: integer("tms_unit_id").unique(),
+    displayOrder: integer("display_order").notNull().default(0),
+    description: text("description"),
+    active: boolean("active").notNull().default(true),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("units_company_registration_live_unique")
+      .on(table.companyId, table.registration)
+      .where(sql`${table.deletedAt} is null`),
+  ],
+);
+
+// Many-to-many, matching TMS's own unit_modalities (docs/TMS_INTEGRATION_PLAN.md §4.2) — a
+// unit can carry more than one modality (e.g. a unit that scans both CT and MRI) and then
+// appears as a row on both sheets. Replaces the old single units.modality_id column.
+export const unitModalities = pgTable(
+  "unit_modalities",
+  {
+    id: serial("id").primaryKey(),
+    unitId: integer("unit_id")
+      .notNull()
+      .references(() => units.id),
+    modalityId: integer("modality_id")
+      .notNull()
+      .references(() => modalities.id),
+  },
+  (table) => [uniqueIndex("unit_modalities_unit_modality_unique").on(table.unitId, table.modalityId)],
+);
 
 export const unitSpecs = pgTable(
   "unit_specs",
   {
     id: serial("id").primaryKey(),
-    unitId: text("unit_id")
+    unitId: integer("unit_id")
       .notNull()
       .references(() => units.id),
     key: text("key").notNull(),
@@ -69,22 +119,72 @@ export const unitSpecs = pgTable(
   (table) => [uniqueIndex("unit_specs_unit_key_unique").on(table.unitId, table.key)],
 );
 
-export const companies = pgTable("companies", {
+// name unique *within* a company, not globally (same reasoning as `units.registration`
+// above, docs/TMS_INTEGRATION_PLAN.md §11) — two different companies can genuinely have a
+// same-named location (confirmed live in TMS: "LCS Tesco Harrow" exists under both InHealth
+// and Quest Power), so a global unique constraint would crash multi-company sync outright.
+export const sites = pgTable(
+  "sites",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),
+    // Free text, not an enum — the LHC/CDC/yard taxonomy itself is unconfirmed
+    // with the client (SPEC.md §13 Q7). Don't encode a guessed taxonomy here.
+    kind: text("kind"),
+    // NOT NULL — every site belongs to a company. Hard company scoping is a security
+    // boundary, not a convenience (docs/TMS_INTEGRATION_PLAN.md §2, §11).
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id),
+    // TMS locations.id — the sync's upsert key. Null for a site created locally via the
+    // booking drawer's free-text flow (pendingReview) — those are never touched by sync.
+    tmsLocationId: integer("tms_location_id").unique(),
+    town: text("town"),
+    postcode: text("postcode"),
+    nominalCode: text("nominal_code"),
+    tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
+    pendingReview: boolean("pending_review").notNull().default(false),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("sites_company_name_live_unique")
+      .on(table.companyId, table.name)
+      .where(sql`${table.deletedAt} is null`),
+  ],
+);
+
+// One row per read-only reference sync run (lib/db/tms/sync.ts) — the audit trail for
+// "what did the last sync actually change," per docs/TMS_INTEGRATION_PLAN.md §6A ("show
+// the diff... so a surprise mass-change is visible"). Never soft-deleted or edited.
+export const TMS_SYNC_STATUSES = ["running", "success", "error"] as const;
+export type TmsSyncStatus = (typeof TMS_SYNC_STATUSES)[number];
+
+export const tmsSyncRuns = pgTable("tms_sync_runs", {
   id: serial("id").primaryKey(),
-  name: text("name").notNull().unique(),
-  tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  status: text("status", { enum: TMS_SYNC_STATUSES }).notNull().default("running"),
+  error: text("error"),
+  // { companies: {added,updated,removed}, units: {...}, sites: {...}, unitModalities: {added} }
+  summary: jsonb("summary"),
+  // Null for an automated (cron/webhook) run — see app/api/tms-sync/route.ts.
+  triggeredBy: integer("triggered_by").references(() => users.id),
 });
 
-export const sites = pgTable("sites", {
+// One row per TMS booking import run (lib/db/tms/booking-import.ts, docs/DECISIONS.md #21)
+// — a separate log from tms_sync_runs because this is a materially higher-stakes operation
+// (it touches live, possibly scheduler-edited booking data, not just reference data) and
+// its summary shape is different (created/refreshed/conflicts/skipped, not added/updated/
+// removed per entity). Kept as its own independently-triggerable step for the same reason.
+export const tmsBookingImportRuns = pgTable("tms_booking_import_runs", {
   id: serial("id").primaryKey(),
-  name: text("name").notNull().unique(),
-  // Free text, not an enum — the LHC/CDC/yard taxonomy itself is unconfirmed
-  // with the client (SPEC.md §13 Q7). Don't encode a guessed taxonomy here.
-  kind: text("kind"),
-  companyId: integer("company_id").references(() => companies.id),
-  tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
-  pendingReview: boolean("pending_review").notNull().default(false),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  status: text("status", { enum: TMS_SYNC_STATUSES }).notNull().default("running"),
+  error: text("error"),
+  // { created, refreshed, unchanged, conflicts: [{unitRegistration,date,siteName}], skipped: [{reason,count}] }
+  summary: jsonb("summary"),
+  triggeredBy: integer("triggered_by").references(() => users.id),
 });
 
 export const siteCapabilityRequirements = pgTable(
@@ -102,6 +202,14 @@ export const siteCapabilityRequirements = pgTable(
 
 // ── Planner data — owned by this app. See SPEC.md §2, §2c (soft deletes), §3 (statuses).
 
+// The eight *seed* statuses. As of the TMS integration work (docs/TMS_INTEGRATION_PLAN.md
+// §3, docs/DECISIONS.md #18) the catalogue of statuses is admin-managed DATA in
+// `bookingStatuses`, not a fixed enum — TMS's own booking_status table is obsolete and the
+// client wants their own set. These keys survive as the ones the app reasons about
+// structurally: the two calendar-derived ones (weekend/bankholiday) that a user can never
+// pick, and the default a fresh booking takes. Admins may add, retire, recolour, and
+// relabel statuses beyond these; hence `Status` is the seed union, but a booking's status
+// is a free `text` key into the catalogue, not constrained to this list.
 export const STATUSES = [
   "confirmed",
   "weekend",
@@ -114,18 +222,74 @@ export const STATUSES = [
 ] as const;
 export type Status = (typeof STATUSES)[number];
 
+// Admin-managed status catalogue. Keyed by a stable `key` slug that bookings reference and
+// that the calendar-derived logic keys off — labels/colours/order are all editable without
+// touching code. Seeded from lib/statuses.ts so nothing changes visually at launch.
+export const bookingStatuses = pgTable("booking_statuses", {
+  id: serial("id").primaryKey(),
+  // Stable identity a booking points at and code can special-case (weekend/bankholiday).
+  // Immutable once created — admins relabel via `label`, not by changing the key.
+  key: text("key").notNull().unique(),
+  label: text("label").notNull(),
+  // The four-part render palette, matching reference/quest-ct-forward-planner.jsx and
+  // lib/statuses.ts's STATUS_CONFIG. Stored so the client-approved colours are editable.
+  colorBg: text("color_bg").notNull(),
+  colorBar: text("color_bar").notNull(),
+  colorText: text("color_text").notNull(),
+  colorBorder: text("color_border").notNull(),
+  displayOrder: integer("display_order").notNull().default(0),
+  // User-selectable in the booking drawer. false for calendar-derived statuses, which the
+  // app assigns from the date, never the scheduler (SPEC.md §3, §5).
+  editable: boolean("editable").notNull().default(true),
+  // weekend / bankholiday: assigned by the app from the calendar, not pickable.
+  calendarDerived: boolean("calendar_derived").notNull().default(false),
+  // Mirrors TMS's booking_statuses.billable — informational for now, drives future export.
+  billable: boolean("billable").notNull().default(false),
+  active: boolean("active").notNull().default(true),
+  // Soft delete, per CLAUDE.md — a retired status keeps rendering on historical bookings.
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+});
+
+// Backs bookings.booking_ref ("FP-000123") — a single global, never-reset sequence
+// (docs/TMS_INTEGRATION_PLAN.md §4.3: "FP-000123", decided over a per-year reset because
+// that just buys ambiguity across years for no benefit). Every booking gets one, whether
+// created locally or imported from TMS, so every row the app shows has one consistent
+// handle distinct from TMS's own "BK:A…" numbers.
+export const bookingRefSeq = pgSequence("booking_ref_seq", { startWith: 1, increment: 1 });
+
+export const BOOKING_SOURCES = ["planner", "tms"] as const;
+export type BookingSource = (typeof BOOKING_SOURCES)[number];
+
 export const bookings = pgTable(
   "bookings",
   {
     id: serial("id").primaryKey(),
-    unitId: text("unit_id")
+    // "FP-000123" — see bookingRefSeq above. Minted once at create time (lib/db/booking-ref.ts),
+    // never regenerated.
+    bookingRef: text("booking_ref").notNull().unique(),
+    unitId: integer("unit_id")
       .notNull()
       .references(() => units.id),
+    // Denormalised from the unit at write time (docs/TMS_INTEGRATION_PLAN.md §4.3) — the
+    // one-live-booking-per-unit-per-day index and the modality-sheet query both need these
+    // without a join. Never trust these from the client: companyId is derived from the
+    // unit server-side, and modalityId is validated against the unit's actual tagged
+    // modalities (unit_modalities) before a save is accepted.
+    companyId: integer("company_id")
+      .notNull()
+      .references(() => companies.id),
+    modalityId: integer("modality_id")
+      .notNull()
+      .references(() => modalities.id),
     date: date("date", { mode: "string" }).notNull(),
     siteId: integer("site_id")
       .notNull()
       .references(() => sites.id),
-    status: text("status", { enum: STATUSES }).notNull(),
+    // Free-text key into the admin-managed `bookingStatuses` catalogue (not the old fixed
+    // enum) — see the note on STATUSES above and docs/DECISIONS.md #18.
+    status: text("status")
+      .notNull()
+      .references(() => bookingStatuses.key),
     notes: text("notes"),
     // Not in SPEC §2's table, but §11 explicitly requires optimistic-lock reconciliation
     // against updated_at — added because the mechanism it describes needs somewhere to
@@ -141,6 +305,26 @@ export const bookings = pgTable(
       .references(() => users.id),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedBy: integer("deleted_by").references(() => users.id),
+
+    // ── TMS booking import (docs/TMS_INTEGRATION_PLAN.md §6B, docs/DECISIONS.md #21) ──
+    source: text("source", { enum: BOOKING_SOURCES }).notNull().default("planner"),
+    // TMS bookings.id — the import's upsert key. Null for a booking created here in the
+    // planner that hasn't (yet, or ever) matched a TMS booking.
+    tmsBookingId: integer("tms_booking_id").unique(),
+    // TMS's own updated_at, as of the last time the import successfully wrote this row —
+    // the import's signal for "has TMS changed this since we last looked."
+    tmsUpdatedAt: timestamp("tms_updated_at", { withTimezone: true }),
+    // When the import last wrote to this row. Comparing this against `updatedAt` above is
+    // how the import tells "has a scheduler edited this locally since we last imported it"
+    // — updatedAt only advances past tmsImportedAt when something *other than* the import
+    // itself touched the row.
+    tmsImportedAt: timestamp("tms_imported_at", { withTimezone: true }),
+    // Set when an import run finds BOTH sides changed since the last import — the
+    // never-silently-overwrite rule (§6B). Never auto-cleared by the import; a scheduler
+    // clears it by deliberately interacting with the booking again — editing and
+    // re-saving it (lib/actions/bookings.ts) or moving it (lib/actions/booking-moves.ts)
+    // — either of which is the "I've looked at this" signal.
+    tmsConflictAt: timestamp("tms_conflict_at", { withTimezone: true }),
   },
   (table) => [
     // One *live* booking per unit per day — a soft-deleted row doesn't block a

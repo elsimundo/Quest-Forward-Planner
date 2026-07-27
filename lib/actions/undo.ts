@@ -4,8 +4,10 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { bookings, bookingEvents, type BookingAction, type Status } from "@/lib/db/schema";
+import { bookings, bookingEvents, type BookingAction } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
+import { companyAllowed } from "@/lib/auth/company-access";
+import { getUnitRegistrations } from "@/lib/db/unit-labels";
 
 const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
 
@@ -35,10 +37,18 @@ function inverseAction(action: BookingAction): BookingAction {
 
 type Snapshot = {
   id: number;
-  unitId: string;
+  unitId: number;
+  // Present on every real row (bookings.companyId/modalityId are NOT NULL) but never
+  // written by the restore below — company/modality never change on an existing booking,
+  // so they're already correct on the row untouched by phase 1's soft-delete or phase 2's
+  // restore (docs/TMS_INTEGRATION_PLAN.md §4.3). Kept here for an accurate type only.
+  companyId: number;
+  modalityId: number;
   date: string;
   siteId: number;
-  status: Status;
+  // A key into the admin-managed status catalogue (docs/DECISIONS.md #18) — free text,
+  // not the old fixed enum.
+  status: string;
   notes: string | null;
   updatedAt: string;
   publishedAt: string | null;
@@ -72,6 +82,12 @@ export async function undoBatch(batchId: string): Promise<UndoResult> {
       ),
     ];
     const currentRows = await tx.select().from(bookings).where(sql`${bookings.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+    // Hard company scoping (docs/DECISIONS.md #22) — a batchId is opaque to the client, so
+    // this is the one place undo can be probed cross-company; refuse if ANY row it touches
+    // isn't in the actor's allowed company, same as "not found" everywhere else.
+    if (currentRows.some((r) => !companyAllowed(actor.companyAccess, r.companyId))) {
+      return { ok: false, error: "Nothing to undo.", code: "NOT_FOUND" };
+    }
     // Undo can't rewrite history that sits under a lock — but undoing the publish *itself*
     // must be allowed (its inverse is exactly the unlock the user is asking for). So a
     // currently-published row only blocks the undo when this batch isn't the one that
@@ -132,7 +148,7 @@ export async function undoBatch(batchId: string): Promise<UndoResult> {
 
       await tx.execute(sql`
         UPDATE bookings
-        SET unit_id = CASE id ${col("unitId")} END,
+        SET unit_id = (CASE id ${col("unitId")} END)::int,
             date = (CASE id ${col("date")} END)::date,
             site_id = (CASE id ${col("siteId")} END)::int,
             status = CASE id ${col("status")} END,
@@ -152,6 +168,10 @@ export async function undoBatch(batchId: string): Promise<UndoResult> {
 
     const afterRows = await tx.select().from(bookings).where(sql`${bookings.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
     const afterById = new Map(afterRows.map((r) => [r.id, r]));
+    // `e.bookingAfter` (reused below as the new event's "before") already carries whatever
+    // unitRegistration the ORIGINAL action wrote — only the freshly-selected `afterRows`
+    // need enriching here, since those are raw rows straight from the table.
+    const registrationById = await getUnitRegistrations(tx, afterRows.map((r) => r.unitId));
 
     const newBatchId = randomUUID();
     await tx.insert(bookingEvents).values(
@@ -159,12 +179,13 @@ export async function undoBatch(batchId: string): Promise<UndoResult> {
         const after = e.bookingAfter as Snapshot | null;
         const before = e.bookingBefore as Snapshot | null;
         const rowId = after?.id ?? before!.id;
+        const newAfterRow = afterById.get(rowId);
         return {
           actorId: actor.id,
           action: inverseAction(e.action),
           batchId: newBatchId,
           bookingBefore: e.bookingAfter,
-          bookingAfter: afterById.get(rowId) ?? null,
+          bookingAfter: newAfterRow ? { ...newAfterRow, unitRegistration: registrationById.get(newAfterRow.unitId) } : null,
         };
       }),
     );

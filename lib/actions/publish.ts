@@ -4,8 +4,11 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { bookings, bookingEvents } from "@/lib/db/schema";
+import { bookings, bookingEvents, units, type Status } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
+import { companyAllowed } from "@/lib/auth/company-access";
+import { getUnitRegistrations } from "@/lib/db/unit-labels";
+import { PUBLISHABLE_STATUS_KEYS } from "@/lib/statuses";
 
 // Publishing (forwarding to TMS) is day-to-day scheduling work — scheduler and up.
 const PUBLISH_ROLES = ["scheduler", "admin", "super_admin"] as const;
@@ -14,7 +17,7 @@ const UNLOCK_ROLES = ["admin", "super_admin"] as const;
 
 type BookingRow = typeof bookings.$inferSelect;
 
-export type PublishTarget = { unitId: string; date: string };
+export type PublishTarget = { unitId: number; date: string };
 
 export type PublishResult =
   | { ok: true; count: number; batchId: string | null; message: string }
@@ -32,23 +35,45 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
 
   return db.transaction(async (tx) => {
     const rows: BookingRow[] = [];
+    let conflictedSkipped = 0;
+    let notConfirmedSkipped = 0;
     for (const t of targets) {
       const [row] = await tx
         .select()
         .from(bookings)
         .where(and(eq(bookings.unitId, t.unitId), eq(bookings.date, t.date), isNull(bookings.deletedAt)))
         .limit(1);
-      // Only live, not-already-published bookings are eligible.
-      if (row && !row.publishedAt) rows.push(row);
+      if (!row || row.publishedAt) continue;
+      // Hard company scoping (docs/DECISIONS.md #22) — silently skip, same as any other
+      // ineligible target, rather than a distinct error that would confirm cross-company
+      // data exists at that unit/date.
+      if (!companyAllowed(actor.companyAccess, row.companyId)) continue;
+      // A booking with an outstanding TMS conflict (docs/DECISIONS.md #21) shouldn't be
+      // forwarded as final until a scheduler has actually looked at it — publishing past
+      // a known TMS disagreement would just forward whichever side happened to win the
+      // race, silently. Resolve it (edit or move it) first.
+      if (row.tmsConflictAt) {
+        conflictedSkipped++;
+        continue;
+      }
+      // Only a confirmed booking (or its weekend/bank-holiday calendar-derived form) is
+      // final enough to forward — client-confirmed (docs/DECISIONS.md #24). Everything
+      // still "in discussion" (bidding, tbc, likely, service, cancelled) stays sandbox-only
+      // until a scheduler moves it to Confirmed.
+      if (!PUBLISHABLE_STATUS_KEYS.includes(row.status as Status)) {
+        notConfirmedSkipped++;
+        continue;
+      }
+      rows.push(row);
     }
 
     if (!rows.length) {
-      return {
-        ok: true,
-        count: 0,
-        batchId: null,
-        message: "Nothing to publish — those bookings are already published.",
-      };
+      const message = conflictedSkipped
+        ? `Nothing published — ${conflictedSkipped} booking${conflictedSkipped > 1 ? "s" : ""} still ${conflictedSkipped > 1 ? "have" : "has"} an unresolved TMS conflict.`
+        : notConfirmedSkipped
+          ? `Nothing published — ${notConfirmedSkipped} booking${notConfirmedSkipped > 1 ? "s" : ""} still ${notConfirmedSkipped > 1 ? "need" : "needs"} to be Confirmed first.`
+          : "Nothing to publish — those bookings are already published.";
+      return { ok: true, count: 0, batchId: null, message };
     }
 
     const now = new Date();
@@ -60,15 +85,22 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
       .returning();
     const updatedById = new Map(updated.map((r) => [r.id, r]));
 
+    // Publish never changes which unit a booking is on, so before/after share a registration.
+    const registrationById = await getUnitRegistrations(tx, rows.map((r) => r.unitId));
+
     const batchId = randomUUID();
     await tx.insert(bookingEvents).values(
-      rows.map((before) => ({
-        actorId: actor.id,
-        action: "publish" as const,
-        batchId,
-        bookingBefore: before,
-        bookingAfter: updatedById.get(before.id) ?? null,
-      })),
+      rows.map((before) => {
+        const after = updatedById.get(before.id) ?? null;
+        const unitRegistration = registrationById.get(before.unitId);
+        return {
+          actorId: actor.id,
+          action: "publish" as const,
+          batchId,
+          bookingBefore: { ...before, unitRegistration },
+          bookingAfter: after ? { ...after, unitRegistration } : null,
+        };
+      }),
     );
 
     revalidatePath("/");
@@ -96,6 +128,9 @@ export async function unpublishBooking(target: PublishTarget): Promise<Unpublish
       .limit(1);
 
     if (!existing) return { ok: false, error: "Booking not found.", code: "NOT_FOUND" };
+    if (!companyAllowed(actor.companyAccess, existing.companyId)) {
+      return { ok: false, error: "Booking not found.", code: "NOT_FOUND" };
+    }
     if (!existing.publishedAt) return { ok: false, error: "That booking isn't published.", code: "VALIDATION" };
 
     const now = new Date();
@@ -105,16 +140,18 @@ export async function unpublishBooking(target: PublishTarget): Promise<Unpublish
       .where(eq(bookings.id, existing.id))
       .returning();
 
+    const [unit] = await tx.select({ registration: units.registration }).from(units).where(eq(units.id, existing.unitId)).limit(1);
+
     const batchId = randomUUID();
     await tx.insert(bookingEvents).values({
       actorId: actor.id,
       action: "unpublish",
       batchId,
-      bookingBefore: existing,
-      bookingAfter: updated,
+      bookingBefore: { ...existing, unitRegistration: unit?.registration },
+      bookingAfter: { ...updated, unitRegistration: unit?.registration },
     });
 
     revalidatePath("/");
-    return { ok: true, batchId, message: `Unlocked — ${target.unitId} on ${target.date} is editable again` };
+    return { ok: true, batchId, message: `Unlocked — ${unit?.registration ?? "unit"} on ${target.date} is editable again` };
   });
 }

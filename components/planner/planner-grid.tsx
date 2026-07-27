@@ -1,18 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 import type { DayInfo } from "@/lib/dates";
 import { fmtDate, DOW_FULL, todayIso } from "@/lib/dates";
 import type { GridBooking } from "@/lib/db/queries";
-import type { Status } from "@/lib/db/schema";
+import type { StatusView } from "@/lib/statuses";
+import { PUBLISHABLE_STATUS_KEYS } from "@/lib/statuses";
+import { StatusCatalogProvider } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { moveBookings, type MoveMode, type MoveSpec } from "@/lib/actions/booking-moves";
 import { undoBatch } from "@/lib/actions/undo";
 import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
-import type { Role } from "@/lib/db/schema";
+import type { Role, Status } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip } from "./cell-chip";
 import { PlannerToolbar } from "./toolbar";
@@ -32,12 +34,12 @@ const DATE_COL_WIDTH = 190;
 const UNIT_COL_WIDTH = 132;
 const ROW_HEIGHT = 54;
 
-type Unit = { id: string; description: string | null; displayOrder: number };
+type Unit = { id: number; registration: string; description: string | null; displayOrder: number };
 type CapabilityRequirement = { requirementKey: string; required: boolean };
-const cellKey = (date: string, unitId: string) => `${date}|${unitId}`;
+const cellKey = (date: string, unitId: number) => `${date}|${unitId}`;
 
 type DragPreview = {
-  origin: { date: string; unitId: string };
+  origin: { date: string; unitId: number };
   keys: string[];
   target?: string;
   preview: Map<string, "ok" | "bad">;
@@ -50,43 +52,57 @@ type DragPreview = {
 };
 
 export function PlannerGrid({
+  companyId,
   modalities,
   activeModalityId,
   units,
   days,
   bookings,
+  statuses,
   unitSpecs,
   siteCapabilityRequirements,
   role,
 }: {
+  companyId: number;
   modalities: { id: number; name: string }[];
   activeModalityId: number;
   units: Unit[];
   days: DayInfo[];
   bookings: GridBooking[];
-  unitSpecs: Record<string, Record<string, string>>;
+  statuses: StatusView[];
+  unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, CapabilityRequirement[]>;
   role: Role;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const canPublish = PUBLISH_ROLES.includes(role);
   const canUnlock = UNLOCK_ROLES.includes(role);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<Status | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [showLegend, setShowLegend] = useState(false);
   const [drawerTarget, setDrawerTarget] = useState<DrawerTarget | null>(null);
-  // Only one modality has data today — switching is wired for when a 2nd one lands
-  // (SPEC.md §2d), not a functional re-fetch yet.
-  const [modalityId, setModalityId] = useState(activeModalityId);
+
+  // Modality is a URL param, not local state — switching pills navigates
+  // (app/(planner)/page.tsx re-fetches server-side for the new modality), so the sheet
+  // actually changes instead of just relabeling the same data.
+  function changeModality(id: number) {
+    const name = modalities.find((m) => m.id === id)?.name;
+    if (!name) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("modality", name);
+    router.push(`${pathname}?${params.toString()}`);
+  }
 
   const [selectMode, setSelectMode] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [anchor, setAnchor] = useState<{ date: string; unitId: string } | null>(null);
+  const [anchor, setAnchor] = useState<{ date: string; unitId: number } | null>(null);
   const [drag, setDrag] = useState<DragPreview | null>(null);
   const [conflict, setConflict] = useState<{ moves: MoveSpec[]; clashes: Clash[] } | null>(null);
   const [publishRange, setPublishRange] = useState<{ from: string; to: string } | null>(null);
   const [pending, setPending] = useState(false);
-  const dragRef = useRef<{ origin: { date: string; unitId: string }; keys: string[] } | null>(null);
+  const dragRef = useRef<{ origin: { date: string; unitId: number }; keys: string[] } | null>(null);
   const [undoStack, setUndoStack] = useState<string[]>([]);
   const [redoStack, setRedoStack] = useState<string[]>([]);
 
@@ -97,7 +113,7 @@ export function PlannerGrid({
   }, [bookings]);
 
   const sitesByUnit = useMemo(() => {
-    const map = new Map<string, Set<string>>();
+    const map = new Map<number, Set<string>>();
     for (const b of bookings) {
       const set = map.get(b.unitId) ?? new Set<string>();
       set.add(b.siteName.toLowerCase());
@@ -110,7 +126,7 @@ export function PlannerGrid({
     if (!search.trim()) return units;
     const q = search.toLowerCase();
     return units.filter((u) => {
-      if (u.id.toLowerCase().includes(q)) return true;
+      if (u.registration.toLowerCase().includes(q)) return true;
       if ((u.description ?? "").toLowerCase().includes(q)) return true;
       const unitSites = sitesByUnit.get(u.id);
       if (!unitSites) return false;
@@ -138,7 +154,7 @@ export function PlannerGrid({
     return m;
   }, [days]);
   const unitIdx = useMemo(() => {
-    const m = new Map<string, number>();
+    const m = new Map<number, number>();
     units.forEach((u, i) => m.set(u.id, i));
     return m;
   }, [units]);
@@ -163,7 +179,7 @@ export function PlannerGrid({
     : null;
 
   // ── selection ──
-  const toggleCheck = useCallback((date: string, unitId: string) => {
+  const toggleCheck = useCallback((date: string, unitId: number) => {
     const k = cellKey(date, unitId);
     setChecked((prev) => {
       const next = new Set(prev);
@@ -175,7 +191,7 @@ export function PlannerGrid({
   }, []);
 
   const rangeCheck = useCallback(
-    (date: string, unitId: string) => {
+    (date: string, unitId: number) => {
       if (!anchor || anchor.unitId !== unitId) return toggleCheck(date, unitId);
       const a = dateIdx.get(anchor.date)!;
       const b = dateIdx.get(date)!;
@@ -200,14 +216,26 @@ export function PlannerGrid({
 
   const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: GridBooking | null) => {
     if (booking?.publishedAt) {
-      setDrawerTarget({ unitId: unit.id, date: day.date, unitDescription: unit.description });
+      setDrawerTarget({
+        unitId: unit.id,
+        unitRegistration: unit.registration,
+        date: day.date,
+        unitDescription: unit.description,
+        modalityId: activeModalityId,
+      });
       return;
     }
     const k = cellKey(day.date, unit.id);
     if (booking && checked.has(k)) return toggleCheck(day.date, unit.id);
     if (e.shiftKey && booking) return rangeCheck(day.date, unit.id);
     if ((e.ctrlKey || e.metaKey || selectMode) && booking) return toggleCheck(day.date, unit.id);
-    setDrawerTarget({ unitId: unit.id, date: day.date, unitDescription: unit.description });
+    setDrawerTarget({
+      unitId: unit.id,
+      unitRegistration: unit.registration,
+      date: day.date,
+      unitDescription: unit.description,
+      modalityId: activeModalityId,
+    });
   };
 
   // ── drag and drop ──
@@ -230,7 +258,7 @@ export function PlannerGrid({
   };
 
   const computePreview = useCallback(
-    (targetDate: string, targetUnitId: string) => {
+    (targetDate: string, targetUnitId: number) => {
       const st = dragRef.current;
       if (!st) return null;
       const dDelta = dateIdx.get(targetDate)! - dateIdx.get(st.origin.date)!;
@@ -241,7 +269,8 @@ export function PlannerGrid({
       const clashes: Clash[] = [];
       let oob = false;
       for (const k of st.keys) {
-        const [srcDate, srcUnit] = k.split("|");
+        const [srcDate, srcUnitStr] = k.split("|");
+        const srcUnit = Number(srcUnitStr);
         const di = dateIdx.get(srcDate)! + dDelta;
         const ui = unitIdx.get(srcUnit)! + uDelta;
         if (di < 0 || di >= days.length || ui < 0 || ui >= units.length) {
@@ -255,7 +284,7 @@ export function PlannerGrid({
         const occupied = !!occupant && !moving.has(tKey);
         preview.set(tKey, occupied ? "bad" : "ok");
         if (occupied && occupant) {
-          clashes.push({ unitId: tUnit, date: tDate, siteName: occupant.siteName, status: occupant.status });
+          clashes.push({ unitLabel: units[ui].registration, date: tDate, siteName: occupant.siteName, status: occupant.status });
         }
         moves.push({ fromUnitId: srcUnit, fromDate: srcDate, toUnitId: tUnit, toDate: tDate });
       }
@@ -333,12 +362,14 @@ export function PlannerGrid({
   }
 
   // ── publish / lock ──
-  // Live, unpublished bookings within [from, to] — the eligible targets for a range sweep.
+  // Live, unpublished, Confirmed-or-equivalent bookings within [from, to] — the eligible
+  // targets for a range sweep. Mirrors the server's own gate (lib/actions/publish.ts,
+  // docs/DECISIONS.md #24) so this count never promises more than will actually publish.
   const eligibleInRange = useCallback(
     (from: string, to: string): PublishTarget[] => {
       const out: PublishTarget[] = [];
       for (const b of bookings) {
-        if (b.date >= from && b.date <= to && !b.publishedAt) {
+        if (b.date >= from && b.date <= to && !b.publishedAt && PUBLISHABLE_STATUS_KEYS.includes(b.status as Status)) {
           out.push({ unitId: b.unitId, date: b.date });
         }
       }
@@ -352,12 +383,13 @@ export function PlannerGrid({
     [eligibleInRange],
   );
 
-  // How many of the current selection are actually publishable (booked & not yet locked).
+  // How many of the current selection are actually publishable (booked, not yet locked,
+  // and Confirmed-or-equivalent — mirrors the server's own gate, docs/DECISIONS.md #24).
   const publishableSelected = useMemo(() => {
     let n = 0;
     for (const k of checked) {
       const b = bookingLookup.get(k);
-      if (b && !b.publishedAt) n++;
+      if (b && !b.publishedAt && PUBLISHABLE_STATUS_KEYS.includes(b.status as Status)) n++;
     }
     return n;
   }, [checked, bookingLookup]);
@@ -479,11 +511,12 @@ export function PlannerGrid({
   }, [router]);
 
   return (
+    <StatusCatalogProvider statuses={statuses}>
     <div className="flex h-full flex-col">
       <PlannerToolbar
         modalities={modalities}
-        activeModalityId={modalityId}
-        onModalityChange={setModalityId}
+        activeModalityId={activeModalityId}
+        onModalityChange={changeModality}
         search={search}
         onSearchChange={setSearch}
         statusFilter={statusFilter}
@@ -531,7 +564,7 @@ export function PlannerGrid({
             </div>
             {visibleUnits.map((u) => (
               <div key={u.id} title={u.description ?? undefined} className="px-2 py-2">
-                <div className="text-[13px] font-bold text-[#333333]">{u.id}</div>
+                <div className="text-[13px] font-bold text-[#333333]">{u.registration}</div>
                 <div className="mt-0.5 line-clamp-2 h-6 text-[10px] leading-[12px] font-light text-[#9a9a9a]">
                   {u.description}
                 </div>
@@ -584,7 +617,7 @@ export function PlannerGrid({
                       ? computeCapabilityWarnings(
                           siteCapabilityRequirements[booking.siteId] ?? [],
                           unitSpecs[u.id] ?? {},
-                          u.id,
+                          u.registration,
                           booking.siteName,
                         ).length > 0
                       : false;
@@ -618,6 +651,7 @@ export function PlannerGrid({
       </div>
 
       <BookingDrawer
+        companyId={companyId}
         target={drawerTarget}
         booking={drawerBooking}
         unitSpecs={unitSpecs}
@@ -639,5 +673,6 @@ export function PlannerGrid({
         onClose={() => setPublishRange(null)}
       />
     </div>
+    </StatusCatalogProvider>
   );
 }

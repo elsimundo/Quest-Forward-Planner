@@ -27,8 +27,8 @@ export function UserMenu({ name, role }: { name: string; role: Role }) {
           Admin
         </Link>
       )}
-      <span className="text-[13px] text-white/70" title={ROLE_LABEL[role]}>
-        {name}
+      <span className="text-[13px] text-white/70">
+        {name} <span className="text-white/45">· {ROLE_LABEL[role]}</span>
       </span>
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--quest-blue)] text-[13px] font-medium text-white">
         {initials || "?"}

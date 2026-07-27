@@ -1,0 +1,2 @@
+ALTER TABLE "sites" DROP CONSTRAINT "sites_name_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX "sites_company_name_live_unique" ON "sites" USING btree ("company_id","name") WHERE "sites"."deleted_at" is null;

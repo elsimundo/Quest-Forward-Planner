@@ -421,6 +421,339 @@ session, read it on each request, redirect when absent) — swapping it out for 
 equivalent would be reinventing already-correct, already-tested infrastructure for no
 benefit. Only the credential-verification *logic* was reusable, not the whole auth stack.
 
+---
+
+### 18. Booking statuses become admin-managed data, not a fixed enum
+
+**Decided:** The status catalogue moves out of the `STATUSES` string enum into a
+`booking_statuses` table (key, label, four-part colour palette, display order, `editable`,
+`calendar_derived`, `billable`, `active`, soft-delete). `bookings.status` is now a free
+`text` FK into `booking_statuses.key` rather than a compile-time union. The eight
+client-approved statuses are **seeded** from `lib/statuses.ts` (`SEED_STATUSES`) in
+migration `0005` — before the FK is added, so the 15k existing bookings stay valid — so
+nothing changes visually at launch. Schedulers with admin access manage the catalogue at
+`/admin/booking-statuses` (add/recolour/relabel/reorder/retire); the grid, drawer, legend,
+toolbar and clash dialog render from the live catalogue via a `StatusCatalogProvider`
+React context (`components/planner/status-context.tsx`) instead of the old hardcoded
+`STATUS_CONFIG` map. `weekend`/`bankholiday` stay `calendar_derived` (app-assigned, not
+user-pickable and not deactivatable); `confirmed` is the structural default. Settable-status
+validation in `saveBooking` now checks the live table, not a constant.
+
+**Why:** The client confirmed TMS's own per-company `booking_status` table is obsolete and
+they want their **own** set, editable by scheduling admins, different from TMS's (see
+`docs/TMS_INTEGRATION_PLAN.md` §3 and the memory of locked decisions, 2026-07-27). An enum
+can't be edited by an admin at runtime; a table can. Keying bookings by a stable `key`
+slug (rather than an integer id) keeps the whole UI's semantic-key model intact — the
+calendar-derived logic and the client-approved palette survive as seed data and a render
+fallback — so the change is additive rather than a rewrite of every status comparison.
+`STATUS_CONFIG` is retained (renamed `SEED_STATUSES`) as both the migration seed and the
+neutral-grey fallback for any key the live catalogue somehow lacks, so an unknown status
+never crashes a cell.
+
+**Not chosen:** (a) Integer `status_id` FK — cleaner-looking but forces every one of the
+~dozen `booking.status === "confirmed"`-style comparisons and the calendar logic through
+an id↔key lookup, for no gain; the text key is both the DB value and the semantic handle.
+(b) Keeping the enum and hardcoding "admins can only toggle visibility" — doesn't satisfy
+"our own statuses, different from TMS's," which needs create/relabel/recolour. (c) Syncing
+statuses from TMS — explicitly rejected: TMS's status table is dead and we want a
+different set, so TMS is not a source here (unlike units/locations/bookings-data).
+
+---
+
+### 19. Units get a surrogate integer key; company_id lands on units/sites/bookings; unit↔modality becomes many-to-many
+
+**Decided:** `units.id` changed from a text primary key holding the TMS registration
+("CT17") to a surrogate `serial`, with `registration` moved to its own display column.
+`companies` gained a real row (InHealth) and `company_id` (NOT NULL) on `units` and
+`sites`; `bookings` gained denormalised `company_id` and `modality_id` columns. A new
+`unit_modalities` join table replaces `units.modality_id`. Hand-written migration
+(`0006_empty_ricochet.sql`), not drizzle-kit-generated: a primary-key type change against
+15,408 live booking rows needs a careful backfill-then-rename sequence (add new columns →
+backfill via join on the old key → drop old FKs/indexes/columns → rename → recreate
+FKs/indexes), not a blind `ALTER COLUMN ... TYPE`. Every phase is guarded by a `DO $$
+... RAISE EXCEPTION` check that aborts the migration if a backfill produces an unmapped
+row, and a full `pg_dump` was taken before running it. Every call site that logs a
+`booking_events` snapshot (`saveBooking`, `clearBooking`, `moveBookings`, `publishBookings`,
+`unpublishBooking`, `undoBatch`, and the Excel migration script) now enriches its snapshot
+with `unitRegistration` via a new `getUnitRegistrations` helper
+(`lib/db/unit-labels.ts`), and the audit log's SQL prefers that field, falling back to the
+legacy `unitId` text for events logged before this change — otherwise the surrogate key
+would silently turn "who moved CT38 off the Gloucester run" into "who moved 42."
+
+**Why:** Step 2 of `docs/TMS_INTEGRATION_PLAN.md`'s build order (§9), needed before any
+TMS sync work: TMS registrations are only unique **within a company** (TMS has "CT4" under
+both InHealth and Canon), so a text PK keyed on registration cannot survive a second
+company or a renamed unit without collisions. `company_id` on units/sites/bookings is the
+scaffolding the hard company-scoping security boundary (§2, "no cross-company anything")
+needs to attach to later — not enforced as a query filter yet (no signed-in-user company
+context exists until the TMS-derived permission model, build order step 5), just the
+columns landing now while it's cheap and it's still one company's data. `unit_modalities`
+becomes m2m because the client confirmed a unit can carry more than one modality (e.g. a
+unit scanning both CT and MRI) and TMS already models it that way. `bookings.modalityId`
+is stamped and re-validated server-side against the unit's actual `unit_modalities` tags
+at save time — never trusted from the client — because a unit can now legitimately belong
+to more than one sheet.
+
+**Not chosen:** (a) Leaving `units.id` as text and just adding `company_id` — doesn't fix
+the actual collision risk (registration uniqueness), which is the reason this had to move
+now rather than later, while the dataset is still small and single-company. (b) Filtering
+every read query by `company_id` in this same change — deferred deliberately to build
+order step 5, once a real signed-in-user → company mapping exists; doing it now would mean
+hardcoding the one existing company id as a stand-in for a security boundary that isn't
+wired to anything yet. (c) Leaving the audit log showing raw numeric unit ids and fixing it
+later — rejected: the audit log's entire purpose (CLAUDE.md, SPEC §7) is answering "who
+moved CT38," and letting that silently degrade for every mutation from this point forward
+is a regression, not a deferral.
+
+---
+
+### 20. Read-only TMS reference sync — additive-only for unit↔modality tags, linked (not duplicated) against pre-existing local rows
+
+**Decided:** `lib/db/tms/sync.ts` mirrors InHealth's `companies`/`locations`/`units`/
+`unit_modalities` from TMS into `companies`/`sites`/`units`/`unit_modalities`, inside one
+Postgres transaction, via `runTmsSync(triggeredBy)`. New columns: `companies.tmsCompanyId`,
+`units.tmsUnitId`, `sites.tmsLocationId` (+ `town`/`postcode`/`nominalCode`) — all nullable,
+all sync-owned. Every run is logged to a new `tms_sync_runs` table (status, jsonb diff
+summary, who/what triggered it) whether it succeeds or fails, so a bad run is visible
+rather than silent — the point of `docs/TMS_INTEGRATION_PLAN.md` §6A's "show the diff."
+Reachable two ways: `/admin/tms-sync`'s "Sync now" button (`lib/actions/admin/tms-sync.ts`,
+local admin roles), and `POST /api/tms-sync` (shared-secret `Authorization: Bearer`, no
+session) for an external scheduler — this app is a single Docker container on Coolify with
+no built-in cron (see `Dockerfile`), so "nightly" is an ops/deployment decision to point
+whichever scheduler at that route, not something the code can wire up unilaterally.
+
+Three correctness fixes came directly out of running this against the real TMS dev
+database, not from reasoning in the abstract:
+
+1. **Company linking is by "the one row with no `tms_company_id` yet," not by name.**
+   TMS's `company_name` for InHealth is `"Inhealth"`; migration 0006 had seeded ours as
+   `"InHealth"`. A name-match fallback silently created a *second* company row on first
+   run, splitting 147 units and 458 sites onto the wrong company — exactly the "no cross-
+   company mixing" invariant §2 exists to prevent. Since this app is hard-scoped to
+   exactly one company, "find the unlinked placeholder" is the actual unambiguous signal;
+   more than one unlinked row is now a thrown error, not a guess.
+2. **A registration match against an unlinked local unit/site (same company) is treated as
+   the same real thing, not a duplicate.** The original 31 Excel-migrated units and 219
+   Excel-migrated sites collide on `units_company_registration_live_unique` /
+   `sites.name` the instant TMS has a row with the same identity — because it's the same
+   real scanner or location, entered twice (once via Excel, once via TMS). The sync links
+   them (sets `tmsUnitId`/`tmsLocationId` on the existing row) instead of crashing or
+   duplicating. Units get this exact-match linking despite the client waiving *site*
+   reconciliation (`docs/TMS_INTEGRATION_PLAN.md` §5, "we don't need reconcile data to
+   tms") — that waiver was about the LHC/LCS-style fuzzy site matching, a genuinely
+   different, harder problem; an exact `(company_id, registration)` match for units isn't
+   fuzzy and needs no human judgement. Applied the identical safe pattern to sites too
+   (exact name match only), since a blind insert would hit the same unique-constraint
+   collision on the rare exact match, not just the many fuzzy near-misses the client
+   already said not to bother reconciling.
+3. **`unit_modalities` sync is additive-only — a tag TMS doesn't have is never removed.**
+   Discovered by running the sync for real: TMS has no `unit_modalities` row for `RCT27` at
+   all, and that unit carries 730 live local bookings. A first draft that mirrored TMS
+   exactly (add missing tags, remove extra ones) silently untagged RCT27 for CT, which
+   would have dropped it off the CT sheet entirely — the unit still exists and still has
+   its bookings, it just becomes invisible, because `getActiveUnits` filters by
+   `unit_modalities`. The client said "Quest is fixing the tagging in TMS now" — i.e. it's
+   known-incomplete — so treating an absence there as authoritative for removal is actively
+   dangerous, not just cautious. If a tag genuinely needs removing, that's a job for a human
+   on a future admin screen, not an unattended nightly job trusting in-progress data.
+
+A shrink guard (`assertNotSuspiciousShrink`) also aborts the whole sync, rather than
+soft-deleting, if a fresh TMS pull comes back under half the previously-synced count for
+units or sites (once there's a meaningful baseline) — a suspiciously empty result is far
+more likely a transient connection problem than InHealth actually deleting most of its
+fleet or site list.
+
+**Why:** This is build order step 3 (`docs/TMS_INTEGRATION_PLAN.md` §9) — the read-only
+mirror everything downstream (modality tabs, booking import) needs to exist first. Every
+one of the three fixes above is a *safety* correction, not a feature: each was caught by
+actually running the sync against the real TMS dev data rather than trusting the design on
+paper, and each failure mode (duplicate company, duplicate unit/site, or a live-booked unit
+silently vanishing from its own sheet) would have been a genuine incident, not a cosmetic
+bug.
+
+**Not chosen:** (a) Syncing bookings in this same step — that's explicitly §6B / build
+order step 4, a separate and materially harder problem (the conflict-with-local-edits
+rule); keeping this step to reference data only makes it independently reviewable and
+revertible. (b) Building an in-process scheduler (`setInterval`/`node-cron`) so "nightly"
+works without any ops configuration — rejected because a single-instance Next.js container
+restarting (deploys, crashes, Coolify redeploys) makes an in-process timer unreliable for
+something that's supposed to run unattended every night; an external trigger hitting a
+stateless webhook is the correct shape for this deployment, even though it means one
+manual ops step to wire up. (c) Silently removing unit_modalities tags TMS doesn't have —
+this is exactly incident #3 above; not a hypothetical rejected alternative but a real bug
+caught and reverted before it could ship.
+
+---
+
+### 21. TMS booking import — own booking refs, additive-only status mapping, and a "frozen until resolved" conflict rule
+
+**Decided:** `lib/db/tms/booking-import.ts` brings InHealth's confirmed TMS bookings into
+`bookings`, keyed by a new unique `tms_booking_id`, with a new `source` column
+(`'tms' | 'planner'`) and our own `booking_ref` ("FP-000123", `docs/TMS_INTEGRATION_PLAN.md`
+§4.3) minted for every booking — TMS-imported or locally-created — via a global,
+never-reset Postgres sequence (`booking_ref_seq`, `lib/db/booking-ref.ts`). The existing
+15,408 Excel-migration bookings were backfilled with refs and then **soft-deleted** ahead
+of the first import (client call, this session: the Excel data was test data, not needed
+now TMS access exists; kept as a soft delete, never hard, per CLAUDE.md — and their
+`booking_events` audit trail was written explicitly for the deletion, since the SQL that
+performed it bypassed the app's normal write path). TMS's `first_day`/`last_day` are read
+via `DATE_FORMAT()` as plain strings, not as DATETIME/JS Date — see the bug below.
+`updated_by`/`created_by` for imported rows point at a new "TMS Import" system user
+(mirrors `data/migrate-from-excel.ts`'s own system-user pattern, kept distinct in the
+audit log). Reachable via `/admin/tms-bookings` ("Import now") and
+`POST /api/tms-booking-import` (same shared-secret pattern as the reference sync).
+
+**The conflict rule, precisely** (the client's locked decision: "flag it as a clash,
+TMS doesn't win automatically" — see the memory of 2026-07-27 decisions): every booking
+tracks `tms_updated_at` (TMS's `updated_at` as of the last import) and `tms_imported_at`
+(when the import last touched the row). `localEditedSinceImport = updatedAt > tmsImportedAt`;
+`tmsChangedSinceImport = tb.updatedAt !== tmsUpdatedAt`. Only when **both** are true is a
+row flagged: `tms_conflict_at` is set, a small "⇄" badge appears on the grid cell
+(`CellChip`), and the row is **frozen** — no future import run touches it (not even to
+refresh the tracking timestamps) until a scheduler resolves it by editing
+(`lib/actions/bookings.ts`) or moving (`lib/actions/booking-moves.ts`) it, either of which
+clears the flag and resets `tms_imported_at` to the exact same instant as `updatedAt`.
+`publishBookings` additionally refuses to publish a still-conflicted booking. A missing
+local↔TMS status-name mapping falls back to `tbc` and is counted separately in the run
+summary, never silently guessed.
+
+Two real bugs, not hypothetical ones — found by running this against live TMS data and a
+simulated real conflict, the same discipline as the reference sync (#20):
+
+1. **A one-day date shift during British Summer Time.** TMS stores `first_day` as UK
+   *local* midnight; naively reading it as a DATETIME and doing
+   `new Date(first_day).toISOString().slice(0,10)` reinterprets that local wall-clock value
+   as UTC, which is a category error for a pure calendar date and silently shifts every
+   BST-period booking (UTC+1, late March–late October) back by one day. First surfaced as
+   19 "target slot occupied" skips clustered entirely on 2026-03-29 (the DST transition
+   Sunday) — investigation traced it to two genuinely different TMS bookings (ids 40/41,
+   correctly on 2026-03-29 and 2026-03-30) colliding after both got mis-dated to the same
+   day. Fixed by pulling `first_day`/`last_day` via `DATE_FORMAT(..., '%Y-%m-%d')` — a
+   plain string, sidestepping timezone reinterpretation entirely — while leaving
+   `updated_at` (a genuine instant, not a calendar date) as a normal Date. Re-running after
+   the fix: 1,368/1,368 imported, zero skips, zero collisions.
+2. **Resolving a conflict didn't survive a second import run.** The first version cleared
+   `tms_conflict_at` on edit/move but never froze the row while conflicted, and never
+   advanced `tms_updated_at` when a conflict was raised. Simulating a full lifecycle
+   (conflict → repeated "still unresolved" reports → scheduler resolves it → a later
+   import run) showed the scheduler's resolution getting silently overwritten by the
+   *original* TMS content on the next run — because `tms_updated_at` stayed pinned to
+   whatever it was *before* the conflict, so every later comparison kept reading "TMS still
+   disagrees" forever, even after resolution. Fixed by (a) freezing a conflicted row
+   completely until explicitly resolved, and (b) advancing `tms_updated_at` to TMS's
+   current value at the moment a conflict is *raised* — recording "the scheduler has now
+   seen and rejected this version," so a later resolution correctly compares against what
+   was actually shown, not what was true before the disagreement started. Re-verified the
+   full lifecycle end-to-end after the fix, including "TMS changes again after resolution"
+   safely refreshing.
+
+**Why:** This is build order step 4 (`docs/TMS_INTEGRATION_PLAN.md` §9) — the baseline
+schedulers plan against. `booking_ref` exists now (not deferred further) because every
+booking the app shows needs one consistent handle distinct from TMS's own `BK:A…` numbers,
+and minting it retroactively later would be a second migration touching every row instead
+of one. The "frozen until resolved" design is deliberately conservative — a flagged
+conflict never auto-clears from either side, only from a human's deliberate action — because
+the alternative (a "smart" re-evaluation on every run) is exactly what produced bug #2:
+plausible-looking logic that silently discards a scheduler's decision the next time cron
+fires.
+
+**Not chosen:** (a) Trusting `mysql2`'s default DATETIME→Date coercion for `first_day` —
+rejected outright once bug #1 was found; a calendar date has no timezone, and letting the
+driver apply one is never correct, not just occasionally wrong. (b) Auto-clearing
+`tms_conflict_at` when TMS's value stops disagreeing — rejected: TMS "no longer disagreeing"
+usually just means our own stale comparison point, not a human decision; only an explicit
+edit/move counts as resolution. (c) Importing every unit regardless of modality tag
+ambiguity — a unit with zero or multiple modality tags has no single sheet to attach a
+booking to; skipped and counted rather than guessed, consistent with #20's caution around
+TMS's still-in-progress tagging data.
+
+### 22. Hard company scoping, resolved server-side from the user's own TMS `company_id`
+
+**Decided:** Every mutation and query is scoped to a company, and that scope is never
+trusted from the client or the session token. `getCompanyAccess(userId, role)`
+(`lib/auth/company-access.ts`) re-derives it from the database on every request:
+`super_admin` gets `{kind:"any"}` (and a company picker in the UI, only rendered when
+there's more than one company to pick between); every other role gets `{kind:"fixed",
+companyId}`, looked up by matching their own `users.tms_company_id` (refreshed on every
+login, `docs/DECISIONS.md` #17) against `companies.tms_company_id`. Every server action
+that reads or writes a company-scoped row (`bookings`, `sites`, `units`, moves, publish,
+undo, admin site/requirement review) calls `companyAllowed(actor.companyAccess,
+row.companyId)` before acting, and fails the same way an absent row would — "not found"
+rather than "forbidden" — so a mismatched company can't be distinguished from a row that
+simply doesn't exist. The modality tab strip and company picker are both URL-driven
+(`?modality=`, `?company=`) query params rather than local component state, so the
+company/modality pair is always what the server actually rendered, not stale client
+state left over from a previous selection.
+
+**Why:** Company is the actual security boundary here — InHealth's scheduler must never
+be able to see or touch another company's units, sites, or bookings, regardless of what
+the client sends. Deriving access from the user's own live TMS `company_id` (not a role
+flag set once at provisioning) means a person's access follows them if TMS ever
+reassigns their company, without needing a separate sync job. `super_admin` needing
+"any company, plus the ability to pick one to view as" was an explicit requirement — the
+alternative of hard-locking every account including `super_admin` would have locked the
+app's own bootstrap account out, since `super_admin` is local-only (#17) and has no TMS
+`company_id` of its own.
+
+**Not chosen:** (a) Trusting a `companyId` sent from the client (a query param or form
+field) directly — rejected outright; that's exactly the kind of client-supplied scope
+CLAUDE.md's server-side permission rule exists to prevent. (b) Storing a resolved
+`companyId` on the session/JWT at login and trusting it for the session's lifetime —
+rejected because a TMS company reassignment or an admin fixing a bad company match
+wouldn't take effect until the next login, and it duplicates data that's one join away
+from authoritative. (c) Returning an explicit "forbidden" error for a company mismatch
+instead of reusing "not found" — rejected as an information leak: it would let one
+company's scheduler probe whether a specific booking/site ID belongs to a *different*
+company, even without being able to act on it.
+
+### 23. Multi-company TMS sync, scoped by `enable_scheduling`, plus closing the read-side company-scoping gaps it exposed
+
+**Decided:** TMS sync/import are no longer hard-locked to InHealth (`company_id = 3`) —
+`listSchedulingEnabledTmsCompanies()` (`lib/db/tms/queries.ts`) pulls every TMS company
+with `enable_scheduling = 1`, client-confirmed as the selection rule ("only companies with
+scheduling enabled... this may only be InHealth at the moment but there will be more").
+`runTmsSync`/`runTmsBookingImport` loop over each and sync it independently within the same
+transaction — no row from one company is ever blended with another's (#22 still holds
+per-request). Manually triggering a sync/import, and viewing its run history, is now
+`super_admin`-only (`lib/actions/admin/tms-{sync,booking-import}.ts`,
+`app/admin/tms-{sync,bookings}/page.tsx`, moved off the shared admin nav) — a single run now
+touches every scheduling-enabled company at once, so a company-scoped `admin` triggering it
+(or reading its per-company counts) would be acting and seeing outside their own boundary.
+`getPendingSites`/`searchApprovedSites`/`getAllSitesBasic`/`getAuditLog`
+(`lib/db/admin-queries.ts`) now take a `companyId: number | null` (`null` = every company,
+valid only for a `super_admin`'s `{kind:"any"}` access) — these were reading globally with
+no company filter at all, which was invisible while only one company existed and became a
+real leak (a company-scoped admin could see another company's pending-site names, merge
+targets, requirement targets, and audit history) the moment a second company was synced.
+
+**Why:** Turning on a second company is exactly the scenario #22's design was already
+built for (`super_admin` = `{kind:"any"}`), but it had never actually been exercised
+end-to-end — running it for real (Quest Power, TMS id 150) surfaced three latent gaps that
+only mattered once "more than one company" stopped being hypothetical:
+1. **`sites.name` was globally unique**, not per-company (unlike `units.registration`,
+   which was already correctly scoped). Live TMS data confirmed a real collision —
+   "LCS Tesco Harrow" and "LCS Asda Slough (C&S)" each exist under both InHealth and Quest
+   Power — so syncing a second company would have crashed outright on the unique
+   constraint. Fixed: `sites_company_name_live_unique` on `(company_id, name) WHERE
+   deleted_at IS NULL`, migration `0010`, mirroring `units_company_registration_live_unique`.
+2. **`saveBooking`'s site resolution had no company filter at all** — neither the
+   "existing site by id" path nor the free-text "match by name" path checked
+   `sites.companyId` against the unit's own company. Harmless by construction while only
+   one company's sites existed; a real cross-company data-attachment bug the moment a
+   second company's site could share an id-guessable pattern or, worse, an identical name
+   (see the Tesco/Asda collision above) with the company actually being booked into.
+3. **The admin read-queries above had no company filter**, only the *mutating* actions that
+   consume their results did (already fixed under #22) — so the write path was safe but the
+   list/search UI itself leaked other companies' site names to a company-scoped admin.
+
+**Not chosen:** (a) Keeping sync hard-locked to one company and having Quest manually flip
+a config flag per new company — rejected; `enable_scheduling` already exists in TMS
+specifically to mark which companies are live for this exact purpose, so reading it
+directly needs no new coordination surface. (b) Letting company-scoped `admin`s keep
+triggering sync/import now that a run spans every company — rejected as a boundary
+violation, not merely a UX nicety: it would let a company-scoped admin cause TMS reads and
+see aggregate counts for companies they have no access to elsewhere in the app.
+
 <!--
 Template for new entries:
 

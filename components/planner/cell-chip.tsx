@@ -1,4 +1,7 @@
-import { STATUS_CONFIG, tintBorder } from "@/lib/statuses";
+"use client";
+
+import { tintBorder } from "@/lib/statuses";
+import { useStatusCatalog } from "./status-context";
 import type { GridBooking } from "@/lib/db/queries";
 
 export function CellChip({
@@ -24,6 +27,10 @@ export function CellChip({
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
 }) {
+  // Read the catalogue unconditionally (before the no-booking early return) so hook order
+  // stays stable across renders where the cell flips between empty and booked.
+  const catalog = useStatusCatalog();
+
   // Longhand only — the base styles below set `borderColor`, so mixing in the `border`
   // shorthand here makes React warn when the preview clears (shorthand removed while the
   // longhand persists). Keep every border property in longhand form on both sides.
@@ -53,9 +60,10 @@ export function CellChip({
     );
   }
 
-  const st = STATUS_CONFIG[booking.status];
+  const st = catalog.get(booking.status);
   const borderColour = tintBorder(st.bar, booking.status === "confirmed" ? 0.28 : 0.5);
   const locked = !!booking.publishedAt;
+  const hasTmsConflict = !!booking.tmsConflictAt;
 
   return (
     <button
@@ -64,7 +72,7 @@ export function CellChip({
       draggable={draggable && !locked}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${warning ? " · ⚠ capability mismatch" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
+      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
       className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         cursor: locked ? "pointer" : "grab",
@@ -87,6 +95,15 @@ export function CellChip({
       {warning && (
         <span className="absolute top-0.5 right-0.5 text-[10px] leading-none" aria-hidden title="Capability mismatch">
           ⚠
+        </span>
+      )}
+      {hasTmsConflict && (
+        <span
+          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#f17f42] text-[9px] leading-none font-bold text-white"
+          aria-hidden
+          title="TMS also changed this booking — edit and save to resolve"
+        >
+          ⇄
         </span>
       )}
       {checked && (

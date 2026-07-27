@@ -1,10 +1,17 @@
+import { redirect } from "next/navigation";
 import { getPendingSites } from "@/lib/db/admin-queries";
 import { PendingSiteRow } from "@/components/admin/pending-site-row";
+import { requireRole } from "@/lib/auth/require-role";
+
+const ADMIN_ROLES = ["admin", "super_admin"] as const;
 
 export const dynamic = "force-dynamic";
 
 export default async function PendingSitesPage() {
-  const sites = await getPendingSites();
+  const actor = await requireRole([...ADMIN_ROLES]);
+  if (!actor) redirect("/login");
+  const companyId = actor.companyAccess.kind === "any" ? null : actor.companyAccess.companyId;
+  const sites = await getPendingSites(companyId);
 
   return (
     <div className="p-6">

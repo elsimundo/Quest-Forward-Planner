@@ -15,17 +15,28 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtDateLong } from "@/lib/dates";
-import { STATUS_CONFIG, EDITABLE_STATUSES } from "@/lib/statuses";
+import { DEFAULT_STATUS_KEY } from "@/lib/statuses";
+import { useStatusCatalog } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import type { GridBooking } from "@/lib/db/queries";
-import type { Status } from "@/lib/db/schema";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
 import { unpublishBooking } from "@/lib/actions/publish";
 import { searchSites } from "@/lib/actions/sites";
 
-export type DrawerTarget = { unitId: string; date: string; unitDescription: string | null };
+export type DrawerTarget = {
+  unitId: number;
+  // Display label (the unit's registration, e.g. "CT17") — units are keyed by a numeric
+  // surrogate id now (docs/TMS_INTEGRATION_PLAN.md §4.1).
+  unitRegistration: string;
+  date: string;
+  unitDescription: string | null;
+  // The active sheet's modality — threaded through to saveBooking so a newly-created
+  // booking gets stamped with the right modality_id (§4.3); re-validated server-side.
+  modalityId: number;
+};
 
 export function BookingDrawer({
+  companyId,
   target,
   booking,
   unitSpecs,
@@ -34,9 +45,10 @@ export function BookingDrawer({
   onClose,
   onMutated,
 }: {
+  companyId: number;
   target: DrawerTarget | null;
   booking: GridBooking | null;
-  unitSpecs: Record<string, Record<string, string>>;
+  unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;
   onClose: () => void;
@@ -50,6 +62,7 @@ export function BookingDrawer({
           // state, rather than an effect resetting fields on every prop change.
           <BookingDrawerBody
             key={`${target.unitId}|${target.date}`}
+            companyId={companyId}
             target={target}
             booking={booking}
             unitSpecs={unitSpecs}
@@ -65,6 +78,7 @@ export function BookingDrawer({
 }
 
 function BookingDrawerBody({
+  companyId,
   target,
   booking,
   unitSpecs,
@@ -73,21 +87,30 @@ function BookingDrawerBody({
   onClose,
   onMutated,
 }: {
+  companyId: number;
   target: DrawerTarget;
   booking: GridBooking | null;
-  unitSpecs: Record<string, Record<string, string>>;
+  unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;
   onClose: () => void;
   onMutated: (batchId: string) => void;
 }) {
+  const catalog = useStatusCatalog();
+  // The user-pickable statuses (active, not calendar-derived), in display order.
+  const editableStatuses = catalog.all.filter((s) => s.editable && s.active);
+
   const [siteQuery, setSiteQuery] = useState(booking?.siteName ?? "");
   const [selectedSite, setSelectedSite] = useState<{ id: number; name: string } | null>(
     booking ? { id: booking.siteId, name: booking.siteName } : null,
   );
   const [matches, setMatches] = useState<{ id: number; name: string }[]>([]);
-  const [status, setStatus] = useState<Status>(
-    booking && EDITABLE_STATUSES.includes(booking.status) ? booking.status : "confirmed",
+  // Drives the dropdown's visibility directly, rather than deriving it from siteQuery
+  // length — that's what lets focusing an EMPTY field browse the full site list (the
+  // client's "or a dropdown list of locations" ask) alongside the existing type-ahead.
+  const [siteFieldOpen, setSiteFieldOpen] = useState(false);
+  const [status, setStatus] = useState<string>(
+    booking && editableStatuses.some((s) => s.key === booking.status) ? booking.status : DEFAULT_STATUS_KEY,
   );
   const [notes, setNotes] = useState(booking?.notes ?? "");
   const [saving, setSaving] = useState(false);
@@ -104,23 +127,30 @@ function BookingDrawerBody({
   const [initialUpdatedAt] = useState(() => booking?.updatedAt ?? null);
 
   useEffect(() => {
-    if (siteQuery.trim().length < 2 || selectedSite?.name === siteQuery) return;
-    const handle = setTimeout(async () => {
-      const results = await searchSites(siteQuery);
-      setMatches(results);
-    }, 200);
+    if (!siteFieldOpen || selectedSite?.name === siteQuery) return;
+    // No debounce needed to browse the full list (empty query, an immediate DB read keyed
+    // only on companyId) — only the type-ahead narrowing needs one. A single-character
+    // query hits the same call and comes back empty (searchSites' own ≥2-char rule),
+    // so it doesn't need special-casing here.
+    const handle = setTimeout(
+      async () => {
+        const results = await searchSites(companyId, siteQuery);
+        setMatches(results);
+      },
+      siteQuery.trim().length === 0 ? 0 : 200,
+    );
     return () => clearTimeout(handle);
-  }, [siteQuery, selectedSite]);
+  }, [siteQuery, selectedSite, companyId, siteFieldOpen]);
 
   const locked = !!booking?.publishedAt;
   const specs = unitSpecs[target.unitId] ?? {};
-  const showMatches = siteQuery.trim().length >= 2 && selectedSite?.name !== siteQuery && matches.length > 0;
+  const showMatches = siteFieldOpen && selectedSite?.name !== siteQuery && matches.length > 0;
 
   const warnings = selectedSite
     ? computeCapabilityWarnings(
         siteCapabilityRequirements[selectedSite.id] ?? [],
         specs,
-        target.unitId,
+        target.unitRegistration,
         selectedSite.name,
       )
     : [];
@@ -134,6 +164,7 @@ function BookingDrawerBody({
       site,
       status,
       notes,
+      modalityId: target.modalityId,
       expectedUpdatedAt: initialUpdatedAt ? initialUpdatedAt.toISOString() : null,
     });
     setSaving(false);
@@ -197,7 +228,7 @@ function BookingDrawerBody({
         >
           {locked ? "🔒 Published & locked" : booking ? "Edit booking" : "New booking"}
         </SheetDescription>
-        <SheetTitle className="text-lg font-bold text-[#333333]">{target.unitId}</SheetTitle>
+        <SheetTitle className="text-lg font-bold text-[#333333]">{target.unitRegistration}</SheetTitle>
         <p className="text-[13px] text-[#757575]">{fmtDateLong(target.date)}</p>
       </SheetHeader>
 
@@ -209,7 +240,7 @@ function BookingDrawerBody({
           </div>
           <div className="mt-4">
             <div className="text-[13px] font-medium text-[#333333]">{booking?.siteName}</div>
-            <div className="mt-0.5 text-xs text-[#757575]">{STATUS_CONFIG[booking!.status].label}</div>
+            <div className="mt-0.5 text-xs text-[#757575]">{catalog.get(booking!.status).label}</div>
           </div>
         </div>
       ) : (
@@ -228,10 +259,12 @@ function BookingDrawerBody({
                 setSiteQuery(e.target.value);
                 if (selectedSite && e.target.value !== selectedSite.name) setSelectedSite(null);
               }}
-              placeholder="Search or enter a site…"
+              onFocus={() => setSiteFieldOpen(true)}
+              onBlur={() => setSiteFieldOpen(false)}
+              placeholder="Search, browse, or enter a new site…"
             />
             {showMatches && (
-              <div className="mt-1.5 overflow-hidden rounded-xl border">
+              <div className="mt-1.5 max-h-64 overflow-y-auto rounded-xl border">
                 {matches.map((m) => (
                   <button
                     key={m.id}
@@ -259,14 +292,13 @@ function BookingDrawerBody({
 
             <label className="mt-5 mb-2 block text-[13px] font-medium text-[#333333]">Status</label>
             <div className="flex flex-col gap-1.5">
-              {EDITABLE_STATUSES.map((key) => {
-                const st = STATUS_CONFIG[key];
-                const on = status === key;
+              {editableStatuses.map((st) => {
+                const on = status === st.key;
                 return (
                   <button
-                    key={key}
+                    key={st.key}
                     type="button"
-                    onClick={() => setStatus(key)}
+                    onClick={() => setStatus(st.key)}
                     className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2b7bb9]"
                     style={{
                       borderColor: on ? st.bar : "#e6e6e6",

@@ -3,14 +3,20 @@ import { db } from "./index";
 import {
   bookingEvents,
   bookings,
+  bookingStatuses,
   sites,
   users,
   userRoleEvents,
   siteCapabilityRequirements,
   unitSpecs,
+  tmsSyncRuns,
+  tmsBookingImportRuns,
   type BookingAction,
   type Role,
+  type TmsSyncStatus,
 } from "./schema";
+import type { TmsSyncSummary } from "./tms/sync";
+import type { BookingImportSummary } from "./tms/booking-import";
 
 // ── Audit log (SPEC.md §7 — "who moved CT38 off the Gloucester run and when") ──
 
@@ -36,20 +42,40 @@ export type AuditLogRow = {
 const PAGE_SIZE = 50;
 
 export async function getAuditLog(
+  // `null` means "every company" — only valid for a super_admin's `{kind:"any"}` access
+  // (docs/DECISIONS.md #22); every other caller passes their one fixed company id.
+  // `booking_events` has no plain company_id column — company lives inside the JSON
+  // snapshot (every booking carries its own companyId), same source the existing
+  // unitLabelSql/siteName lookups already read from.
+  companyId: number | null,
   filters: AuditLogFilters,
   page: number,
 ): Promise<{ rows: AuditLogRow[]; hasMore: boolean }> {
   const conditions = [];
+  if (companyId !== null) {
+    conditions.push(
+      sql`coalesce((${bookingEvents.bookingAfter}->>'companyId')::int, (${bookingEvents.bookingBefore}->>'companyId')::int) = ${companyId}`,
+    );
+  }
   if (filters.action) conditions.push(eq(bookingEvents.action, filters.action));
   if (filters.from) conditions.push(gte(bookingEvents.at, new Date(`${filters.from}T00:00:00Z`)));
   if (filters.to) conditions.push(lte(bookingEvents.at, new Date(`${filters.to}T23:59:59.999Z`)));
+  // Unit display label — every write site enriches its snapshot with `unitRegistration`
+  // (docs/TMS_INTEGRATION_PLAN.md §4.1: bookings.unit_id is a numeric surrogate now, not a
+  // human label). Falls back to the legacy `unitId` field for events logged before that
+  // enrichment existed — those already hold a text registration like "CT17" directly.
+  const unitLabelSql = sql<string | null>`coalesce(
+    ${bookingEvents.bookingAfter}->>'unitRegistration', ${bookingEvents.bookingBefore}->>'unitRegistration',
+    ${bookingEvents.bookingAfter}->>'unitId', ${bookingEvents.bookingBefore}->>'unitId'
+  )`;
+
   if (filters.q?.trim()) {
     const q = `%${filters.q.trim()}%`;
-    // Unit id and actor name/email are plain columns/jsonb text; site name requires a
+    // Unit label and actor name/email are plain columns/jsonb text; site name requires a
     // subquery since booking_before/after only carry site_id, not the name.
     conditions.push(
       or(
-        ilike(sql`coalesce(${bookingEvents.bookingAfter}->>'unitId', ${bookingEvents.bookingBefore}->>'unitId')`, q),
+        ilike(unitLabelSql, q),
         ilike(users.name, q),
         ilike(users.email, q),
         sql`EXISTS (
@@ -72,7 +98,7 @@ export async function getAuditLog(
       batchId: bookingEvents.batchId,
       actorName: users.name,
       actorEmail: users.email,
-      unitId: sql<string | null>`coalesce(${bookingEvents.bookingAfter}->>'unitId', ${bookingEvents.bookingBefore}->>'unitId')`,
+      unitId: unitLabelSql,
       date: sql<string | null>`coalesce(${bookingEvents.bookingAfter}->>'date', ${bookingEvents.bookingBefore}->>'date')`,
       siteId: sql<number | null>`coalesce((${bookingEvents.bookingAfter}->>'siteId')::int, (${bookingEvents.bookingBefore}->>'siteId')::int)`,
     })
@@ -111,11 +137,15 @@ export async function getAuditLog(
 
 // ── Pending sites review (SPEC.md §7) ──
 
-export async function getPendingSites() {
+// `companyId: null` means "every company" — only valid for a super_admin's `{kind:"any"}`
+// access (docs/DECISIONS.md #22); every other caller passes their one fixed company id.
+export async function getPendingSites(companyId: number | null) {
+  const conditions = [eq(sites.pendingReview, true), isNull(sites.deletedAt)];
+  if (companyId !== null) conditions.push(eq(sites.companyId, companyId));
   const rows = await db
     .select({ id: sites.id, name: sites.name, kind: sites.kind })
     .from(sites)
-    .where(and(eq(sites.pendingReview, true), isNull(sites.deletedAt)))
+    .where(and(...conditions))
     .orderBy(asc(sites.name));
 
   const withCounts = await Promise.all(
@@ -127,10 +157,11 @@ export async function getPendingSites() {
   return withCounts;
 }
 
-export async function searchApprovedSites(q: string, excludeId?: number) {
+export async function searchApprovedSites(companyId: number | null, q: string, excludeId?: number) {
   const trimmed = q.trim();
   if (trimmed.length < 2) return [];
   const conditions = [isNull(sites.deletedAt), eq(sites.pendingReview, false), ilike(sites.name, `%${trimmed}%`)];
+  if (companyId !== null) conditions.push(eq(sites.companyId, companyId));
   if (excludeId) conditions.push(sql`${sites.id} != ${excludeId}`);
   return db
     .select({ id: sites.id, name: sites.name })
@@ -142,11 +173,13 @@ export async function searchApprovedSites(q: string, excludeId?: number) {
 
 // ── Site capability requirements (SPEC.md §2a, §7) ──
 
-export async function getAllSitesBasic() {
+export async function getAllSitesBasic(companyId: number | null) {
+  const conditions = [isNull(sites.deletedAt), eq(sites.pendingReview, false)];
+  if (companyId !== null) conditions.push(eq(sites.companyId, companyId));
   return db
     .select({ id: sites.id, name: sites.name })
     .from(sites)
-    .where(and(isNull(sites.deletedAt), eq(sites.pendingReview, false)))
+    .where(and(...conditions))
     .orderBy(asc(sites.name));
 }
 
@@ -214,6 +247,118 @@ export async function getRoleEventsForUser(userId: number) {
     .innerJoin(users, eq(users.id, userRoleEvents.actorId))
     .where(eq(userRoleEvents.targetUserId, userId))
     .orderBy(desc(userRoleEvents.at));
+}
+
+// ── Booking statuses admin (docs/DECISIONS.md #18) ──
+
+export type AdminBookingStatus = {
+  id: number;
+  key: string;
+  label: string;
+  colorBg: string;
+  colorBar: string;
+  colorText: string;
+  colorBorder: string;
+  displayOrder: number;
+  editable: boolean;
+  calendarDerived: boolean;
+  billable: boolean;
+  active: boolean;
+  // How many live bookings currently use this status — retiring one with usage > 0 hides it
+  // from the picker but keeps it rendering on those bookings.
+  usageCount: number;
+};
+
+export async function listBookingStatusesForAdmin(): Promise<AdminBookingStatus[]> {
+  const usage = db
+    .select({ status: bookings.status, n: sql<number>`count(*)`.as("n") })
+    .from(bookings)
+    .where(isNull(bookings.deletedAt))
+    .groupBy(bookings.status)
+    .as("usage");
+
+  const rows = await db
+    .select({
+      id: bookingStatuses.id,
+      key: bookingStatuses.key,
+      label: bookingStatuses.label,
+      colorBg: bookingStatuses.colorBg,
+      colorBar: bookingStatuses.colorBar,
+      colorText: bookingStatuses.colorText,
+      colorBorder: bookingStatuses.colorBorder,
+      displayOrder: bookingStatuses.displayOrder,
+      editable: bookingStatuses.editable,
+      calendarDerived: bookingStatuses.calendarDerived,
+      billable: bookingStatuses.billable,
+      active: bookingStatuses.active,
+      usageCount: sql<number>`coalesce(${usage.n}, 0)`,
+    })
+    .from(bookingStatuses)
+    .leftJoin(usage, eq(usage.status, bookingStatuses.key))
+    .where(isNull(bookingStatuses.deletedAt))
+    .orderBy(asc(bookingStatuses.displayOrder));
+
+  return rows.map((r) => ({ ...r, usageCount: Number(r.usageCount) }));
+}
+
+// ── TMS reference sync (docs/TMS_INTEGRATION_PLAN.md §6A) ──
+
+export type TmsSyncRunRow = {
+  id: number;
+  startedAt: Date;
+  finishedAt: Date | null;
+  status: TmsSyncStatus;
+  error: string | null;
+  summary: TmsSyncSummary | null;
+  triggeredByName: string | null;
+};
+
+export async function getRecentTmsSyncRuns(limit = 10): Promise<TmsSyncRunRow[]> {
+  const rows = await db
+    .select({
+      id: tmsSyncRuns.id,
+      startedAt: tmsSyncRuns.startedAt,
+      finishedAt: tmsSyncRuns.finishedAt,
+      status: tmsSyncRuns.status,
+      error: tmsSyncRuns.error,
+      summary: tmsSyncRuns.summary,
+      triggeredByName: users.name,
+    })
+    .from(tmsSyncRuns)
+    .leftJoin(users, eq(users.id, tmsSyncRuns.triggeredBy))
+    .orderBy(desc(tmsSyncRuns.id))
+    .limit(limit);
+  return rows.map((r) => ({ ...r, summary: r.summary as TmsSyncSummary | null, triggeredByName: r.triggeredByName ?? null }));
+}
+
+// ── TMS booking import (docs/TMS_INTEGRATION_PLAN.md §6B) ──
+
+export type TmsBookingImportRunRow = {
+  id: number;
+  startedAt: Date;
+  finishedAt: Date | null;
+  status: TmsSyncStatus;
+  error: string | null;
+  summary: BookingImportSummary | null;
+  triggeredByName: string | null;
+};
+
+export async function getRecentTmsBookingImportRuns(limit = 10): Promise<TmsBookingImportRunRow[]> {
+  const rows = await db
+    .select({
+      id: tmsBookingImportRuns.id,
+      startedAt: tmsBookingImportRuns.startedAt,
+      finishedAt: tmsBookingImportRuns.finishedAt,
+      status: tmsBookingImportRuns.status,
+      error: tmsBookingImportRuns.error,
+      summary: tmsBookingImportRuns.summary,
+      triggeredByName: users.name,
+    })
+    .from(tmsBookingImportRuns)
+    .leftJoin(users, eq(users.id, tmsBookingImportRuns.triggeredBy))
+    .orderBy(desc(tmsBookingImportRuns.id))
+    .limit(limit);
+  return rows.map((r) => ({ ...r, summary: r.summary as BookingImportSummary | null, triggeredByName: r.triggeredByName ?? null }));
 }
 
 export type { Role };

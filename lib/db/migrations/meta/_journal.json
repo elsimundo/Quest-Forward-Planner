@@ -36,6 +36,48 @@
       "when": 1784818449766,
       "tag": "0004_unusual_calypso",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785145357813,
+      "tag": "0005_modern_moonstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785147384289,
+      "tag": "0006_empty_ricochet",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785149757538,
+      "tag": "0007_fine_logan",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785154224532,
+      "tag": "0008_damp_meggan",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785160016118,
+      "tag": "0009_brainy_giant_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785164205242,
+      "tag": "0010_company_scoped_site_name",
+      "breakpoints": true
     }
   ]
 }

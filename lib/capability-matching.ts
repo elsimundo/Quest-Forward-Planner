@@ -20,7 +20,10 @@ function specSatisfies(value: string | undefined): boolean {
 export function computeCapabilityWarnings(
   requirements: { requirementKey: string; required: boolean }[],
   unitSpecs: Record<string, string>,
-  unitId: string,
+  // Display label only (the unit's registration, e.g. "CT17") — units are keyed by a
+  // numeric surrogate id now (docs/TMS_INTEGRATION_PLAN.md §4.1), and unitSpecs is already
+  // resolved by the caller, so this is purely for the warning message text.
+  unitLabel: string,
   siteName: string,
 ): CapabilityWarning[] {
   const normalisedSpecs = new Map<string, string>();
@@ -33,7 +36,7 @@ export function computeCapabilityWarnings(
     if (!specSatisfies(value)) {
       warnings.push({
         requirementKey: req.requirementKey,
-        message: `${siteName} requires ${req.requirementKey} — ${unitId} is not.`,
+        message: `${siteName} requires ${req.requirementKey} — ${unitLabel} is not.`,
       });
     }
   }

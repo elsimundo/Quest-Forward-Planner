@@ -2,6 +2,10 @@
 // sites/bookings/booking_events. Re-runnable (idempotent upserts) but meant to run once
 // against a fresh CT modality. See docs/DATABASE.md "Migration & seeding" and SPEC.md §13.
 //
+// SUPERSEDED as a source of truth by the TMS integration (docs/TMS_INTEGRATION_PLAN.md §8)
+// — real units/locations/bookings come from TMS, not this workbook. Kept runnable purely
+// as a local-dev seeding convenience.
+//
 // Colour-to-status mapping and the day-of-week weekend override were derived by scanning
 // every fill colour in the real workbook against real day-rows (see chat history / PR
 // description, not reproduced here) rather than guessed from SPEC's legend alone:
@@ -16,11 +20,13 @@ import "dotenv/config";
 import { randomUUID, randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import ExcelJS from "exceljs";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../lib/db";
 import {
+  companies,
   modalities,
   units,
+  unitModalities,
   unitSpecs,
   sites,
   bookings,
@@ -28,6 +34,7 @@ import {
   users,
   type Status,
 } from "../lib/db/schema";
+import { nextBookingRef } from "../lib/db/booking-ref";
 
 const XLSX_PATH = process.argv[2] ?? "data/CT_Forward_Planner_23012025.xlsx";
 const UNIT_COL_START = 4; // col D — CT15
@@ -133,12 +140,23 @@ async function ensureCtModality(): Promise<number> {
   return created.id;
 }
 
+// The only company this workbook (and this app) handles today
+// (docs/TMS_INTEGRATION_PLAN.md §2: "InHealth company_id = 3 ONLY" in TMS terms — this is
+// just the local placeholder row units/sites/bookings hang off until the real sync exists).
+async function ensureInHealthCompany(): Promise<number> {
+  const [existing] = await db.select().from(companies).where(eq(companies.name, "InHealth")).limit(1);
+  if (existing) return existing.id;
+  const [created] = await db.insert(companies).values({ name: "InHealth" }).returning({ id: companies.id });
+  return created.id;
+}
+
 async function main() {
   console.log(`Reading ${XLSX_PATH}...`);
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(XLSX_PATH);
 
   const modalityId = await ensureCtModality();
+  const companyId = await ensureInHealthCompany();
   const systemUserId = await ensureSystemUser();
   const batchId = randomUUID();
 
@@ -158,20 +176,31 @@ async function main() {
   }
   console.log(`Found ${unitList.length} units in CT FP header.`);
 
+  // registration ("CT17") -> surrogate units.id — units.id is a numeric surrogate key now,
+  // not the registration itself (docs/TMS_INTEGRATION_PLAN.md §4.1), so every downstream
+  // insert (unit_specs, bookings) needs this map to resolve the real FK value.
+  const unitIdByRegistration = new Map<string, number>();
   for (const u of unitList) {
-    await db
+    const [row] = await db
       .insert(units)
       .values({
-        id: u.id,
-        modalityId,
+        companyId,
+        registration: u.id,
         displayOrder: u.displayOrder,
         description: u.description,
         active: true,
       })
       .onConflictDoUpdate({
-        target: units.id,
+        target: [units.companyId, units.registration],
+        targetWhere: sql`${units.deletedAt} is null`,
         set: { description: u.description, displayOrder: u.displayOrder },
-      });
+      })
+      .returning({ id: units.id });
+    unitIdByRegistration.set(u.id, row.id);
+    await db
+      .insert(unitModalities)
+      .values({ unitId: row.id, modalityId })
+      .onConflictDoNothing({ target: [unitModalities.unitId, unitModalities.modalityId] });
   }
 
   // ── Unit specs, from CT inventory checklist — exact unit-ID match only ──
@@ -199,9 +228,10 @@ async function main() {
       for (const { col, id } of invCols) {
         const value = cellText(row.getCell(col)).trim();
         if (!value) continue;
+        const unitId = unitIdByRegistration.get(id)!;
         await db
           .insert(unitSpecs)
-          .values({ unitId: id, key, value })
+          .values({ unitId, key, value })
           .onConflictDoUpdate({ target: [unitSpecs.unitId, unitSpecs.key], set: { value } });
         specCount++;
       }
@@ -249,13 +279,24 @@ async function main() {
     if (existing) return existing;
     const [inserted] = await db
       .insert(sites)
-      .values({ name })
-      .onConflictDoNothing({ target: sites.name })
+      .values({ name, companyId })
+      .onConflictDoNothing({
+        // sites.name is unique per-company, not globally (docs/DECISIONS.md #23) — matches
+        // the partial index exactly, same pattern as the bookings insert below.
+        target: [sites.companyId, sites.name],
+        where: sql`${sites.deletedAt} is null`,
+      })
       .returning({ id: sites.id });
-    const row = inserted ?? (await db.select({ id: sites.id }).from(sites).where(eq(sites.name, name)).limit(1))[0];
+    const row =
+      inserted ?? (await db.select({ id: sites.id }).from(sites).where(and(eq(sites.name, name), eq(sites.companyId, companyId))).limit(1))[0];
     siteIdByName.set(name, row.id);
     return row.id;
   }
+
+  // Inverse of unitIdByRegistration, for enriching booking_events snapshots with a human
+  // label the same way every other write path in the app does (docs/TMS_INTEGRATION_PLAN.md
+  // §4.1) — bookings.unit_id is a numeric surrogate, not something worth showing raw.
+  const registrationByUnitId = new Map([...unitIdByRegistration].map(([reg, id]) => [id, reg]));
 
   let candidateCount = 0;
   let insertedCount = 0;
@@ -285,7 +326,7 @@ async function main() {
             action: "create" as const,
             batchId,
             bookingBefore: null,
-            bookingAfter: row,
+            bookingAfter: { ...row, unitRegistration: registrationByUnitId.get(row.unitId) },
           })),
         );
       }
@@ -308,7 +349,10 @@ async function main() {
       const siteId = await ensureSite(site);
 
       pendingBookings.push({
-        unitId: u.id,
+        bookingRef: await nextBookingRef(db),
+        unitId: unitIdByRegistration.get(u.id)!,
+        companyId,
+        modalityId,
         date: iso,
         siteId,
         status,

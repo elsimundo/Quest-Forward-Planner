@@ -1,10 +1,11 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { siteCapabilityRequirements } from "@/lib/db/schema";
+import { siteCapabilityRequirements, sites } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
+import { companyAllowed } from "@/lib/auth/company-access";
 
 const ADMIN_ROLES = ["admin", "super_admin"] as const;
 
@@ -22,6 +23,12 @@ export async function setSiteRequirement(input: {
 
   const key = input.requirementKey.trim();
   if (!key) return { ok: false, error: "Pick a capability." };
+
+  // Hard company scoping (docs/DECISIONS.md #22) — siteCapabilityRequirements has no
+  // company_id of its own, so check the site it's attached to.
+  const [site] = await db.select({ companyId: sites.companyId }).from(sites).where(and(eq(sites.id, input.siteId), isNull(sites.deletedAt))).limit(1);
+  if (!site) return { ok: false, error: "Site not found." };
+  if (!companyAllowed(actor.companyAccess, site.companyId)) return { ok: false, error: "Site not found." };
 
   const [row] = await db
     .insert(siteCapabilityRequirements)
@@ -42,6 +49,15 @@ export type RemoveResult = { ok: true } | { ok: false; error: string };
 export async function removeSiteRequirement(input: { id: number }): Promise<RemoveResult> {
   const actor = await requireRole([...ADMIN_ROLES]);
   if (!actor) return { ok: false, error: "You don't have permission to edit site requirements." };
+
+  const [row] = await db
+    .select({ companyId: sites.companyId })
+    .from(siteCapabilityRequirements)
+    .innerJoin(sites, eq(sites.id, siteCapabilityRequirements.siteId))
+    .where(eq(siteCapabilityRequirements.id, input.id))
+    .limit(1);
+  if (!row) return { ok: true }; // already gone — same idempotent behaviour as before
+  if (!companyAllowed(actor.companyAccess, row.companyId)) return { ok: false, error: "Requirement not found." };
 
   await db.delete(siteCapabilityRequirements).where(eq(siteCapabilityRequirements.id, input.id));
   revalidatePath("/admin/site-requirements");

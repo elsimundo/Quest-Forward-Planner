@@ -1,7 +1,8 @@
+"use client";
+
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { STATUS_CONFIG, EDITABLE_STATUSES } from "@/lib/statuses";
-import type { Status } from "@/lib/db/schema";
+import { useStatusCatalog } from "./status-context";
 
 function Pill({
   active,
@@ -60,8 +61,8 @@ export function PlannerToolbar({
   onModalityChange: (id: number) => void;
   search: string;
   onSearchChange: (v: string) => void;
-  statusFilter: Status | null;
-  onStatusFilterChange: (s: Status | null) => void;
+  statusFilter: string | null;
+  onStatusFilterChange: (s: string | null) => void;
   showLegend: boolean;
   onToggleLegend: () => void;
   onJumpToday: () => void;
@@ -74,6 +75,9 @@ export function PlannerToolbar({
   canPublish: boolean;
   onPublishUpcoming: () => void;
 }) {
+  // Filter pills for the active, user-pickable statuses — the calendar-derived ones
+  // (weekend/bankholiday) aren't things a scheduler filters to.
+  const filterStatuses = useStatusCatalog().all.filter((s) => s.editable && s.active);
   return (
     <div className="flex flex-shrink-0 flex-wrap items-center gap-2.5 border-b bg-white px-6 py-3">
       <div className="inline-flex gap-1">
@@ -94,14 +98,14 @@ export function PlannerToolbar({
       <Pill active={!statusFilter} onClick={() => onStatusFilterChange(null)}>
         All statuses
       </Pill>
-      {EDITABLE_STATUSES.map((s) => (
+      {filterStatuses.map((s) => (
         <Pill
-          key={s}
-          active={statusFilter === s}
-          onClick={() => onStatusFilterChange(statusFilter === s ? null : s)}
-          dot={STATUS_CONFIG[s].bar}
+          key={s.key}
+          active={statusFilter === s.key}
+          onClick={() => onStatusFilterChange(statusFilter === s.key ? null : s.key)}
+          dot={s.bar}
         >
-          {STATUS_CONFIG[s].label.split(" — ")[0].split(" / ")[0]}
+          {s.label.split(" — ")[0].split(" / ")[0]}
         </Pill>
       ))}
       <span className="flex-1" />

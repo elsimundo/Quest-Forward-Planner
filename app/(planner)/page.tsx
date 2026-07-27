@@ -1,16 +1,20 @@
+import { redirect } from "next/navigation";
 import {
-  getActiveModalities,
   getActiveUnits,
   getBookingDateRange,
   getBookingsInRange,
+  getBookingStatuses,
   getAllUnitSpecs,
   getAllSiteCapabilityRequirements,
+  getModalitiesForCompany,
+  listCompaniesForPicker,
 } from "@/lib/db/queries";
 import { enumerateDays } from "@/lib/dates";
 import { PlannerGrid } from "@/components/planner/planner-grid";
-import { auth } from "@/auth";
-import { ROLES, type Role } from "@/lib/db/schema";
+import { requireRole } from "@/lib/auth/require-role";
+import { ROLES } from "@/lib/db/schema";
 import { UserMenu } from "@/components/user-menu";
+import { CompanyPicker } from "@/components/planner/company-picker";
 
 // This page reads live scheduling data straight from Postgres via Drizzle, which Next
 // can't detect as a "dynamic" data source the way it does fetch()/cookies()/searchParams
@@ -26,13 +30,36 @@ function fallbackRange(): { from: string; to: string } {
   return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
 }
 
-export default async function PlannerPage() {
-  const [modalities, session] = await Promise.all([getActiveModalities(), auth()]);
-  const ctModality = modalities.find((m) => m.name === "CT") ?? modalities[0];
-  // UI role-gating only — every mutation re-checks role server-side (SPEC.md §11). The
-  // session claim can be stale, so we fall back to the least-privileged role if absent.
-  const sessionRole = session?.user?.role;
-  const role: Role = ROLES.includes(sessionRole as Role) ? (sessionRole as Role) : "viewer";
+export default async function PlannerPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ company?: string; modality?: string }>;
+}) {
+  // Re-derived from the DB every load, never trusted from the session (SPEC.md §11,
+  // docs/DECISIONS.md #22) — role AND company access both matter here, since company is
+  // what decides which units/sites/bookings this request is even allowed to read.
+  const actor = await requireRole([...ROLES]);
+  if (!actor) redirect("/login");
+
+  const { company: companyParam, modality: modalityParam } = await searchParams;
+
+  // Hard company scoping: a non-super_admin's companyId is fixed server-side and the
+  // `?company=` param is never consulted for them — only super_admin's picker reads it,
+  // and even then only to select among companies that actually exist.
+  let companyId: number;
+  let pickableCompanies: { id: number; name: string }[] = [];
+  if (actor.companyAccess.kind === "any") {
+    pickableCompanies = await listCompaniesForPicker();
+    const requestedId = companyParam ? Number(companyParam) : NaN;
+    const requested = pickableCompanies.find((c) => c.id === requestedId);
+    companyId = requested?.id ?? pickableCompanies[0]?.id ?? 0;
+  } else {
+    companyId = actor.companyAccess.companyId;
+  }
+
+  const modalities = companyId ? await getModalitiesForCompany(companyId) : [];
+  const requestedModality = modalityParam ? modalities.find((m) => m.name.toLowerCase() === modalityParam.toLowerCase()) : undefined;
+  const activeModality = requestedModality ?? modalities.find((m) => m.name === "CT") ?? modalities[0];
 
   return (
     <div className="flex h-full flex-col">
@@ -44,46 +71,65 @@ export default async function PlannerPage() {
             Forward Planner
           </span>
         </div>
-        <UserMenu name={session?.user?.name ?? "?"} role={role} />
+        <div className="flex items-center gap-3">
+          {pickableCompanies.length > 0 && (
+            <CompanyPicker companies={pickableCompanies} activeCompanyId={companyId} />
+          )}
+          <UserMenu name={actor.name} role={actor.role} />
+        </div>
       </header>
 
-      {!ctModality ? (
+      {!companyId ? (
         <main className="flex flex-1 items-center justify-center bg-[var(--quest-surface-alt)] p-8 text-center text-sm text-[var(--quest-body)]">
-          No modalities configured yet — nothing to show.
+          No company configured yet — nothing to show.
+        </main>
+      ) : !activeModality ? (
+        <main className="flex flex-1 items-center justify-center bg-[var(--quest-surface-alt)] p-8 text-center text-sm text-[var(--quest-body)]">
+          No modalities configured for this company yet — nothing to show.
         </main>
       ) : (
-        <PlannerBody modalityId={ctModality.id} modalities={modalities} role={role} />
+        <PlannerBody
+          companyId={companyId}
+          modalityId={activeModality.id}
+          modalities={modalities}
+          role={actor.role}
+        />
       )}
     </div>
   );
 }
 
 async function PlannerBody({
+  companyId,
   modalityId,
   modalities,
   role,
 }: {
+  companyId: number;
   modalityId: number;
   modalities: { id: number; name: string }[];
-  role: Role;
+  role: (typeof ROLES)[number];
 }) {
-  const units = await getActiveUnits(modalityId);
-  const range = (await getBookingDateRange(modalityId)) ?? fallbackRange();
-  const [bookings, unitSpecs, siteCapabilityRequirements] = await Promise.all([
-    getBookingsInRange(modalityId, range.from, range.to),
-    getAllUnitSpecs(),
-    getAllSiteCapabilityRequirements(),
+  const units = await getActiveUnits(companyId, modalityId);
+  const range = (await getBookingDateRange(companyId, modalityId)) ?? fallbackRange();
+  const [bookings, statuses, unitSpecs, siteCapabilityRequirements] = await Promise.all([
+    getBookingsInRange(companyId, modalityId, range.from, range.to),
+    getBookingStatuses(),
+    getAllUnitSpecs(companyId),
+    getAllSiteCapabilityRequirements(companyId),
   ]);
   const days = enumerateDays(range.from, range.to);
 
   return (
     <div className="min-h-0 flex-1">
       <PlannerGrid
+        companyId={companyId}
         modalities={modalities}
         activeModalityId={modalityId}
         units={units}
         days={days}
         bookings={bookings}
+        statuses={statuses}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         role={role}

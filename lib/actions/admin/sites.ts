@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { bookings, sites } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
+import { companyAllowed } from "@/lib/auth/company-access";
 import { searchApprovedSites } from "@/lib/db/admin-queries";
 
 const ADMIN_ROLES = ["admin", "super_admin"] as const;
@@ -12,7 +13,8 @@ const ADMIN_ROLES = ["admin", "super_admin"] as const;
 export async function searchMergeTargets(query: string, excludeId: number) {
   const actor = await requireRole([...ADMIN_ROLES]);
   if (!actor) return [];
-  return searchApprovedSites(query, excludeId);
+  const companyId = actor.companyAccess.kind === "any" ? null : actor.companyAccess.companyId;
+  return searchApprovedSites(companyId, query, excludeId);
 }
 
 export type ApproveSiteResult = { ok: true } | { ok: false; error: string };
@@ -35,6 +37,7 @@ export async function approvePendingSite(input: {
       .where(and(eq(sites.id, input.siteId), isNull(sites.deletedAt)))
       .limit(1);
     if (!site) return { ok: false, error: "Site not found." };
+    if (!companyAllowed(actor.companyAccess, site.companyId)) return { ok: false, error: "Site not found." };
     if (!site.pendingReview) return { ok: false, error: "That site isn't pending review." };
 
     if (input.mergeIntoSiteId) {
@@ -44,6 +47,9 @@ export async function approvePendingSite(input: {
         .where(and(eq(sites.id, input.mergeIntoSiteId), isNull(sites.deletedAt)))
         .limit(1);
       if (!target) return { ok: false, error: "The site to merge into wasn't found." };
+      if (target.companyId !== site.companyId) {
+        return { ok: false, error: "Can't merge into a site from a different company." };
+      }
 
       // Repointing site_id doesn't touch (unit_id, date), so this can't collide with the
       // partial unique index — a plain UPDATE is safe here (unlike booking-moves.ts).
@@ -76,6 +82,7 @@ export async function rejectPendingSite(input: { siteId: number }): Promise<Appr
       .where(and(eq(sites.id, input.siteId), isNull(sites.deletedAt)))
       .limit(1);
     if (!site) return { ok: false, error: "Site not found." };
+    if (!companyAllowed(actor.companyAccess, site.companyId)) return { ok: false, error: "Site not found." };
     if (!site.pendingReview) return { ok: false, error: "That site isn't pending review." };
 
     const count = await tx.$count(bookings, and(eq(bookings.siteId, site.id), isNull(bookings.deletedAt)));

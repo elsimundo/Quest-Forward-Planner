@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "tms_company_id" integer;

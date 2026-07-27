@@ -7,6 +7,15 @@ const ADMIN_NAV = [
   { href: "/admin/audit-log", label: "Audit log" },
   { href: "/admin/pending-sites", label: "Pending sites" },
   { href: "/admin/site-requirements", label: "Site requirements" },
+  { href: "/admin/booking-statuses", label: "Booking statuses" },
+] as const;
+
+// super_admin-only — both now trigger/show a run spanning every scheduling-enabled TMS
+// company at once (docs/TMS_INTEGRATION_PLAN.md §11), not just a company-scoped admin's own.
+const SUPER_ADMIN_NAV = [
+  { href: "/admin/tms-sync", label: "TMS sync" },
+  { href: "/admin/tms-bookings", label: "TMS bookings" },
+  { href: "/admin/users", label: "Users & roles" },
 ] as const;
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -18,7 +27,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const role: Role = ROLES.includes(sessionRole as Role) ? (sessionRole as Role) : "viewer";
   if (role !== "admin" && role !== "super_admin") redirect("/");
 
-  const nav = role === "super_admin" ? [...ADMIN_NAV, { href: "/admin/users", label: "Users & roles" }] : ADMIN_NAV;
+  const nav = role === "super_admin" ? [...ADMIN_NAV, ...SUPER_ADMIN_NAV] : ADMIN_NAV;
 
   return (
     <div className="flex h-full flex-col">

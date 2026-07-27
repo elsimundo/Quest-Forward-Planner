@@ -1,15 +1,17 @@
 "use server";
 
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { bookings, bookingEvents, type BookingAction } from "@/lib/db/schema";
+import { bookings, bookingEvents, units, type BookingAction } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
+import { companyAllowed } from "@/lib/auth/company-access";
+import { getUnitRegistrations } from "@/lib/db/unit-labels";
 
 const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
 
-export type MoveSpec = { fromUnitId: string; fromDate: string; toUnitId: string; toDate: string };
+export type MoveSpec = { fromUnitId: number; fromDate: string; toUnitId: number; toDate: string };
 export type MoveMode = "move" | "swap" | "overwrite";
 
 export type MoveBookingsResult =
@@ -31,7 +33,7 @@ const SENTINEL_DAY_OFFSET = 365000; // ~999 years — no real booking lives out 
 
 async function bulkReposition(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-  updates: { id: number; unitId: string; date: string }[],
+  updates: { id: number; unitId: number; date: string; wasConflicted: boolean }[],
   actorId: number,
 ) {
   if (!updates.length) return;
@@ -50,19 +52,31 @@ async function bulkReposition(
 
   // Pass 2 — drop each row into its final slot (every target is empty after pass 1).
   const unitCases = sql.join(
-    updates.map((u) => sql`WHEN ${u.id} THEN ${u.unitId}`),
+    updates.map((u) => sql`WHEN ${u.id} THEN ${u.unitId}::integer`),
     sql` `,
   );
   const dateCases = sql.join(
     updates.map((u) => sql`WHEN ${u.id} THEN ${u.date}::date`),
     sql` `,
   );
+  // Moving a booking counts as a scheduler resolving any outstanding TMS conflict on it
+  // (docs/DECISIONS.md #21) — but tms_imported_at only resets for rows that WERE
+  // conflicted. Resetting it unconditionally on every move would make the import's "has
+  // this been locally edited since we last looked" check always say "no" right after a
+  // routine move, letting the next import silently snap the booking back to wherever TMS
+  // still thinks it is. Same reasoning as lib/actions/bookings.ts's saveBooking.
+  const wasConflictedIds = updates.filter((u) => u.wasConflicted).map((u) => u.id);
+  const tmsImportedAtSet = wasConflictedIds.length
+    ? sql`tms_imported_at = CASE WHEN id IN (${sql.join(wasConflictedIds.map((id) => sql`${id}`), sql`, `)}) THEN now() ELSE tms_imported_at END,`
+    : sql``;
   await tx.execute(sql`
     UPDATE bookings
     SET unit_id = CASE id ${unitCases} END,
         date = (CASE id ${dateCases} END),
         updated_by = ${actorId},
-        updated_at = now()
+        updated_at = now(),
+        ${tmsImportedAtSet}
+        tms_conflict_at = null
     WHERE id IN (${ids})
   `);
 }
@@ -74,13 +88,20 @@ async function logEvents(
   entries: { action: BookingAction; before: BookingRow; after: BookingRow | null }[],
 ) {
   if (!entries.length) return;
+  // A move/swap can change WHICH unit a row is on, so before/after can legitimately name
+  // different units for the same row — resolve each snapshot's registration from its own
+  // unitId, not a single row-level label (docs/TMS_INTEGRATION_PLAN.md §4.1).
+  const registrationById = await getUnitRegistrations(
+    tx,
+    entries.flatMap((e) => [e.before.unitId, e.after?.unitId]).filter((id): id is number => typeof id === "number"),
+  );
   await tx.insert(bookingEvents).values(
     entries.map((e) => ({
       actorId,
       action: e.action,
       batchId,
-      bookingBefore: e.before,
-      bookingAfter: e.after,
+      bookingBefore: { ...e.before, unitRegistration: registrationById.get(e.before.unitId) },
+      bookingAfter: e.after ? { ...e.after, unitRegistration: registrationById.get(e.after.unitId) } : null,
     })),
   );
 }
@@ -106,6 +127,24 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
     );
     if (sources.some((s) => !s)) {
       return { ok: false, error: "One of the selected bookings no longer exists — refresh and try again.", code: "CONFLICT" };
+    }
+    // Hard company scoping (docs/DECISIONS.md #22) — every source booking, and every
+    // target unit a move lands on, must belong to the actor's allowed company. A move
+    // can't cross companies either way: that's not just an access check, it'd also leave
+    // a booking's denormalised company_id pointing at the wrong company (§4.3).
+    const sourceRows = sources as BookingRow[];
+    if (sourceRows.some((s) => !companyAllowed(actor.companyAccess, s.companyId))) {
+      return { ok: false, error: "One of the selected bookings no longer exists — refresh and try again.", code: "CONFLICT" };
+    }
+    const targetUnitIds = [...new Set(moves.map((m) => m.toUnitId))];
+    const targetUnits = await tx.select({ id: units.id, companyId: units.companyId }).from(units).where(inArray(units.id, targetUnitIds));
+    const targetCompanyById = new Map(targetUnits.map((u) => [u.id, u.companyId]));
+    const crossesCompany = moves.some((m, i) => {
+      const targetCompanyId = targetCompanyById.get(m.toUnitId);
+      return targetCompanyId === undefined || targetCompanyId !== sourceRows[i].companyId;
+    });
+    if (crossesCompany) {
+      return { ok: false, error: "Can't move a booking to a different company's unit.", code: "VALIDATION" };
     }
     if (sources.some((s) => s!.publishedAt)) {
       return { ok: false, error: "Can't move a published/locked booking. Unlock it first.", code: "LOCKED" };
@@ -136,12 +175,12 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
     }
 
     const batchId = randomUUID();
-    const repositions: { id: number; unitId: string; date: string }[] = [];
+    const repositions: { id: number; unitId: number; date: string; wasConflicted: boolean }[] = [];
     const events: { action: BookingAction; before: BookingRow; after: BookingRow | null }[] = [];
 
     moves.forEach((m, i) => {
       const source = sources[i]!;
-      repositions.push({ id: source.id, unitId: m.toUnitId, date: m.toDate });
+      repositions.push({ id: source.id, unitId: m.toUnitId, date: m.toDate, wasConflicted: source.tmsConflictAt !== null });
       events.push({
         action: mode === "swap" ? "swap" : mode === "overwrite" ? "move" : "move",
         before: source,
@@ -163,7 +202,7 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
       moves.forEach((m, i) => {
         const clash = targets[i];
         if (!clash) return;
-        repositions.push({ id: clash.id, unitId: m.fromUnitId, date: m.fromDate });
+        repositions.push({ id: clash.id, unitId: m.fromUnitId, date: m.fromDate, wasConflicted: clash.tmsConflictAt !== null });
         events.push({ action: "swap", before: clash, after: null });
       });
     }

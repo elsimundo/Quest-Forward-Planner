@@ -13,3 +13,9 @@ export class AccountDeactivatedError extends CredentialsSignin {
 export class RateLimitedError extends CredentialsSignin {
   code = "rate_limited";
 }
+
+// Hard company scoping (docs/TMS_INTEGRATION_PLAN.md §2, docs/DECISIONS.md #22): a
+// non-super_admin whose TMS company doesn't match any company this planner has data for.
+export class NoCompanyAccessError extends CredentialsSignin {
+  code = "no_company_access";
+}

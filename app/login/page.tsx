@@ -17,6 +17,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   no_scheduling_access: "Your TMS account doesn't have scheduling access. Contact your Quest administrator.",
   account_deactivated: "This account has been deactivated in the Forward Planner. Contact a super admin.",
   rate_limited: "Too many login attempts. Please wait a few minutes and try again.",
+  no_company_access: "Your organisation isn't set up on this planner yet. Contact a super admin.",
 };
 
 export default async function LoginPage({

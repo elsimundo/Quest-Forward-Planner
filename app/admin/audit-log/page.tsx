@@ -1,6 +1,10 @@
+import { redirect } from "next/navigation";
 import { getAuditLog } from "@/lib/db/admin-queries";
 import { BOOKING_ACTIONS, type BookingAction } from "@/lib/db/schema";
 import { fmtDateLong } from "@/lib/dates";
+import { requireRole } from "@/lib/auth/require-role";
+
+const ADMIN_ROLES = ["admin", "super_admin"] as const;
 
 export const dynamic = "force-dynamic";
 
@@ -30,10 +34,14 @@ export default async function AuditLogPage({
 }: {
   searchParams: Promise<{ q?: string; action?: string; from?: string; to?: string; page?: string }>;
 }) {
+  const actor = await requireRole([...ADMIN_ROLES]);
+  if (!actor) redirect("/login");
+  const companyId = actor.companyAccess.kind === "any" ? null : actor.companyAccess.companyId;
+
   const sp = await searchParams;
   const action = BOOKING_ACTIONS.includes(sp.action as BookingAction) ? (sp.action as BookingAction) : undefined;
   const page = Math.max(0, Number(sp.page) || 0);
-  const { rows, hasMore } = await getAuditLog({ q: sp.q, action, from: sp.from, to: sp.to }, page);
+  const { rows, hasMore } = await getAuditLog(companyId, { q: sp.q, action, from: sp.from, to: sp.to }, page);
 
   const qs = (overrides: Record<string, string | undefined>) => {
     const params = new URLSearchParams();

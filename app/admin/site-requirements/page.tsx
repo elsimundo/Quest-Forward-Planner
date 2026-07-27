@@ -1,11 +1,19 @@
+import { redirect } from "next/navigation";
 import { getAllSitesBasic, getAllSiteCapabilityRequirementsBySite, getKnownSpecKeys } from "@/lib/db/admin-queries";
 import { SiteRequirementsPanel } from "@/components/admin/site-requirements-panel";
+import { requireRole } from "@/lib/auth/require-role";
+
+const ADMIN_ROLES = ["admin", "super_admin"] as const;
 
 export const dynamic = "force-dynamic";
 
 export default async function SiteRequirementsPage() {
+  const actor = await requireRole([...ADMIN_ROLES]);
+  if (!actor) redirect("/login");
+  const companyId = actor.companyAccess.kind === "any" ? null : actor.companyAccess.companyId;
+
   const [sites, knownKeys, requirementsBySite] = await Promise.all([
-    getAllSitesBasic(),
+    getAllSitesBasic(companyId),
     getKnownSpecKeys(),
     getAllSiteCapabilityRequirementsBySite(),
   ]);
