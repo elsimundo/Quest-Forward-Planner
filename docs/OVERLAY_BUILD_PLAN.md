@@ -38,18 +38,22 @@ booking becomes `location_id` = parent's `tms_location_id`, `pad_id` = the pad's
 
 *Keeps `sites.parent_site_id` exactly as built — see `TMS_WRITE_BACK.md` §6.*
 
-### A3. `tms_booking_cache` + refresh job
+### A3. In-memory TMS booking cache
 
-New table, columns roughly: `tms_booking_id` (unique), `tms_company_id`, `tms_unit_id`,
-`tms_location_id`, `date`, `tms_status_id`, `notes`, `tms_updated_at`, `fetched_at`.
+**No table.** A server-side module holding TMS bookings per company with a 5-minute TTL, plus
+the timestamp of the last successful fetch. Nothing TMS-derived is written to Postgres
+(`TMS_WRITE_BACK.md` §8) — our database stores only amendments and additions, literally.
 
-Refresh reuses the existing `listTmsBookings` (`lib/db/tms/queries.ts`) — already correct on
-the two hard parts: it reads dates via `DATE_FORMAT` to dodge the BST off-by-one, and skips
-multi-day rows rather than guessing. **Replace wholesale, never upsert** (rule 4,
-`TMS_WRITE_BACK.md` §8).
+Reuses the existing `listTmsBookings` (`lib/db/tms/queries.ts`), already correct on the two
+hard parts: it reads dates via `DATE_FORMAT` to dodge the BST off-by-one, and skips multi-day
+rows rather than guessing.
 
-Nothing reads this yet. Getting it landed and running early means Stage B has real data to
-build against, and we can watch its cost against TMS for a while before depending on it.
+On a fetch failure the cache **surfaces the error** rather than serving what it last held —
+the client asked for a connection error, not a stale grid. Expose `fetchedAt` so the UI can
+show "last refreshed at HH:MM"; that's about the 5-minute cycle, not degraded mode.
+
+Land it early and unread, so Stage B has real data to build against and we can watch its cost
+against TMS before anything depends on it.
 
 ---
 
@@ -163,13 +167,15 @@ booking thereafter read from TMS (§5). Getting this wrong renders the booking t
 
 ---
 
-## Stage E — freshness and degraded mode
+## Stage E — freshness and failure handling
 
-### E1. Staleness and degraded mode
+### E1. Connection failure and refresh age
 
-`fetched_at` drives a visible age indicator. If TMS is unreachable, show the last cache
-clearly marked out of date, **with publishing disabled** — the pre-flight check needs live
-TMS, so publishing while stale means writing blind (§8).
+If TMS is unreachable, the planner **shows a connection error** — no fallback to the last
+loaded data (`TMS_WRITE_BACK.md` §8, client-revised). Publishing needs no special handling in
+this state: the page won't render, and the pre-flight needs live TMS anyway.
+
+Separately, surface `fetchedAt` as "last refreshed at HH:MM" so the 5-minute cycle is visible.
 
 ### E2. Two clocks
 
@@ -203,8 +209,9 @@ Only once B–E are proven.
    size — but it should be a decision, not an accident.
 2. **B3 deletes 1,357 rows.** Verify the edited-row count immediately beforehand, and back up
    first — same discipline as `DECISIONS.md` #27.
-3. **The cache can quietly become the rejected import** if §8's five rules erode. Worth a
-   comment on the table itself pointing at that section.
+3. **A TMS outage takes the planner fully offline**, by client decision — schedulers can't
+   even review their own pending amendments, since the grid needs TMS's bookings underneath
+   to render. Accepted (`TMS_WRITE_BACK.md` §8), but the one to revisit first if it bites.
 4. **TMS read cost is unmeasured.** A3 runs early partly so we can watch it before Stage B
    depends on it.
 

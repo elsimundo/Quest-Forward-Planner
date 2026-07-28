@@ -272,46 +272,51 @@ Coolify). Don't build channel subscriptions before we know polling is insufficie
 
 ---
 
-## 8. Degraded mode when TMS is unavailable — agreed
+## 8. When TMS is unavailable — fail loudly, no fallback
 
-**Client-approved 2026-07-28.** If TMS can't be reached, the planner shows **the last data
-it successfully loaded**, clearly marked out of date, **with publishing disabled**. It does
-not show an empty grid and does not refuse to load.
+**Client decision, revised 2026-07-28 (second answer supersedes the first).**
 
-Publishing is disabled in this state for a specific reason: the publish-time conflict
-re-check (§2) requires reading live TMS. With TMS unreachable that check can't run, so
-publishing would mean writing blind — precisely the thing the conflict model exists to
-prevent.
+> "I think we just fail to load, or load display a connection error if TMS is down."
+> — Dave Emerson
 
-### ⚠️ This requires a persisted cache. It is not the import Dave rejected.
+If TMS can't be reached, the planner **shows a connection error**. It does not fall back to
+the last data it loaded, and it does not render a partial grid.
 
-For the fallback to survive a server restart or a deploy, the 5-minute TMS cache (§7) has to
-be **persisted, not held in memory**. That means TMS booking data does get written to our
-Postgres — which looks, at a glance, like the booking import the client explicitly asked us
-to stop doing (§1). It isn't, and the difference has to stay obvious in the code, or someone
-will later find a table full of TMS bookings and reasonably conclude we ignored the client.
+An earlier round had approved a stale-data fallback. That is **withdrawn** — this section
+previously specified the opposite, and anything referring to a "staleness banner" or
+"degraded mode" is out of date.
 
-| | The rejected import | This cache |
-|---|---|---|
-| Table | `bookings` — same table as our own | its own table, e.g. `tms_booking_cache` |
-| Editable by users | yes — schedulers edited these rows | never; no code path writes it but the refresh |
-| Authority | became a second source of truth that drifted | never authoritative; TMS is, always |
-| Lifecycle | upserted and merged, rows persisted for months | replaced wholesale each refresh |
-| Local fields | carried status, notes, publish state | carries none — those live only on amendments |
-| Age visible to user | no | yes, always — `fetched_at` drives the staleness banner |
+### This removes the persisted cache, and simplifies things
 
-**Rules to keep it honest:**
+The fallback was the only reason the 5-minute cache (§7) had to survive a restart. Without
+it, the cache is purely about **load management** — stopping every screen load and every
+client poll from hitting TMS's production replica — and that needs no persistence at all.
 
-1. The cache lives in its **own table**, never in `bookings`.
-2. **Nothing but the refresh job writes it.** No user action, ever.
-3. Every read carries `fetched_at`, and the UI shows the age whenever it isn't fresh.
-4. It is **replaced, not merged** — no upsert logic, no conflict resolution, no soft deletes.
-   A refresh is a wholesale swap, so nothing can silently persist past its usefulness.
-5. Amendments **never** reference cache rows as if they were real bookings — they reference
-   `tms_booking_id`, which is TMS's identifier, valid whether or not the cache holds it.
+**So: an in-memory server-side cache with a 5-minute TTL. Nothing TMS-derived is written to
+Postgres.**
 
-If any of those five stop being true, this has quietly turned back into the import the
-client rejected, and it should be treated as a bug.
+That's a better fit for the client's original instruction than what it replaces. §1 says our
+database stores only amendments and additions; with an in-memory cache that becomes literally
+true, rather than true-with-an-asterisk. It also retires a whole risk: there is no longer a
+table of TMS bookings for a future reader to mistake for the rejected import, and no set of
+rules needed to keep that distinction alive.
+
+**Consequences, accepted:**
+
+- A restart or deploy means a cold cache — the first request after it pays one TMS query
+  (~1,368 rows today). Acceptable.
+- Multiple app instances each hold their own cache, so TMS sees one refresh per instance per
+  5 minutes rather than one globally. Still trivial load; revisit only if instance count
+  grows.
+- **A TMS outage takes the planner down with it**, rather than degrading it. Schedulers
+  can't review or adjust their own pending amendments during an outage either, since the
+  grid can't render without TMS's bookings underneath. This follows directly from the
+  decision above and is the main thing to weigh if it ever becomes a practical problem.
+- Publishing during an outage is moot — the page won't load, and the publish pre-flight
+  needs live TMS regardless.
+
+Showing "last refreshed at HH:MM" in the UI is still worth doing. It's about the 5-minute
+refresh cycle, not about degraded mode, and it survives this change.
 
 ---
 
