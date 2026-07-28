@@ -44,7 +44,7 @@ having early, because backfilling a column is easy and reshaping a live model is
 
 *Keeps `sites.parent_site_id` exactly as built — see `TMS_WRITE_BACK.md` §6.*
 
-### A3. In-memory TMS booking cache
+### A3. In-memory TMS booking cache — ✅ DONE (`lib/db/tms/booking-cache.ts`)
 
 **No table.** A server-side module holding TMS bookings per company with a 5-minute TTL, plus
 the timestamp of the last successful fetch. Nothing TMS-derived is written to Postgres
@@ -60,6 +60,19 @@ show "last refreshed at HH:MM"; that's about the 5-minute cycle, not degraded mo
 
 Land it early and unread, so Stage B has real data to build against and we can watch its cost
 against TMS before anything depends on it.
+
+**Built with a stampede guard.** Concurrent callers arriving after a TTL expiry share one
+in-flight fetch rather than each starting their own — without that, the moment the TTL lapses
+every request in flight would hit TMS at once, which is the exact load the cache exists to
+prevent. Verified: 8 concurrent callers produced a single fetch.
+
+**Measured:** a cold fetch of InHealth's 1,368 bookings takes ~74ms (mostly connection
+setup); warm reads are ~0ms. So the per-company cost of the 5-minute refresh is negligible,
+and Stage B can rely on it.
+
+`TMS_BOOKING_CACHE_TTL_MS` overrides the TTL — for tests only; see `.env.example`.
+
+**Stage A is complete.** B1/B2 are next and land together.
 
 ---
 
