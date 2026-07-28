@@ -917,6 +917,47 @@ client-approved in SPEC §2a and modality-generic by design, and deleting it to 
 table would be trading a signed-off requirement for cosmetics. The tables stay empty and
 honest until the data question is answered.
 
+### 28. The overlay purge: 1,365 copies removed, judged on content not timestamps
+
+**Decided:** With the overlay read path live (`docs/OVERLAY_BUILD_PLAN.md` B2), the 1,368 TMS
+bookings copied into `bookings` became redundant — the grid now reads TMS directly. 1,365 of
+them were **hard-deleted** on 2026-07-28, leaving the 3 rows that are genuine amendments.
+`booking_events` was deliberately **not** touched.
+
+**Why content, not the timestamp heuristic:** the build plan proposed keeping any row whose
+`updated_at` was later than `tms_imported_at` — "somebody edited this" — which selected 11
+rows. Comparing each row's actual unit/date/site/status/notes against live TMS showed only
+**3** genuinely differ (the RCT22 moves off CT23). The other 8 had been touched at some point
+but were byte-identical to TMS: a re-save, or an edit that landed on what TMS already said.
+Under the overlay an amendment identical to TMS isn't an amendment, it's a duplicate — the
+exact ambiguity the client objected to in #27 — and since TMS supersedes the planner
+(`docs/TMS_WRITE_BACK.md` §5) keeping them protected nothing. The purge script recomputed
+this comparison at run time rather than trusting the analysis, and refused to touch anything
+published or TMS-conflicted (both zero).
+
+**Why a hard delete, given `SPEC.md` §2c:** these are not bookings being cancelled. Every one
+of them still exists, in TMS, which is now the thing the grid reads. Soft-deleting would have
+left 1,365 rows sitting in admin and audit views looking like real bookings — recreating the
+"which of these is real?" problem that caused #27 — and writing a `delete` event for each
+would have put 1,365 cancellations into the audit log that never happened. Explicitly
+authorised by the user, on the same footing as #27 and equally not a precedent.
+
+**Why `booking_events` survived:** it is append-only (`SPEC.md` §2). Those events are the
+true record that the import created these rows, and removing duplicates of data that still
+lives in TMS doesn't entitle us to erase the history of having imported it. 1,409 events
+remain, untouched.
+
+**Verification:** the grid was compared before and after. Local live rows fell from 1,368 to
+**3**, and the rendered grid stayed **identical** — 1,371 rows (1,368 real + 3 ghosts), same
+2026-03-01..2026-05-31 range, no duplicate slots, no ghost colliding with a real booking, no
+ghost pointing at a missing target, nothing unplaced. That equivalence is the actual proof
+the overlay works: the schedule now comes from TMS live rather than from our copy of it.
+
+**Not chosen:** *Soft delete* — rejected above, on both the visibility and the false-audit
+grounds. *Deleting the matching `booking_events` too*, as #27 did — that purge was removing
+data the client said should never have existed; this one is removing duplicates of data that
+does exist and is still authoritative in TMS. Different case, different answer.
+
 <!--
 Template for new entries:
 

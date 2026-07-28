@@ -113,18 +113,18 @@ local `unit_id`, so they need no TMS mapping at all. Verified across the live da
 `unplaced` counter on `OverlayResult` reports any that ever fail, rather than silently
 showing less than TMS has.
 
-### B3. Migrate the existing 1,368 rows — convert, don't delete
+### B3. Migrate the existing 1,368 rows — ✅ DONE (see `DECISIONS.md` #28)
 
-**This step destroys data if done carelessly.** As of 2026-07-28, **11 of 1,368 carry local
-edits** (`updated_at` later than `tms_imported_at`); the other 1,357 are untouched copies.
+**Done, but not by the rule written here.** The timestamp heuristic below selected 11 rows to
+keep; comparing actual content against live TMS showed only **3** genuinely differ. The other
+8 had been touched but were identical to TMS, making them duplicates rather than amendments.
+1,365 were hard-deleted, `booking_events` was left intact, and the grid rendered identically
+afterwards — 1,371 rows either side, from 1,368 local rows before and 3 after. Full reasoning
+in `docs/DECISIONS.md` #28.
 
-- **1,357 untouched** → delete. They're copies, exactly what §1 rules out.
-- **11 edited** → keep, as amendments. They already have `tms_booking_id` set, so under B1's
-  rule they *are* amendments — no conversion needed beyond leaving them alone.
-
-Re-run the count immediately before migrating rather than trusting this number; it moves
-every time someone edits an imported booking. Anything published or conflict-flagged needs
-resolving by hand first (both were zero at time of writing).
+*Original plan, superseded:* keep any row whose `updated_at` is later than `tms_imported_at`
+(11 rows), delete the other 1,357. Content comparison is the better test — it asks whether a
+row actually says anything TMS doesn't, rather than whether someone once opened it.
 
 ### B4. Live conflict detection
 
