@@ -425,16 +425,19 @@ benefit. Only the credential-verification *logic* was reusable, not the whole au
 
 ### 18. Booking statuses become admin-managed data, not a fixed enum
 
-> **⚠️ One premise of this entry is in doubt (2026-07-28).** It rests on the client's
-> answer that TMS's own `booking_statuses` table is obsolete and shouldn't be read. A
-> direct read of TMS says otherwise: company 3's `booking_statuses` holds **exactly these
+> **✅ Resolved 2026-07-28 — the premise holds, for a different reason than recorded.**
+> This entry rested on the client's answer that TMS's own `booking_statuses` table is
+> obsolete and shouldn't be read. A direct read of TMS said otherwise: company 3's
+> `booking_statuses` holds **exactly these
 > eight statuses** — Confirmed, Bank Holiday, Weekend Confirmed, Waiting Final, Bidding,
 > Corrective Works, Location to be Confirmed, Customer Cancelled — with matching colours
 > and descriptions. Six are merely deactivated (`active = 0`); live bookings use only
-> Confirmed (1,274) and Corrective Works (94). The *decision* below still stands (we own
-> the catalogue, and it's admin-editable), but "TMS has nothing usable here" is not true,
-> and it matters for publishing statuses back. Re-raised with Quest in
-> `docs/TMS_WRITE_BACK.md` §3.3.
+> Confirmed (1,274) and Corrective Works (94). Put to the client, who confirmed those six
+> were **deliberately retired** from the TMS scheduler, not left stale — and that the
+> planner should keep all eight, because it tracks provisional work TMS no longer models.
+> So the decision below stands. The correction is to the reasoning: TMS's table isn't
+> "obsolete", it's deliberately narrower than ours. See `docs/TMS_WRITE_BACK.md` §3.3,
+> which also adds a `publishable` flag so only Confirmed statuses can reach TMS.
 
 
 **Decided:** The status catalogue moves out of the `STATUSES` string enum into a
