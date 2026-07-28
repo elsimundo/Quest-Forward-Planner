@@ -2,7 +2,37 @@
 
 import { tintBorder } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
-import type { GridBooking } from "@/lib/db/queries";
+import type { OverlayBooking } from "@/lib/db/tms/overlay";
+
+// The faded original left behind when a scheduler moves a TMS booking — the client's own
+// ask: "I'd like for that original TMS booking to stay where it is, but be made slightly
+// transparent." It renders TMS's current truth, not one of our rows, so it is deliberately
+// inert: not a button, not draggable, not selectable, and it never opens the drawer. The
+// scroll-to-its-new-position link is Stage C1 of docs/OVERLAY_BUILD_PLAN.md.
+export function GhostChip({ booking }: { booking: OverlayBooking }) {
+  const catalog = useStatusCatalog();
+  const st = catalog.get(booking.status);
+
+  return (
+    <div
+      title={`${booking.siteName} · still here in TMS — moved elsewhere in the planner, not yet published`}
+      aria-label={`${booking.siteName}, moved elsewhere in the planner`}
+      className="flex h-10 w-full items-center overflow-hidden rounded-md border border-dashed text-left select-none"
+      style={{
+        borderColor: tintBorder(st.bar, 0.45),
+        background: st.bg,
+        opacity: 0.4,
+      }}
+    >
+      <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px] italic" style={{ color: st.text }}>
+        {booking.siteName}
+      </span>
+      <span className="shrink-0 pr-1.5 text-[10px] leading-none text-[#757575]" aria-hidden title="Moved in the planner">
+        ↷
+      </span>
+    </div>
+  );
+}
 
 export function CellChip({
   booking,
@@ -16,7 +46,7 @@ export function CellChip({
   onDragStart,
   onDragEnd,
 }: {
-  booking: GridBooking | null;
+  booking: OverlayBooking | null;
   dimmed: boolean;
   warning?: boolean;
   checked?: boolean;

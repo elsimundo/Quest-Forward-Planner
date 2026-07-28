@@ -1,14 +1,13 @@
 import { redirect } from "next/navigation";
 import {
   getActiveUnits,
-  getBookingDateRange,
-  getBookingsInRange,
   getBookingStatuses,
   getAllUnitSpecs,
   getAllSiteCapabilityRequirements,
   getModalitiesForCompany,
   listCompaniesForPicker,
 } from "@/lib/db/queries";
+import { getOverlayBookings, getOverlayDateRange } from "@/lib/db/tms/overlay";
 import { enumerateDays } from "@/lib/dates";
 import { PlannerGrid } from "@/components/planner/planner-grid";
 import { requireRole } from "@/lib/auth/require-role";
@@ -111,13 +110,17 @@ async function PlannerBody({
   role: (typeof ROLES)[number];
 }) {
   const units = await getActiveUnits(companyId, modalityId);
-  const range = (await getBookingDateRange(companyId, modalityId)) ?? fallbackRange();
-  const [bookings, statuses, unitSpecs, siteCapabilityRequirements] = await Promise.all([
-    getBookingsInRange(companyId, modalityId, range.from, range.to),
+  // Both the range and the bookings now come from the overlay — live TMS bookings merged with
+  // our amendments (lib/db/tms/overlay.ts). This throws if TMS is unreachable, which is the
+  // agreed behaviour: a connection error rather than a stale grid (docs/TMS_WRITE_BACK.md §8).
+  const range = (await getOverlayDateRange(companyId, modalityId)) ?? fallbackRange();
+  const [overlay, statuses, unitSpecs, siteCapabilityRequirements] = await Promise.all([
+    getOverlayBookings(companyId, modalityId, range.from, range.to),
     getBookingStatuses(),
     getAllUnitSpecs(companyId),
     getAllSiteCapabilityRequirements(companyId),
   ]);
+  const bookings = overlay.bookings;
   const days = enumerateDays(range.from, range.to);
 
   return (

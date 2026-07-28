@@ -1,4 +1,4 @@
-import { listTmsBookings, type TmsBooking } from "./queries";
+import { listTmsBookings, listTmsBookingStatuses, type TmsBooking } from "./queries";
 
 // A short-lived, in-process cache of TMS bookings — Stage A3 of docs/OVERLAY_BUILD_PLAN.md.
 //
@@ -32,6 +32,13 @@ const TTL_MS = parseInt(process.env.TMS_BOOKING_CACHE_TTL_MS ?? String(DEFAULT_T
 
 export type CachedTmsBookings = {
   bookings: TmsBooking[];
+  /**
+   * TMS status id → its name ("Confirmed", "Corrective Works", …). Cached alongside the
+   * bookings, and in the same fetch, because the overlay can't render a TMS booking without
+   * it — `bookings.status` in TMS is an integer FK, and our own status keys are matched off
+   * the *name*. Fetching the two together also means they can never be a refresh apart.
+   */
+  statusNameById: Map<number, string>;
   /** When this data was actually read from TMS — drives "last refreshed at HH:MM" in the UI. */
   fetchedAt: Date;
 };
@@ -76,8 +83,15 @@ export async function getTmsBookings(tmsCompanyId: number): Promise<CachedTmsBoo
 
   const fetch = (async (): Promise<CachedTmsBookings> => {
     try {
-      const bookings = await listTmsBookings(tmsCompanyId);
-      const value: CachedTmsBookings = { bookings, fetchedAt: new Date() };
+      const [bookings, statuses] = await Promise.all([
+        listTmsBookings(tmsCompanyId),
+        listTmsBookingStatuses(tmsCompanyId),
+      ]);
+      const value: CachedTmsBookings = {
+        bookings,
+        statusNameById: new Map(statuses.map((s) => [s.id, s.name])),
+        fetchedAt: new Date(),
+      };
       entry.value = value;
       return value;
     } catch (err) {

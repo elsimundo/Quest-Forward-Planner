@@ -18,7 +18,7 @@ import { fmtDateLong } from "@/lib/dates";
 import { DEFAULT_STATUS_KEY } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
-import type { GridBooking } from "@/lib/db/queries";
+import type { OverlayBooking } from "@/lib/db/tms/overlay";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
 import { unpublishBooking } from "@/lib/actions/publish";
 import { searchSites, getSiteChildren } from "@/lib/actions/sites";
@@ -48,7 +48,7 @@ export function BookingDrawer({
 }: {
   companyId: number;
   target: DrawerTarget | null;
-  booking: GridBooking | null;
+  booking: OverlayBooking | null;
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;
@@ -90,7 +90,7 @@ function BookingDrawerBody({
 }: {
   companyId: number;
   target: DrawerTarget;
-  booking: GridBooking | null;
+  booking: OverlayBooking | null;
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;

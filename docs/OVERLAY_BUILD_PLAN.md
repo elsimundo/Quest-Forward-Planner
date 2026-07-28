@@ -80,7 +80,7 @@ and Stage B can rely on it.
 
 The core change. Everything here lands together.
 
-### B1. Redefine `bookings` as the amendment layer
+### B1. Redefine `bookings` as the amendment layer — ✅ DONE
 
 Semantics, not schema. A row in `bookings` now means *a change we're proposing*, never a
 copy of TMS:
@@ -90,7 +90,7 @@ copy of TMS:
 
 An unmodified TMS booking has **no row at all**.
 
-### B2. Merged read
+### B2. Merged read — ✅ DONE (`lib/db/tms/overlay.ts`)
 
 Replace `getBookingsInRange` (`lib/db/queries.ts:122`) with a merge of two sources:
 
@@ -104,9 +104,14 @@ amendment render normally; amendments with no `tms_booking_id` render as new boo
 `app/(planner)/page.tsx` and `PlannerGrid`'s props change shape — grid rows now carry
 `isGhost` and `movedToKey` (the unit+date the ghost's real booking now sits at).
 
-**Watch:** mapping TMS ids → local ids needs `units.tms_unit_id` and `sites.tms_location_id`.
-`RCT22` has **no** `tms_unit_id` yet carries live bookings (`DECISIONS.md` #24, #27), so the
-mapping must handle an unmapped unit without dropping its bookings off the grid.
+**The `RCT22` warning here was a misdiagnosis — resolved.** It said RCT22 has no
+`tms_unit_id` yet carries live TMS bookings, so the mapping had to tolerate an unlinked unit.
+Checking the data showed otherwise: RCT22 holds three *amendments*, bookings a scheduler
+moved off CT23 (TMS unit 1344, which is linked). Amendments live in Postgres and are keyed by
+local `unit_id`, so they need no TMS mapping at all. Verified across the live dataset: all
+1,368 TMS bookings map to a local unit, site, and modality tag — **zero dropped**. The
+`unplaced` counter on `OverlayResult` reports any that ever fail, rather than silently
+showing less than TMS has.
 
 ### B3. Migrate the existing 1,368 rows — convert, don't delete
 

@@ -6,7 +6,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 import type { DayInfo } from "@/lib/dates";
 import { fmtDate, DOW_FULL, todayIso } from "@/lib/dates";
-import type { GridBooking } from "@/lib/db/queries";
+import type { OverlayBooking } from "@/lib/db/tms/overlay";
 import type { StatusView } from "@/lib/statuses";
 import { StatusCatalogProvider } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
@@ -15,7 +15,7 @@ import { undoBatch } from "@/lib/actions/undo";
 import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
 import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
-import { CellChip } from "./cell-chip";
+import { CellChip, GhostChip } from "./cell-chip";
 import { PlannerToolbar } from "./toolbar";
 import { StatusLegend } from "./status-legend";
 import { SelectionBar } from "./selection-bar";
@@ -67,7 +67,7 @@ export function PlannerGrid({
   activeModalityId: number;
   units: Unit[];
   days: DayInfo[];
-  bookings: GridBooking[];
+  bookings: OverlayBooking[];
   statuses: StatusView[];
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, CapabilityRequirement[]>;
@@ -105,15 +105,27 @@ export function PlannerGrid({
   const [undoStack, setUndoStack] = useState<string[]>([]);
   const [redoStack, setRedoStack] = useState<string[]>([]);
 
+  // Only REAL bookings — ghosts are excluded deliberately. A ghost is a rendering of where
+  // TMS still has a booking a scheduler has moved (lib/db/tms/overlay.ts); it isn't one of
+  // our rows, so it must never be selectable, draggable, publishable, or openable in the
+  // drawer. Keeping it out of this one map is what guarantees that for every downstream
+  // consumer at once, rather than needing an isGhost check at each of them.
   const bookingLookup = useMemo(() => {
-    const map = new Map<string, GridBooking>();
-    for (const b of bookings) map.set(cellKey(b.date, b.unitId), b);
+    const map = new Map<string, OverlayBooking>();
+    for (const b of bookings) if (!b.isGhost) map.set(cellKey(b.date, b.unitId), b);
+    return map;
+  }, [bookings]);
+
+  const ghostLookup = useMemo(() => {
+    const map = new Map<string, OverlayBooking>();
+    for (const b of bookings) if (b.isGhost) map.set(cellKey(b.date, b.unitId), b);
     return map;
   }, [bookings]);
 
   const sitesByUnit = useMemo(() => {
     const map = new Map<number, Set<string>>();
     for (const b of bookings) {
+      if (b.isGhost) continue;
       const set = map.get(b.unitId) ?? new Set<string>();
       set.add(b.siteName.toLowerCase());
       map.set(b.unitId, set);
@@ -213,7 +225,7 @@ export function PlannerGrid({
     setAnchor(null);
   }, []);
 
-  const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: GridBooking | null) => {
+  const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: OverlayBooking | null) => {
     if (booking?.publishedAt) {
       setDrawerTarget({
         unitId: unit.id,
@@ -619,6 +631,10 @@ export function PlannerGrid({
                   {visibleUnits.map((u) => {
                     const booking = bookingLookup.get(cellKey(day.date, u.id)) ?? null;
                     const k = cellKey(day.date, u.id);
+                    // Where TMS still has a booking the scheduler moved elsewhere. Only ever
+                    // shown in an otherwise-empty cell — the overlay guarantees a ghost and a
+                    // real booking never share a slot.
+                    const ghost = booking ? null : (ghostLookup.get(k) ?? null);
                     const dimmed = !!statusFilter && booking?.status !== statusFilter;
                     const warning = booking
                       ? computeCapabilityWarnings(
@@ -635,6 +651,9 @@ export function PlannerGrid({
                         onDragOver={(e) => onCellDragOver(e, day, u)}
                         onDrop={(e) => onCellDrop(e, day, u)}
                       >
+                        {ghost ? (
+                          <GhostChip booking={ghost} />
+                        ) : (
                         <CellChip
                           booking={booking}
                           dimmed={dimmed}
@@ -647,6 +666,7 @@ export function PlannerGrid({
                           onDragStart={(e) => startDrag(e, day, u)}
                           onDragEnd={endDrag}
                         />
+                        )}
                       </div>
                     );
                   })}

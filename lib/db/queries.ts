@@ -91,6 +91,10 @@ export async function getActiveUnits(companyId: number, modalityId: number) {
 
 // The grid's date range is bounded by what data actually exists for the modality —
 // see the note in app/(planner)/page.tsx for why this isn't a truly unbounded calendar yet.
+// SUPERSEDED by getOverlayDateRange (lib/db/tms/overlay.ts) — this reads only our own
+// `bookings`, which under the overlay model holds amendments rather than the schedule. No
+// caller remains; kept only until Stage F of docs/OVERLAY_BUILD_PLAN.md removes the import
+// machinery alongside it. Don't wire anything new to it.
 export async function getBookingDateRange(companyId: number, modalityId: number): Promise<{ from: string; to: string } | null> {
   const [row] = await db
     .select({
@@ -120,6 +124,9 @@ export type GridBooking = {
   tmsConflictAt: Date | null;
 };
 
+// SUPERSEDED by getOverlayBookings (lib/db/tms/overlay.ts). Same reasoning as
+// getBookingDateRange above — it returns only local rows, so on its own it now shows
+// amendments and none of TMS's actual schedule. No caller remains.
 export async function getBookingsInRange(companyId: number, modalityId: number, from: string, to: string): Promise<GridBooking[]> {
   return db
     .select({

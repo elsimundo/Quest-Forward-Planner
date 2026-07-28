@@ -1,0 +1,354 @@
+import { and, eq, isNull, isNotNull } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { bookings, companies, sites, units, unitModalities } from "@/lib/db/schema";
+import { getTmsBookings } from "./booking-cache";
+import { localStatusKeyForTmsStatus } from "./status-map";
+
+// The overlay read — Stage B2 of docs/OVERLAY_BUILD_PLAN.md.
+//
+// The planner does not hold a copy of TMS's bookings (docs/TMS_WRITE_BACK.md §1). The grid is
+// assembled per request from two sources:
+//
+//   1. TMS bookings, read live (via the 5-minute cache) — the confirmed schedule.
+//   2. Our `bookings` rows, which under the overlay model mean *amendments*: a change a
+//      scheduler is proposing, not a copy of anything.
+//
+// An amendment carrying `tmsBookingId` modifies that TMS booking. If it sits at the same
+// unit+date as TMS has it, it simply replaces it on the grid. If it sits somewhere else, the
+// scheduler has MOVED it, and both halves render: a **ghost** at the TMS position (faded,
+// linking to where it went) and the amendment at its new position. An amendment with no
+// `tmsBookingId` is a booking that exists only here.
+//
+// This is the client's own model, in their words: "If we drag a TMS booking to a new
+// day/unit then I'd like for that original TMS booking to stay where it is, but be made
+// slightly transparent. A link would also be added to that faded out TMS booking that would
+// scroll the user to where that new booking is now located."
+
+export type OverlayBooking = {
+  unitId: number;
+  date: string;
+  siteId: number;
+  siteName: string;
+  status: string;
+  notes: string | null;
+  publishedAt: Date | null;
+  updatedAt: Date;
+  tmsConflictAt: Date | null;
+  /** TMS's own booking id, when this row corresponds to one. Null for a local-only booking. */
+  tmsBookingId: number | null;
+  /**
+   * True for the faded original left behind when a scheduler moved a TMS booking. A ghost is
+   * NOT editable and NOT selectable — it's a rendering of TMS's current truth, not one of our
+   * rows. `movedTo` says where its real counterpart now sits.
+   */
+  isGhost: boolean;
+  movedTo: { unitId: number; date: string } | null;
+  /** On a moved amendment: where TMS still has it. Mirrors `movedTo` for the return link. */
+  movedFrom: { unitId: number; date: string } | null;
+};
+
+export type OverlayResult = {
+  bookings: OverlayBooking[];
+  /** When the TMS half was last read — for the "last refreshed" indicator. */
+  fetchedAt: Date;
+  /**
+   * TMS rows the grid could not place, by reason. Should be empty; a non-zero count means
+   * reference data is out of step (a unit or site TMS knows about that our sync hasn't linked
+   * yet) and the grid is showing less than TMS does. Surfaced rather than swallowed.
+   */
+  unplaced: Record<string, number>;
+};
+
+const slot = (unitId: number, date: string) => `${unitId}:${date}`;
+
+/**
+ * Build the grid for one company + modality over a date window.
+ *
+ * Throws if TMS is unreachable — deliberately. The client chose a connection error over a
+ * stale grid (docs/TMS_WRITE_BACK.md §8), and there is no local copy to fall back to.
+ */
+export async function getOverlayBookings(
+  companyId: number,
+  modalityId: number,
+  from: string,
+  to: string,
+): Promise<OverlayResult> {
+  const [company] = await db
+    .select({ tmsCompanyId: companies.tmsCompanyId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1);
+
+  // A company the reference sync has never linked has no TMS side at all. That's a real
+  // state (a locally-created company), not an error — it just means the grid is amendments
+  // only. `fetchedAt` is now because there was nothing to fetch.
+  if (!company?.tmsCompanyId) {
+    const amendmentsOnly = await loadAmendments(companyId, modalityId);
+    return {
+      bookings: amendmentsOnly
+        .filter((a) => a.date >= from && a.date <= to)
+        .map((a) => toOverlay(a, null, false, null, null)),
+      fetchedAt: new Date(),
+      unplaced: {},
+    };
+  }
+
+  const { bookings: tmsBookings, statusNameById, fetchedAt } = await getTmsBookings(company.tmsCompanyId);
+
+  // Reference data, loaded once per request rather than per booking.
+  const localUnits = await db
+    .select({ id: units.id, tmsUnitId: units.tmsUnitId, companyId: units.companyId })
+    .from(units)
+    .where(and(eq(units.companyId, companyId), isNull(units.deletedAt), isNotNull(units.tmsUnitId)));
+  const unitIdByTmsUnitId = new Map(localUnits.map((u) => [u.tmsUnitId as number, u.id]));
+
+  const localSites = await db
+    .select({ id: sites.id, name: sites.name, tmsLocationId: sites.tmsLocationId })
+    .from(sites)
+    .where(and(eq(sites.companyId, companyId), isNull(sites.deletedAt), isNotNull(sites.tmsLocationId)));
+  const siteIdByTmsLocationId = new Map(localSites.map((s) => [s.tmsLocationId as number, s.id]));
+
+  const siteNameById = new Map(
+    (await db.select({ id: sites.id, name: sites.name }).from(sites).where(eq(sites.companyId, companyId))).map(
+      (s) => [s.id, s.name],
+    ),
+  );
+
+  // Which units belong to THIS modality — a unit can carry several (docs/DECISIONS.md #19),
+  // and a TMS booking belongs on whichever sheet its unit is tagged for.
+  const taggedUnitIds = new Set(
+    (
+      await db
+        .select({ unitId: unitModalities.unitId })
+        .from(unitModalities)
+        .where(eq(unitModalities.modalityId, modalityId))
+    ).map((t) => t.unitId),
+  );
+
+  // Every live amendment for this company+modality, NOT limited to the window: an amendment
+  // can move a booking from inside the window to outside it (or vice versa), and both the
+  // ghost and its counterpart have to be resolvable. The live amendment set is small by
+  // design — a published amendment retires (docs/TMS_WRITE_BACK.md §5) — so this stays cheap.
+  const amendments = await loadAmendments(companyId, modalityId);
+  const amendmentByTmsBookingId = new Map(
+    amendments.filter((a) => a.tmsBookingId !== null).map((a) => [a.tmsBookingId as number, a]),
+  );
+
+  const out: OverlayBooking[] = [];
+  const unplaced: Record<string, number> = {};
+  const note = (reason: string) => {
+    unplaced[reason] = (unplaced[reason] ?? 0) + 1;
+  };
+
+  for (const tb of tmsBookings) {
+    const unitId = unitIdByTmsUnitId.get(tb.unitId);
+    if (unitId === undefined) {
+      // Only count it as unplaced if it would have been on screen — a booking for another
+      // modality's unit isn't missing, it's just not this sheet.
+      if (tb.date >= from && tb.date <= to) note("unit not linked to TMS");
+      continue;
+    }
+    if (!taggedUnitIds.has(unitId)) continue; // another modality's sheet
+    const siteId = siteIdByTmsLocationId.get(tb.locationId);
+    if (siteId === undefined) {
+      if (tb.date >= from && tb.date <= to) note("site not linked to TMS");
+      continue;
+    }
+
+    const amendment = amendmentByTmsBookingId.get(tb.id);
+
+    if (!amendment) {
+      // Untouched TMS booking — render it as-is, if it's in the window.
+      if (tb.date < from || tb.date > to) continue;
+      const { key } = localStatusKeyForTmsStatus(tb.statusId, statusNameById);
+      out.push({
+        unitId,
+        date: tb.date,
+        siteId,
+        siteName: siteNameById.get(siteId) ?? "?",
+        status: key,
+        notes: tb.notes,
+        publishedAt: null,
+        // TMS's own updated_at — the grid uses this for optimistic-lock display only; a TMS
+        // row isn't ours to lock.
+        updatedAt: tb.updatedAt,
+        tmsConflictAt: null,
+        tmsBookingId: tb.id,
+        isGhost: false,
+        movedTo: null,
+        movedFrom: null,
+      });
+      continue;
+    }
+
+    // Amended. If it's still in TMS's slot, the amendment simply replaces it there and the
+    // amendment loop below emits it. If it has moved, leave a ghost behind at TMS's slot.
+    const moved = amendment.unitId !== unitId || amendment.date !== tb.date;
+    if (moved && tb.date >= from && tb.date <= to) {
+      const { key } = localStatusKeyForTmsStatus(tb.statusId, statusNameById);
+      out.push({
+        unitId,
+        date: tb.date,
+        siteId,
+        siteName: siteNameById.get(siteId) ?? "?",
+        status: key,
+        notes: tb.notes,
+        publishedAt: null,
+        updatedAt: tb.updatedAt,
+        tmsConflictAt: null,
+        tmsBookingId: tb.id,
+        isGhost: true,
+        movedTo: { unitId: amendment.unitId, date: amendment.date },
+        movedFrom: null,
+      });
+    }
+  }
+
+  // TMS positions, for drawing a moved amendment's link back to where TMS still has it.
+  const tmsSlotByBookingId = new Map<number, { unitId: number; date: string }>();
+  for (const tb of tmsBookings) {
+    const unitId = unitIdByTmsUnitId.get(tb.unitId);
+    if (unitId !== undefined) tmsSlotByBookingId.set(tb.id, { unitId, date: tb.date });
+  }
+
+  for (const a of amendments) {
+    if (a.date < from || a.date > to) continue;
+    const tmsSlot = a.tmsBookingId !== null ? tmsSlotByBookingId.get(a.tmsBookingId) ?? null : null;
+    const moved = tmsSlot !== null && (tmsSlot.unitId !== a.unitId || tmsSlot.date !== a.date);
+    out.push(toOverlay(a, a.tmsBookingId, false, null, moved ? tmsSlot : null));
+  }
+
+  // A ghost and a real booking can't legitimately share a slot — a ghost only exists where the
+  // amendment moved away. If they ever do, something upstream is wrong; drop the ghost rather
+  // than render two chips in one cell.
+  const realSlots = new Set(out.filter((b) => !b.isGhost).map((b) => slot(b.unitId, b.date)));
+  const deduped = out.filter((b) => !b.isGhost || !realSlots.has(slot(b.unitId, b.date)));
+
+  return { bookings: deduped, fetchedAt, unplaced };
+}
+
+/**
+ * The date span the grid should cover, across BOTH sources.
+ *
+ * Replaces `getBookingDateRange`, which reads only our own `bookings`. That was fine while we
+ * held a copy of TMS's schedule, but under the overlay it would collapse to almost nothing —
+ * once the copies are purged (Stage B3) the local table holds only amendments, so a
+ * local-only range would hide the very TMS bookings the grid exists to show.
+ *
+ * Null when neither side has anything, leaving the caller to pick a default window.
+ */
+export async function getOverlayDateRange(
+  companyId: number,
+  modalityId: number,
+): Promise<{ from: string; to: string } | null> {
+  const [company] = await db
+    .select({ tmsCompanyId: companies.tmsCompanyId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1);
+
+  const dates: string[] = [];
+
+  if (company?.tmsCompanyId) {
+    const { bookings: tmsBookings } = await getTmsBookings(company.tmsCompanyId);
+    const unitIds = new Set(
+      (
+        await db
+          .select({ id: units.id, tmsUnitId: units.tmsUnitId })
+          .from(units)
+          .where(and(eq(units.companyId, companyId), isNull(units.deletedAt), isNotNull(units.tmsUnitId)))
+      ).map((u) => u.tmsUnitId as number),
+    );
+    const tagged = new Set(
+      (
+        await db
+          .select({ unitId: unitModalities.unitId })
+          .from(unitModalities)
+          .where(eq(unitModalities.modalityId, modalityId))
+      ).map((t) => t.unitId),
+    );
+    const localIdByTms = new Map(
+      (
+        await db
+          .select({ id: units.id, tmsUnitId: units.tmsUnitId })
+          .from(units)
+          .where(and(eq(units.companyId, companyId), isNull(units.deletedAt), isNotNull(units.tmsUnitId)))
+      ).map((u) => [u.tmsUnitId as number, u.id]),
+    );
+    for (const b of tmsBookings) {
+      if (!unitIds.has(b.unitId)) continue;
+      const localId = localIdByTms.get(b.unitId);
+      if (localId === undefined || !tagged.has(localId)) continue;
+      dates.push(b.date);
+    }
+  }
+
+  for (const a of await loadAmendments(companyId, modalityId)) dates.push(a.date);
+
+  if (!dates.length) return null;
+  let from = dates[0];
+  let to = dates[0];
+  for (const d of dates) {
+    if (d < from) from = d;
+    if (d > to) to = d;
+  }
+  return { from, to };
+}
+
+type AmendmentRow = {
+  unitId: number;
+  date: string;
+  siteId: number;
+  siteName: string;
+  status: string;
+  notes: string | null;
+  publishedAt: Date | null;
+  updatedAt: Date;
+  tmsConflictAt: Date | null;
+  tmsBookingId: number | null;
+};
+
+async function loadAmendments(companyId: number, modalityId: number): Promise<AmendmentRow[]> {
+  return db
+    .select({
+      unitId: bookings.unitId,
+      date: bookings.date,
+      siteId: bookings.siteId,
+      siteName: sites.name,
+      status: bookings.status,
+      notes: bookings.notes,
+      publishedAt: bookings.publishedAt,
+      updatedAt: bookings.updatedAt,
+      tmsConflictAt: bookings.tmsConflictAt,
+      tmsBookingId: bookings.tmsBookingId,
+    })
+    .from(bookings)
+    .innerJoin(sites, eq(sites.id, bookings.siteId))
+    .where(
+      and(eq(bookings.companyId, companyId), eq(bookings.modalityId, modalityId), isNull(bookings.deletedAt)),
+    );
+}
+
+function toOverlay(
+  a: AmendmentRow,
+  tmsBookingId: number | null,
+  isGhost: boolean,
+  movedTo: { unitId: number; date: string } | null,
+  movedFrom: { unitId: number; date: string } | null,
+): OverlayBooking {
+  return {
+    unitId: a.unitId,
+    date: a.date,
+    siteId: a.siteId,
+    siteName: a.siteName,
+    status: a.status,
+    notes: a.notes,
+    publishedAt: a.publishedAt,
+    updatedAt: a.updatedAt,
+    tmsConflictAt: a.tmsConflictAt,
+    tmsBookingId,
+    isGhost,
+    movedTo,
+    movedFrom,
+  };
+}

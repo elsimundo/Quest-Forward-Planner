@@ -13,17 +13,9 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 // SEED_STATUSES was itself seeded from. A TMS status name not in this map is a genuinely
 // new one Quest has added since — imported as `tbc` (visible, needs a human look) rather
 // than silently guessed, and counted separately in the summary so it doesn't go unnoticed.
-const TMS_STATUS_NAME_TO_LOCAL_KEY: Record<string, string> = {
-  Confirmed: "confirmed",
-  "Bank Holiday": "bankholiday",
-  "Weekend Confirmed": "weekend",
-  "Waiting Final": "likely",
-  Bidding: "bidding",
-  "Corrective Works": "service",
-  "Location to be Confirmed": "tbc",
-  "Customer Cancelled": "cancelled",
-};
-const FALLBACK_STATUS_KEY = "tbc";
+// Moved to ./status-map.ts so the overlay read (lib/db/tms/overlay.ts) shares one copy —
+// two independent mappings would be free to drift while both code paths exist.
+import { TMS_STATUS_NAME_TO_LOCAL_KEY, FALLBACK_STATUS_KEY } from "./status-map";
 
 type SkipReason =
   | "unit not yet synced"
