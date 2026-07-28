@@ -29,6 +29,7 @@ the drawer, publish workflow) even though only CT ships first.
 | Brand tokens (colour, type, spacing, components) | `design-system/` — the Quest Medical design system package |
 | Where the real data comes from | `docs/TMS_INTEGRATION_PLAN.md` — TMS is the sole source of units, sites, and bookings |
 | How published bookings get *back* to TMS | `docs/TMS_WRITE_BACK.md` — the model, and the API questions blocking it. **Nothing writes to TMS today; the connection is read-only.** |
+| The build order for the overlay model | `docs/OVERLAY_BUILD_PLAN.md` — staged plan. **Bookings are becoming an overlay on live TMS data, not a copy** — check this before touching `bookings` or the import. |
 
 ## Ground rules
 
