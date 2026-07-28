@@ -4,11 +4,10 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { bookings, bookingEvents, units, type Status } from "@/lib/db/schema";
+import { bookings, bookingEvents, bookingStatuses, units } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
 import { getUnitRegistrations } from "@/lib/db/unit-labels";
-import { PUBLISHABLE_STATUS_KEYS } from "@/lib/statuses";
 
 // Publishing (forwarding to TMS) is day-to-day scheduling work — scheduler and up.
 const PUBLISH_ROLES = ["scheduler", "admin", "super_admin"] as const;
@@ -34,6 +33,19 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
   if (!targets.length) return { ok: true, count: 0, batchId: null, message: "Nothing to publish." };
 
   return db.transaction(async (tx) => {
+    // Publishability is admin-managed data (booking_statuses.publishable, migration 0012),
+    // not a hardcoded list — read it once per call rather than per target. A status key
+    // missing from the catalogue is treated as NOT publishable: forwarding to TMS is the
+    // consequential direction, so an unknown key fails closed.
+    const publishableKeys = new Set(
+      (
+        await tx
+          .select({ key: bookingStatuses.key })
+          .from(bookingStatuses)
+          .where(and(eq(bookingStatuses.publishable, true), isNull(bookingStatuses.deletedAt)))
+      ).map((r) => r.key),
+    );
+
     const rows: BookingRow[] = [];
     let conflictedSkipped = 0;
     let notConfirmedSkipped = 0;
@@ -56,11 +68,11 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
         conflictedSkipped++;
         continue;
       }
-      // Only a confirmed booking (or its weekend/bank-holiday calendar-derived form) is
-      // final enough to forward — client-confirmed (docs/DECISIONS.md #24). Everything
-      // still "in discussion" (bidding, tbc, likely, service, cancelled) stays sandbox-only
-      // until a scheduler moves it to Confirmed.
-      if (!PUBLISHABLE_STATUS_KEYS.includes(row.status as Status)) {
+      // Only a status an admin has marked publishable is final enough to forward —
+      // client-confirmed (docs/DECISIONS.md #24), now admin-editable (docs/TMS_WRITE_BACK.md
+      // §3.3). Out of the box that's `confirmed` and its weekend/bank-holiday calendar forms;
+      // everything still "in discussion" stays sandbox-only until a scheduler moves it on.
+      if (!publishableKeys.has(row.status)) {
         notConfirmedSkipped++;
         continue;
       }

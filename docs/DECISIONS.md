@@ -771,6 +771,17 @@ see aggregate counts for companies they have no access to elsewhere in the app.
 
 ### 24. Publish is gated to `confirmed` (and its calendar-derived forms), not any status
 
+> **Superseded in mechanism, not in rule (2026-07-28).** `PUBLISHABLE_STATUS_KEYS` is gone;
+> publishability is now `booking_statuses.publishable` (migration `0012`), admin-editable at
+> `/admin/booking-statuses`. The client asked for this directly (`docs/TMS_WRITE_BACK.md`
+> §3.3). The column is seeded to exactly the three keys below, so behaviour was unchanged on
+> deploy — verified against the live catalogue. The "both sides read one source" property the
+> entry below relies on is preserved and now stronger: the server gate and the grid's counts
+> both read the catalogue rather than a shared constant. `confirmed` is protected from being
+> made unpublishable, since it's the default status and switching it off would leave nothing
+> publishable at all.
+
+
 **Decided:** `publishBookings` (`lib/actions/publish.ts`) now refuses to forward a booking
 to the live schedule unless its status key is `confirmed`, `weekend`, or `bankholiday` —
 anything still "in discussion" (`bidding`, `tbc`, `likely`, `service`, `cancelled`) is

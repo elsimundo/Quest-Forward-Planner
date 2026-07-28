@@ -202,6 +202,7 @@ access add/relabel/recolour/reorder/retire rows at `/admin/booking-statuses`.
 | `editable` | bool | User-pickable in the drawer. `false` for calendar-derived statuses. |
 | `calendar_derived` | bool | `true` for `weekend`/`bankholiday` — assigned by the app from the date, never user-set |
 | `billable` | bool | Informational, mirrors TMS's own concept |
+| `publishable` | bool, default false | May a booking in this status be forwarded to TMS? Migration `0012`, replacing the hardcoded `PUBLISHABLE_STATUS_KEYS` list at the client's request (`docs/TMS_WRITE_BACK.md` §3.3) so it's admin-editable. Seeded true for `confirmed`/`weekend`/`bankholiday` — exactly the old behaviour (`docs/DECISIONS.md` #24). **Defaults false**, so a newly created (or un-retired) status must be opted into publishing. Read by both the server gate (`lib/actions/publish.ts`) and the grid's own "Publish N" counts, from the same catalogue, so the two can't drift. `confirmed` can't be made unpublishable — it's the default status, so turning it off would leave nothing publishable at all |
 | `active` | bool | `false` hides it from the picker without breaking historical bookings |
 | `deleted_at` | timestamptz, null | Soft delete |
 

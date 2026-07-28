@@ -19,6 +19,7 @@ type Draft = {
   colorText: string;
   colorBorder: string;
   billable: boolean;
+  publishable: boolean;
   active: boolean;
 };
 
@@ -30,6 +31,8 @@ const NEW_DRAFT: Draft = {
   colorText: "#1f5a87",
   colorBorder: "#cfe0ee",
   billable: false,
+  // New statuses aren't publishable until an admin opts in — mirrors the server default.
+  publishable: false,
   active: true,
 };
 
@@ -94,6 +97,12 @@ function StatusForm({
   onCancel: () => void;
   saving: boolean;
 }) {
+  // `confirmed` is the one status that must stay publishable — it's the default every new
+  // booking takes, so turning it off would leave nothing publishable at all. The server
+  // enforces this too (lib/actions/admin/booking-statuses.ts); disabling the checkbox just
+  // means an admin never hits that error by accident.
+  const isConfirmed = draft.key === "confirmed";
+
   return (
     <div className="rounded-xl border border-[#e6e6e6] bg-[#fbfcfe] p-4">
       <div className="flex flex-wrap items-end gap-4">
@@ -138,6 +147,24 @@ function StatusForm({
           />
           Billable
         </label>
+        {!isNew && (
+          <label
+            className="flex items-center gap-2 text-[13px] text-[#333333]"
+            title={
+              isConfirmed
+                ? "Confirmed is the status the planner forwards to TMS — it can't be switched off."
+                : "Bookings in this status can be published to TMS."
+            }
+          >
+            <input
+              type="checkbox"
+              checked={draft.publishable}
+              disabled={isConfirmed}
+              onChange={(e) => setDraft({ ...draft, publishable: e.target.checked })}
+            />
+            Publishable to TMS {isConfirmed && <span className="text-[#9a9a9a]">(always on)</span>}
+          </label>
+        )}
         {!isNew && (
           <label className="flex items-center gap-2 text-[13px] text-[#333333]" title={calendarDerived ? "Calendar-derived statuses stay active" : undefined}>
             <input
@@ -193,6 +220,7 @@ export function BookingStatusesPanel({ statuses }: { statuses: AdminBookingStatu
       colorText: s.colorText,
       colorBorder: s.colorBorder,
       billable: s.billable,
+      publishable: s.publishable,
       active: s.active,
     });
     setCreating(false);
@@ -241,6 +269,7 @@ export function BookingStatusesPanel({ statuses }: { statuses: AdminBookingStatu
           colorText: draft.colorText,
           colorBorder: draft.colorBorder,
           billable: draft.billable,
+          publishable: draft.publishable,
           active: draft.active,
         }),
       "Status updated.",
@@ -319,6 +348,7 @@ export function BookingStatusesPanel({ statuses }: { statuses: AdminBookingStatu
                   {s.calendarDerived && <span>calendar-assigned</span>}
                   {!s.editable && !s.calendarDerived && <span>not user-pickable</span>}
                   {s.billable && <span>billable</span>}
+                  {s.publishable && <span>publishable</span>}
                   {!s.active && <span className="text-[#b13a3a]">inactive</span>}
                   <span>{s.usageCount} booking{s.usageCount === 1 ? "" : "s"}</span>
                 </div>

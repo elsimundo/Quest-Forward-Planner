@@ -70,6 +70,11 @@ export async function createBookingStatus(input: {
     editable: true,
     calendarDerived: false,
     billable: input.billable,
+    // A newly created status is never publishable until an admin says so — forwarding to
+    // TMS is the consequential direction, so it's opted into, not defaulted into. Also
+    // covers the un-retire path below: reviving a deleted status doesn't silently restore
+    // whatever publishability it had before.
+    publishable: false,
     active: true,
     deletedAt: null,
   };
@@ -87,6 +92,7 @@ export async function updateBookingStatus(input: {
   id: number;
   label: string;
   billable: boolean;
+  publishable: boolean;
   active: boolean;
 } & ColourInput): Promise<StatusActionResult> {
   const actor = await requireRole([...ADMIN_ROLES]);
@@ -98,7 +104,7 @@ export async function updateBookingStatus(input: {
   if (colourErr) return { ok: false, error: colourErr };
 
   const [row] = await db
-    .select({ calendarDerived: bookingStatuses.calendarDerived })
+    .select({ key: bookingStatuses.key, calendarDerived: bookingStatuses.calendarDerived })
     .from(bookingStatuses)
     .where(and(eq(bookingStatuses.id, input.id), isNull(bookingStatuses.deletedAt)))
     .limit(1);
@@ -107,6 +113,14 @@ export async function updateBookingStatus(input: {
   // so they must stay active — the grid relies on them existing. Colours/label are fine.
   if (row.calendarDerived && !input.active) {
     return { ok: false, error: "Weekend and bank-holiday statuses can't be deactivated — the planner assigns them automatically." };
+  }
+  // `confirmed` is the default status every new booking takes, and the client's rule is that
+  // confirmed work is exactly what gets forwarded (docs/DECISIONS.md #24). Making it
+  // unpublishable would leave nothing publishable at all — the Publish button would just
+  // report "nothing to publish" forever, with no hint why. Same protection `confirmed`
+  // already has against deletion below.
+  if (row.key === "confirmed" && !input.publishable) {
+    return { ok: false, error: "Confirmed can't be made unpublishable — it's the status the planner forwards to TMS." };
   }
 
   await db
@@ -118,6 +132,7 @@ export async function updateBookingStatus(input: {
       colorText: input.colorText,
       colorBorder: input.colorBorder,
       billable: input.billable,
+      publishable: input.publishable,
       active: input.active,
     })
     .where(eq(bookingStatuses.id, input.id));

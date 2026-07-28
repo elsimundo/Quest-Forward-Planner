@@ -8,13 +8,12 @@ import type { DayInfo } from "@/lib/dates";
 import { fmtDate, DOW_FULL, todayIso } from "@/lib/dates";
 import type { GridBooking } from "@/lib/db/queries";
 import type { StatusView } from "@/lib/statuses";
-import { PUBLISHABLE_STATUS_KEYS } from "@/lib/statuses";
 import { StatusCatalogProvider } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { moveBookings, type MoveMode, type MoveSpec } from "@/lib/actions/booking-moves";
 import { undoBatch } from "@/lib/actions/undo";
 import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
-import type { Role, Status } from "@/lib/db/schema";
+import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip } from "./cell-chip";
 import { PlannerToolbar } from "./toolbar";
@@ -362,20 +361,28 @@ export function PlannerGrid({
   }
 
   // ── publish / lock ──
-  // Live, unpublished, Confirmed-or-equivalent bookings within [from, to] — the eligible
-  // targets for a range sweep. Mirrors the server's own gate (lib/actions/publish.ts,
-  // docs/DECISIONS.md #24) so this count never promises more than will actually publish.
+  // Which statuses may be forwarded to TMS, straight from the admin-managed catalogue
+  // (booking_statuses.publishable, migration 0012). Both this and the server gate in
+  // lib/actions/publish.ts read the same data, so the "Publish N" count can't drift from
+  // what the server will actually accept — which a hardcoded list on either side would.
+  const publishableKeys = useMemo(
+    () => new Set(statuses.filter((s) => s.publishable).map((s) => s.key)),
+    [statuses],
+  );
+
+  // Live, unpublished, publishable-status bookings within [from, to] — the eligible
+  // targets for a range sweep.
   const eligibleInRange = useCallback(
     (from: string, to: string): PublishTarget[] => {
       const out: PublishTarget[] = [];
       for (const b of bookings) {
-        if (b.date >= from && b.date <= to && !b.publishedAt && PUBLISHABLE_STATUS_KEYS.includes(b.status as Status)) {
+        if (b.date >= from && b.date <= to && !b.publishedAt && publishableKeys.has(b.status)) {
           out.push({ unitId: b.unitId, date: b.date });
         }
       }
       return out;
     },
-    [bookings],
+    [bookings, publishableKeys],
   );
 
   const countEligibleInRange = useCallback(
@@ -384,15 +391,15 @@ export function PlannerGrid({
   );
 
   // How many of the current selection are actually publishable (booked, not yet locked,
-  // and Confirmed-or-equivalent — mirrors the server's own gate, docs/DECISIONS.md #24).
+  // and in a status the catalogue marks publishable — mirrors the server's own gate).
   const publishableSelected = useMemo(() => {
     let n = 0;
     for (const k of checked) {
       const b = bookingLookup.get(k);
-      if (b && !b.publishedAt && PUBLISHABLE_STATUS_KEYS.includes(b.status as Status)) n++;
+      if (b && !b.publishedAt && publishableKeys.has(b.status)) n++;
     }
     return n;
-  }, [checked, bookingLookup]);
+  }, [checked, bookingLookup, publishableKeys]);
 
   async function applyPublish(targets: PublishTarget[]) {
     if (!targets.length) return;

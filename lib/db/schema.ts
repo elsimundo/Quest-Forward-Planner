@@ -252,6 +252,14 @@ export const bookingStatuses = pgTable("booking_statuses", {
   calendarDerived: boolean("calendar_derived").notNull().default(false),
   // Mirrors TMS's booking_statuses.billable — informational for now, drives future export.
   billable: boolean("billable").notNull().default(false),
+  // May a booking in this status be forwarded to TMS? Replaces the hardcoded
+  // PUBLISHABLE_STATUS_KEYS list (docs/DECISIONS.md #24) at the client's request
+  // (docs/TMS_WRITE_BACK.md §3.3) so publishability is admin-editable alongside labels and
+  // colours rather than needing a code change. Seeded true for confirmed/weekend/bankholiday
+  // in migration 0012 — exactly the old behaviour — and false for everything still "in
+  // discussion". New statuses default false: publishing to TMS is the consequential
+  // direction, so it should be opted into deliberately.
+  publishable: boolean("publishable").notNull().default(false),
   active: boolean("active").notNull().default(true),
   // Soft delete, per CLAUDE.md — a retired status keeps rendering on historical bookings.
   deletedAt: timestamp("deleted_at", { withTimezone: true }),

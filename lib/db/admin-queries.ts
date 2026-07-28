@@ -295,6 +295,7 @@ export type AdminBookingStatus = {
   editable: boolean;
   calendarDerived: boolean;
   billable: boolean;
+  publishable: boolean;
   active: boolean;
   // How many live bookings currently use this status — retiring one with usage > 0 hides it
   // from the picker but keeps it rendering on those bookings.
@@ -322,6 +323,7 @@ export async function listBookingStatusesForAdmin(): Promise<AdminBookingStatus[
       editable: bookingStatuses.editable,
       calendarDerived: bookingStatuses.calendarDerived,
       billable: bookingStatuses.billable,
+      publishable: bookingStatuses.publishable,
       active: bookingStatuses.active,
       usageCount: sql<number>`coalesce(${usage.n}, 0)`,
     })

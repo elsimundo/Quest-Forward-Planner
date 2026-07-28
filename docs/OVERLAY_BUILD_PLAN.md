@@ -16,7 +16,7 @@ Stages B onward are a chain.
 
 No behaviour change. Safe to ship in any order, individually.
 
-### A1. `booking_statuses.publishable`
+### A1. `booking_statuses.publishable` — ✅ DONE (migration 0012)
 
 Migration adds a boolean, defaulting false, seeded **true** for `confirmed`, `weekend`, and
 `bankholiday` — exactly today's behaviour, so nothing changes on deploy.

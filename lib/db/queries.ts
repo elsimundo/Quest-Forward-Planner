@@ -28,6 +28,7 @@ export async function getBookingStatuses(): Promise<StatusView[]> {
       editable: bookingStatuses.editable,
       calendarDerived: bookingStatuses.calendarDerived,
       displayOrder: bookingStatuses.displayOrder,
+      publishable: bookingStatuses.publishable,
       active: bookingStatuses.active,
     })
     .from(bookingStatuses)
