@@ -6,31 +6,56 @@ import type { OverlayBooking } from "@/lib/db/tms/overlay";
 
 // The faded original left behind when a scheduler moves a TMS booking — the client's own
 // ask: "I'd like for that original TMS booking to stay where it is, but be made slightly
-// transparent." It renders TMS's current truth, not one of our rows, so it is deliberately
-// inert: not a button, not draggable, not selectable, and it never opens the drawer. The
-// scroll-to-its-new-position link is Stage C1 of docs/OVERLAY_BUILD_PLAN.md.
-export function GhostChip({ booking }: { booking: OverlayBooking }) {
+// transparent. A link would also be added to that faded out TMS booking that would scroll
+// the user to where that new booking is now located."
+//
+// It renders TMS's current truth, not one of our rows, so it stays inert in every sense that
+// would change data: not draggable, not selectable, never opens the drawer, never counted for
+// publishing. The ONE thing it does is navigate — clicking jumps to where the booking now
+// sits. That's why it's a button rather than a div: it's a link, not an editable cell.
+export function GhostChip({
+  booking,
+  toLabel,
+  onGoTo,
+}: {
+  booking: OverlayBooking;
+  /** Human-readable destination, e.g. "RCT22 · 3 Mar" — for the tooltip. */
+  toLabel: string | null;
+  onGoTo?: () => void;
+}) {
   const catalog = useStatusCatalog();
   const st = catalog.get(booking.status);
 
+  const title = toLabel
+    ? `${booking.siteName} — still here in TMS. Moved to ${toLabel} in the planner, not yet published. Click to jump there.`
+    : `${booking.siteName} — still here in TMS, moved elsewhere in the planner and not yet published.`;
+
   return (
-    <div
-      title={`${booking.siteName} · still here in TMS — moved elsewhere in the planner, not yet published`}
-      aria-label={`${booking.siteName}, moved elsewhere in the planner`}
-      className="flex h-10 w-full items-center overflow-hidden rounded-md border border-dashed text-left select-none"
+    <button
+      type="button"
+      onClick={onGoTo}
+      disabled={!onGoTo}
+      title={title}
+      aria-label={title}
+      className="group flex h-10 w-full items-center overflow-hidden rounded-md border border-dashed text-left transition-opacity duration-150 select-none enabled:cursor-pointer enabled:hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         borderColor: tintBorder(st.bar, 0.45),
         background: st.bg,
-        opacity: 0.4,
+        opacity: 0.45,
       }}
     >
       <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px] italic" style={{ color: st.text }}>
         {booking.siteName}
       </span>
-      <span className="shrink-0 pr-1.5 text-[10px] leading-none text-[#757575]" aria-hidden title="Moved in the planner">
-        ↷
-      </span>
-    </div>
+      {onGoTo && (
+        <span
+          className="shrink-0 pr-1.5 text-[11px] leading-none text-[#5a6472] transition-transform duration-150 group-hover:translate-x-0.5"
+          aria-hidden
+        >
+          ↷
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -42,6 +67,7 @@ export function CellChip({
   isOpen,
   draggable,
   preview,
+  flash,
   onClick,
   onDragStart,
   onDragEnd,
@@ -53,6 +79,8 @@ export function CellChip({
   isOpen?: boolean;
   draggable?: boolean;
   preview?: "ok" | "bad" | null;
+  /** Transient highlight after jumping here from a ghost's "moved to" link (Stage C1). */
+  flash?: boolean;
   onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
@@ -106,8 +134,14 @@ export function CellChip({
       className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         cursor: locked ? "pointer" : "grab",
-        borderColor: checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : borderColour,
-        boxShadow: checked ? "0 0 0 2px rgba(43,123,185,0.28)" : isOpen ? "0 0 0 2px #f0f7ff" : "none",
+        borderColor: flash ? "#f17f42" : checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : borderColour,
+        boxShadow: flash
+          ? "0 0 0 3px rgba(241,127,66,0.45)"
+          : checked
+            ? "0 0 0 2px rgba(43,123,185,0.28)"
+            : isOpen
+              ? "0 0 0 2px #f0f7ff"
+              : "none",
         background: st.bg,
         opacity: dimmed && !preview ? 0.22 : locked ? 0.72 : 1,
         filter: locked ? "saturate(0.55)" : "none",

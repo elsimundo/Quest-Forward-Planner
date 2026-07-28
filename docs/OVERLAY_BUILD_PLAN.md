@@ -141,12 +141,25 @@ Replaces the frozen-row `⇄` mechanism, which depended on the import.
 
 ## Stage C — interaction
 
-### C1. Ghosts
+### C1. Ghosts — ✅ DONE
 
-Render superseded TMS bookings semi-transparent at their original slot, with a link that
-scrolls to the booking's new position. New bookings with no TMS origin get neither. Grid is
-virtualised (`useVirtualizer`), so "scroll to" means scrolling the virtualiser to that row,
-not `scrollIntoView` on a node that may not be mounted.
+Superseded TMS bookings render semi-transparent, dashed and italic at their original slot,
+with a `↷` affordance. Clicking jumps to where the booking now sits. New bookings with no TMS
+origin get neither.
+
+Three things the naive implementation gets wrong, all handled:
+
+- **Rows are virtualised**, so `scrollIntoView` on a DOM node is useless — the destination row
+  may not be mounted. Uses `virtualizer.scrollToIndex` instead.
+- **Columns scroll horizontally behind a sticky date column**, so centring means centring in
+  the space to the *right* of `DATE_COL_WIDTH`, not in the viewport.
+- **A search filter can be hiding the destination column.** Jumping to a column that isn't
+  rendered silently does nothing, which reads as a broken link — so the search is cleared
+  first, and the scroll deferred a frame so the column exists before it's measured.
+
+The destination cell flashes amber for 2s on arrival, so the eye lands on the booking rather
+than on "some row that scrolled past". The ghost is a `<button>` because it is a link — it
+still never drags, selects, opens the drawer, or counts toward publishing.
 
 ### C2. Writes create amendments
 

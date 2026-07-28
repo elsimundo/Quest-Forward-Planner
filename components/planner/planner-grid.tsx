@@ -122,6 +122,14 @@ export function PlannerGrid({
     return map;
   }, [bookings]);
 
+  const unitById = useMemo(() => new Map(units.map((u) => [u.id, u])), [units]);
+
+  // Transient highlight on the cell we just jumped to from a ghost, so the eye lands on it
+  // rather than on "some row scrolled past". Cleared on a timer, and on unmount.
+  const [flashKey, setFlashKey] = useState<string | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
+
   const sitesByUnit = useMemo(() => {
     const map = new Map<number, Set<string>>();
     for (const b of bookings) {
@@ -371,6 +379,45 @@ export function PlannerGrid({
     await applyMove(conflict.moves, choice);
     setConflict(null);
   }
+
+  // ── ghost navigation (Stage C1) ──
+  // Jump from a ghost to where its booking actually sits now. Two axes to handle: rows are
+  // virtualised (so scrollIntoView on a DOM node is useless — the target row may not be
+  // mounted), and unit columns scroll horizontally behind a sticky date column.
+  const goToMoved = useCallback(
+    (to: { unitId: number; date: string }) => {
+      // If a search filter is hiding the destination column, clear it first — jumping to a
+      // column that isn't rendered would silently do nothing, which reads as a broken link.
+      const hidden = !visibleUnits.some((u) => u.id === to.unitId);
+      if (hidden) setSearch("");
+      const columns = hidden ? units : visibleUnits;
+
+      const run = () => {
+        const rowIdx = dateIdx.get(to.date);
+        if (rowIdx !== undefined) virtualizer.scrollToIndex(rowIdx, { align: "center" });
+
+        const el = scrollRef.current;
+        const colIdx = columns.findIndex((u) => u.id === to.unitId);
+        if (el && colIdx >= 0) {
+          // Centre the column in the space to the RIGHT of the sticky date column, which
+          // overlays the first DATE_COL_WIDTH px of the viewport.
+          const contentX = DATE_COL_WIDTH + colIdx * UNIT_COL_WIDTH;
+          const gutter = DATE_COL_WIDTH + Math.max(0, (el.clientWidth - DATE_COL_WIDTH - UNIT_COL_WIDTH) / 2);
+          const left = Math.max(0, Math.min(contentX - gutter, el.scrollWidth - el.clientWidth));
+          el.scrollTo({ left, behavior: "smooth" });
+        }
+
+        setFlashKey(cellKey(to.date, to.unitId));
+        if (flashTimer.current) clearTimeout(flashTimer.current);
+        flashTimer.current = setTimeout(() => setFlashKey(null), 2000);
+      };
+
+      // Clearing the search has to paint before the column index means anything.
+      if (hidden) requestAnimationFrame(() => requestAnimationFrame(run));
+      else run();
+    },
+    [dateIdx, virtualizer, visibleUnits, units],
+  );
 
   // ── publish / lock ──
   // Which statuses may be forwarded to TMS, straight from the admin-managed catalogue
@@ -652,7 +699,15 @@ export function PlannerGrid({
                         onDrop={(e) => onCellDrop(e, day, u)}
                       >
                         {ghost ? (
-                          <GhostChip booking={ghost} />
+                          <GhostChip
+                            booking={ghost}
+                            toLabel={
+                              ghost.movedTo
+                                ? `${unitById.get(ghost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(ghost.movedTo.date)}`
+                                : null
+                            }
+                            onGoTo={ghost.movedTo ? () => goToMoved(ghost.movedTo!) : undefined}
+                          />
                         ) : (
                         <CellChip
                           booking={booking}
@@ -662,6 +717,7 @@ export function PlannerGrid({
                           isOpen={drawerTarget?.unitId === u.id && drawerTarget?.date === day.date}
                           draggable={!!booking}
                           preview={drag?.preview.get(k) ?? null}
+                          flash={flashKey === k}
                           onClick={(e) => handleCellClick(e, day, u, booking)}
                           onDragStart={(e) => startDrag(e, day, u)}
                           onDragEnd={endDrag}
