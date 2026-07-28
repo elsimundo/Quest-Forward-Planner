@@ -1,6 +1,6 @@
 "use server";
 
-import { searchSites as searchSitesQuery, type SiteMatch } from "@/lib/db/queries";
+import { searchSites as searchSitesQuery, getSiteChildren as getSiteChildrenQuery, type SiteMatch } from "@/lib/db/queries";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
 import { ROLES } from "@/lib/db/schema";
@@ -15,4 +15,13 @@ export async function searchSites(companyId: number, query: string): Promise<Sit
   if (!actor) return [];
   if (!companyAllowed(actor.companyAccess, companyId)) return [];
   return searchSitesQuery(companyId, query);
+}
+
+// The drawer's "which pad?" step once a parent site is picked (docs/DECISIONS.md #25) —
+// same access pattern as searchSites above.
+export async function getSiteChildren(companyId: number, parentSiteId: number): Promise<SiteMatch[]> {
+  const actor = await requireRole([...ROLES]);
+  if (!actor) return [];
+  if (!companyAllowed(actor.companyAccess, companyId)) return [];
+  return getSiteChildrenQuery(companyId, parentSiteId);
 }

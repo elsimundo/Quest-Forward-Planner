@@ -786,6 +786,67 @@ full selection and letting the server report what it skipped — rejected for co
 the TMS-conflict skip already works this way, and a scheduler benefits from seeing "N still
 need to be Confirmed" rather than those rows silently vanishing from what they selected.
 
+### 25. Pad grouping — one-level `sites.parentSiteId`, admin-managed, drawer asks "which pad?"
+
+**Decided:** Built the pad-grouping UI §5 always intended as a fast-follow. Schema:
+`sites.parentSiteId`, nullable self-reference, migration `0011`. A site is exactly one of:
+a plain standalone site (no parent, no children), a **group parent** (no parent of its
+own, ≥1 child), or a **pad** (has a parent, no children of its own) — enforced in
+`lib/actions/admin/site-groups.ts`'s `setSiteParent`, not the database: assigning a parent
+rejects if the target parent itself has a parent (no grandparent chains) or if the site
+being assigned already has children of its own (can't be both a parent and a pad). New
+admin screen `/admin/site-groups` (company-scoped like every other admin list,
+`docs/DECISIONS.md` #22/#23) — create a group (a bare new site, name only, never
+TMS-linked or itself bookable), search any approved site to add as a pad, remove a pad back
+to standalone. `searchSites`/the booking drawer's browse-all (`lib/db/queries.ts`,
+`docs/DECISIONS.md` #26 — the location-dropdown work) now **excludes** pad sites from the
+top-level list entirely — you pick the parent, and if it has children the drawer fetches
+them (`getSiteChildren`) and prompts "which pad?" before finalizing the actual booking
+target, which is always a pad/leaf site, never the parent. Grouping is 100% local
+organisation on top of what TMS already gave us as flat, independently-bookable locations —
+it never touches an existing booking's `site_id`, and TMS has no concept of it at all.
+
+**Why:** TMS's `pads` table is completely empty everywhere (verified live, `docs/
+TMS_INTEGRATION_PLAN.md` §5) — InHealth instead bakes the pad into the location name
+("Kent & Canterbury Hospital Pad 1" / "Pad 2", each its own TMS `locations` row). Phase 1
+shipped this as "pad = its own site" for free, with the explicit intent to add real
+grouping once CT was live and it stopped being a distractor. One level only (no
+grandparent chains) keeps the drawer's "pick parent → which pad?" flow simple to reason
+about and impossible to get stuck in — there's never a "which pad, which then asks which
+pad again" case to handle.
+
+**Not chosen:** (a) Arbitrary-depth nesting — rejected as solving a problem nobody has;
+TMS's own data is flat (a hospital's pads, not pads-within-pads), and unlimited depth would
+turn the drawer's simple two-step flow into a real tree-navigation UI for no known benefit.
+(b) Auto-grouping by name pattern (e.g. regex-stripping " Pad N" and grouping by the
+remainder) — rejected: fragile against real naming variance already observed live ("Lister
+Hospital Main Pad (General)" vs "... PET Reloc Pad" vs "Queens Medical Centre, Pad 1" — no
+single pattern fits all of it), and silently grouping sites an admin never reviewed risks a
+wrong merge no one asked for. Explicit admin action only. (c) Letting a parent site be
+directly bookable too (as if it were also its own pad) — rejected: every existing booking
+already points at a specific real TMS location, and letting new bookings land on a
+purely-organisational parent row would create bookings resolving to nothing at TMS's end.
+
+### 26. Site-location field: search or browse, not search-only
+
+**Decided:** The booking drawer's site field (`components/planner/booking-drawer.tsx`)
+now opens a full, scrollable, alphabetical list of the company's sites on focus — before
+the user types anything — instead of showing nothing until 2+ characters are typed.
+Typing still narrows to the existing top-6 type-ahead (`lib/db/queries.ts`'s `searchSites`,
+SPEC §5). Implemented as a `siteFieldOpen` boolean driving the dropdown, not derived from
+query length, so an empty query can legitimately show results.
+
+**Why:** Client-relayed ask (David Emerson's meeting notes, 2026-07-27): "the site location
+can be search or from a dropdown list of locations available to the company." A scheduler
+who doesn't know (or can't spell) a site's exact name had no way to browse what's available
+before this — SPEC §5's original ≥2-char type-ahead assumed the user already had a name in
+mind.
+
+**Not chosen:** Capping the browse-all list (e.g. top 50) — rejected: InHealth alone has
+677 sites, and an artificial cap would silently hide real options with no way to reach them
+short of guessing search terms, defeating the point of "browse" in the first place. A plain
+scrollable list handles that volume fine.
+
 <!--
 Template for new entries:
 

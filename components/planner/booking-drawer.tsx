@@ -21,7 +21,8 @@ import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import type { GridBooking } from "@/lib/db/queries";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
 import { unpublishBooking } from "@/lib/actions/publish";
-import { searchSites } from "@/lib/actions/sites";
+import { searchSites, getSiteChildren } from "@/lib/actions/sites";
+import type { SiteMatch } from "@/lib/db/queries";
 
 export type DrawerTarget = {
   unitId: number;
@@ -104,11 +105,15 @@ function BookingDrawerBody({
   const [selectedSite, setSelectedSite] = useState<{ id: number; name: string } | null>(
     booking ? { id: booking.siteId, name: booking.siteName } : null,
   );
-  const [matches, setMatches] = useState<{ id: number; name: string }[]>([]);
+  const [matches, setMatches] = useState<SiteMatch[]>([]);
   // Drives the dropdown's visibility directly, rather than deriving it from siteQuery
   // length — that's what lets focusing an EMPTY field browse the full site list (the
   // client's "or a dropdown list of locations" ask) alongside the existing type-ahead.
   const [siteFieldOpen, setSiteFieldOpen] = useState(false);
+  // Set when a picked match has pads grouped under it (docs/TMS_INTEGRATION_PLAN.md §5,
+  // docs/DECISIONS.md #25) — swaps the dropdown to "which pad?" instead of finalizing the
+  // parent itself, which is never directly bookable.
+  const [padPrompt, setPadPrompt] = useState<{ parentName: string; children: SiteMatch[] } | null>(null);
   const [status, setStatus] = useState<string>(
     booking && editableStatuses.some((s) => s.key === booking.status) ? booking.status : DEFAULT_STATUS_KEY,
   );
@@ -142,9 +147,21 @@ function BookingDrawerBody({
     return () => clearTimeout(handle);
   }, [siteQuery, selectedSite, companyId, siteFieldOpen]);
 
+  async function handlePickSite(m: SiteMatch) {
+    if (m.hasChildren) {
+      const children = await getSiteChildren(companyId, m.id);
+      setPadPrompt({ parentName: m.name, children });
+      return;
+    }
+    setSelectedSite(m);
+    setSiteQuery(m.name);
+    setMatches([]);
+    setPadPrompt(null);
+  }
+
   const locked = !!booking?.publishedAt;
   const specs = unitSpecs[target.unitId] ?? {};
-  const showMatches = siteFieldOpen && selectedSite?.name !== siteQuery && matches.length > 0;
+  const showMatches = !!padPrompt || (siteFieldOpen && selectedSite?.name !== siteQuery && matches.length > 0);
 
   const warnings = selectedSite
     ? computeCapabilityWarnings(
@@ -258,6 +275,7 @@ function BookingDrawerBody({
               onChange={(e) => {
                 setSiteQuery(e.target.value);
                 if (selectedSite && e.target.value !== selectedSite.name) setSelectedSite(null);
+                setPadPrompt(null); // typing again backs out of a "which pad?" prompt to plain search
               }}
               onFocus={() => setSiteFieldOpen(true)}
               onBlur={() => setSiteFieldOpen(false)}
@@ -265,20 +283,48 @@ function BookingDrawerBody({
             />
             {showMatches && (
               <div className="mt-1.5 max-h-64 overflow-y-auto rounded-xl border">
-                {matches.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onMouseDown={() => {
-                      setSelectedSite(m);
-                      setSiteQuery(m.name);
-                      setMatches([]);
-                    }}
-                    className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
-                  >
-                    {m.name}
-                  </button>
-                ))}
+                {padPrompt ? (
+                  <>
+                    <button
+                      type="button"
+                      // preventDefault keeps focus on the Input — without it, the button
+                      // steals focus on click, which blurs the field and closes the whole
+                      // dropdown instead of returning to the parent search results.
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setPadPrompt(null);
+                      }}
+                      className="block w-full border-b bg-[#f7f9fc] px-3.5 py-2 text-left text-xs text-[#757575] hover:bg-[#eef2f7] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+                    >
+                      ← Back — which pad at {padPrompt.parentName}?
+                    </button>
+                    {padPrompt.children.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onMouseDown={() => void handlePickSite(m)}
+                        className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+                      >
+                        {m.name}
+                      </button>
+                    ))}
+                    {padPrompt.children.length === 0 && (
+                      <div className="px-3.5 py-3 text-xs text-[#9a9a9a]">No pads found in this group.</div>
+                    )}
+                  </>
+                ) : (
+                  matches.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onMouseDown={() => void handlePickSite(m)}
+                      className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+                    >
+                      {m.name}
+                      {m.hasChildren && <span className="ml-2 text-xs text-[#757575]">— has pads</span>}
+                    </button>
+                  ))
+                )}
               </div>
             )}
 

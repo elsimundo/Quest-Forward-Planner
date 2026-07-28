@@ -314,10 +314,13 @@ Power), so `viewer` (read-only) is the common tier.
    Cardiac/Cath Labs/Endoscopy sheets correctly render their units with zero bookings — TMS
    itself has all 1,368 of InHealth's current bookings on CT units only, confirmed directly
    against TMS's MySQL `bookings` table, so the empty non-CT sheets are real, not a bug.
-6. **Pad grouping UI** (§5) — fast-follow, non-blocking.
+6. ✅ **Pad grouping UI** (§5) — `sites.parentSiteId` (migration `0011`), admin screen at
+   `/admin/site-groups`, drawer "which pad?" prompt. `docs/DECISIONS.md` #25. Verified
+   directly against real data (Kent & Canterbury Hospital's two live TMS pads): grouping,
+   browse-list exclusion, and the parent→children lookup all behave correctly.
 7. **Publish → TMS API** (§2, phase 2) — once Quest ships the endpoint.
 
-Steps 1–5 are done. 6–7 follow.
+Steps 1–6 are done. 7 is blocked on Quest.
 
 ---
 
@@ -400,12 +403,16 @@ current build before any of this is scheduled.
 - Easy click-and-drag of multiple bookings — "Select" mode + batch drag,
   `components/planner/planner-grid.tsx`.
 
+**Already done, no work needed (cont.):**
+- ✅ **Only `confirmed`-and-equivalent bookings can be published to the live schedule** —
+  client confirmed the exact list: `confirmed`, `weekend`, `bankholiday`. `publishBookings`
+  now gates on it (`lib/actions/publish.ts`, `docs/DECISIONS.md` #24), and the client-side
+  "Publish N" counts in `planner-grid.tsx` were fixed to match so the button never promises
+  more than the server will actually publish.
+- ✅ **Pad grouping** (step 6, §5) and **site-location search-or-browse dropdown**
+  (`docs/DECISIONS.md` #26) — see §5 and the build order in §9.
+
 **Scoped and ready to build:**
-- **Only `confirmed` bookings can be published to the live schedule** — anything "in
-  discussion" (bidding, tbc, etc.) must not be publishable. `publishBookings` currently has
-  no status gate at all (`lib/actions/publish.ts`). Likely list: `confirmed` plus the two
-  calendar-derived confirmed-adjacent statuses (`weekend`, `bankholiday`) — to be confirmed
-  before building, since it's a live workflow restriction.
 - **Red days retained for historic reporting, never deleted** — already true structurally
   (nothing hard-deletes, `docs/DECISIONS.md`); this is a design constraint for the
   utilisation report below, not standalone work.
@@ -426,8 +433,7 @@ current build before any of this is scheduled.
   month-end-red-column-exclusion notes are scoping details for this report, not separate
   tasks.
 
-**Needs clarification because it's flagged critical:**
-- **"Horizontal view — key thing!"** — today's grid already runs units across the top,
-  dates down the side. Need to confirm with the client what "horizontal" means here before
-  guessing at a redesign (e.g. the opposite orientation — units down the side, dates across
-  the top, like a classic Gantt chart — vs. something else about the current layout).
+**Resolved:**
+- **"Horizontal view — key thing!"** — dismissed by the client 2026-07-27 ("we already have
+  it, ignore"): today's grid (units across the top, dates down the side) already satisfies
+  this. No work needed.

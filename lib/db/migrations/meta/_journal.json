@@ -78,6 +78,13 @@
       "when": 1785164205242,
       "tag": "0010_company_scoped_site_name",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785166650749,
+      "tag": "0011_site_parent_grouping",
+      "breakpoints": true
     }
   ]
 }

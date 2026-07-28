@@ -184,25 +184,46 @@ export async function getAllSiteCapabilityRequirements(
   return bySite;
 }
 
-export type SiteMatch = { id: number; name: string };
+export type SiteMatch = { id: number; name: string; hasChildren: boolean };
+
+// A site that's already grouped as a PAD (has a parent) never appears directly in
+// search/browse results — you pick the parent, and the drawer asks "which pad?" from
+// there (docs/TMS_INTEGRATION_PLAN.md §5, docs/DECISIONS.md #25). Correlated to the outer
+// query's `sites` row without an explicit join, same trick used for `assertNotSuspiciousShrink`-
+// adjacent counts elsewhere — cheap, and avoids a second round trip per row.
+const hasChildrenSql = sql<boolean>`EXISTS (
+  SELECT 1 FROM sites AS child WHERE child.parent_site_id = sites.id AND child.deleted_at IS NULL
+)`;
 
 // SPEC §5: combobox with type-ahead over sites, ≥2 chars, top 6 — extended so an EMPTY
 // query (the field on focus, before typing) browses the company's full site list instead
 // of showing nothing, per the client's ask for "search or a dropdown list of locations".
 export async function searchSites(companyId: number, query: string): Promise<SiteMatch[]> {
   const trimmed = query.trim();
+  const baseConditions = [eq(sites.companyId, companyId), isNull(sites.deletedAt), isNull(sites.parentSiteId)];
   if (trimmed.length === 0) {
     return db
-      .select({ id: sites.id, name: sites.name })
+      .select({ id: sites.id, name: sites.name, hasChildren: hasChildrenSql })
       .from(sites)
-      .where(and(eq(sites.companyId, companyId), isNull(sites.deletedAt)))
+      .where(and(...baseConditions))
       .orderBy(asc(sites.name));
   }
   if (trimmed.length < 2) return [];
   return db
-    .select({ id: sites.id, name: sites.name })
+    .select({ id: sites.id, name: sites.name, hasChildren: hasChildrenSql })
     .from(sites)
-    .where(and(eq(sites.companyId, companyId), isNull(sites.deletedAt), ilike(sites.name, `%${trimmed}%`)))
+    .where(and(...baseConditions, ilike(sites.name, `%${trimmed}%`)))
     .orderBy(asc(sites.name))
     .limit(6);
+}
+
+// The "which pad?" follow-up once a parent site is chosen in the drawer — a child never
+// has children of its own (one level only, enforced in lib/actions/admin/site-groups.ts).
+export async function getSiteChildren(companyId: number, parentSiteId: number): Promise<SiteMatch[]> {
+  const rows = await db
+    .select({ id: sites.id, name: sites.name })
+    .from(sites)
+    .where(and(eq(sites.companyId, companyId), eq(sites.parentSiteId, parentSiteId), isNull(sites.deletedAt)))
+    .orderBy(asc(sites.name));
+  return rows.map((r) => ({ ...r, hasChildren: false }));
 }

@@ -144,6 +144,7 @@ hospital can appear in both the CT and MRI grids (confirm with client, SPEC §13
 | `pending_review` | bool, default false | True when created via free-text, awaiting admin approval. Never set by the sync |
 | `deleted_at` | timestamptz, null | Soft delete. Set by the sync when a linked site disappears from TMS |
 | `tms_synced_at` | timestamptz, null | |
+| `parent_site_id` | FK → `sites`, null | Pad grouping (migration `0011`, `docs/DECISIONS.md` #25). One level only, enforced in `lib/actions/admin/site-groups.ts` not the DB: a site is a plain standalone site, a group parent (no parent of its own), or a pad (has a parent, no children) — never more than one of these. Purely local; TMS has no concept of it and it never changes an existing booking's `site_id`. Managed at `/admin/site-groups` |
 
 ### `site_capability_requirements`
 Generalized replacement for what would otherwise be CT-specific boolean columns on

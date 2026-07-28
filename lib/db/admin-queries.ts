@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
   bookingEvents,
@@ -169,6 +169,38 @@ export async function searchApprovedSites(companyId: number | null, q: string, e
     .where(and(...conditions))
     .orderBy(asc(sites.name))
     .limit(8);
+}
+
+// ── Pad grouping (docs/TMS_INTEGRATION_PLAN.md §5, docs/DECISIONS.md #25) ──
+
+export type SiteGroupRow = { id: number; name: string; children: { id: number; name: string }[] };
+
+// A "group" here means a site that currently HAS at least one child — a plain ungrouped
+// site also has parent_site_id null but isn't a group, just a normal site, so it's excluded.
+export async function getSiteGroups(companyId: number | null): Promise<SiteGroupRow[]> {
+  const parentConditions = [isNull(sites.deletedAt), isNull(sites.parentSiteId)];
+  if (companyId !== null) parentConditions.push(eq(sites.companyId, companyId));
+  const parents = await db
+    .select({ id: sites.id, name: sites.name })
+    .from(sites)
+    .where(and(...parentConditions, sql`EXISTS (SELECT 1 FROM sites AS child WHERE child.parent_site_id = sites.id AND child.deleted_at IS NULL)`))
+    .orderBy(asc(sites.name));
+
+  const parentIds = parents.map((p) => p.id);
+  const childRows = parentIds.length
+    ? await db
+        .select({ id: sites.id, name: sites.name, parentSiteId: sites.parentSiteId })
+        .from(sites)
+        .where(and(inArray(sites.parentSiteId, parentIds), isNull(sites.deletedAt)))
+        .orderBy(asc(sites.name))
+    : [];
+  const childrenByParent = new Map<number, { id: number; name: string }[]>();
+  for (const c of childRows) {
+    const arr = childrenByParent.get(c.parentSiteId as number) ?? [];
+    arr.push({ id: c.id, name: c.name });
+    childrenByParent.set(c.parentSiteId as number, arr);
+  }
+  return parents.map((p) => ({ ...p, children: childrenByParent.get(p.id) ?? [] }));
 }
 
 // ── Site capability requirements (SPEC.md §2a, §7) ──

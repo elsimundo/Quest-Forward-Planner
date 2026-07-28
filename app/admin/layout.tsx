@@ -7,6 +7,7 @@ const ADMIN_NAV = [
   { href: "/admin/audit-log", label: "Audit log" },
   { href: "/admin/pending-sites", label: "Pending sites" },
   { href: "/admin/site-requirements", label: "Site requirements" },
+  { href: "/admin/site-groups", label: "Site groups" },
   { href: "/admin/booking-statuses", label: "Booking statuses" },
 ] as const;
 

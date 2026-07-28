@@ -145,6 +145,13 @@ export const sites = pgTable(
     tmsSyncedAt: timestamp("tms_synced_at", { withTimezone: true }),
     pendingReview: boolean("pending_review").notNull().default(false),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    // Pad grouping (docs/TMS_INTEGRATION_PLAN.md §5, docs/DECISIONS.md #25) — nullable
+    // self-reference, one level only (a parent's own parentSiteId must stay null, enforced
+    // in lib/actions/admin/site-groups.ts, not the DB). Null for every site until an admin
+    // explicitly groups it. TMS has no concept of this; it's purely local organisation on
+    // top of sites TMS already gave us as flat, independently-bookable rows — grouping
+    // never changes what an existing booking's site_id points at.
+    parentSiteId: integer("parent_site_id").references((): AnyPgColumn => sites.id),
   },
   (table) => [
     uniqueIndex("sites_company_name_live_unique")

@@ -1,0 +1,2 @@
+ALTER TABLE "sites" ADD COLUMN "parent_site_id" integer;--> statement-breakpoint
+ALTER TABLE "sites" ADD CONSTRAINT "sites_parent_site_id_sites_id_fk" FOREIGN KEY ("parent_site_id") REFERENCES "public"."sites"("id") ON DELETE no action ON UPDATE no action;
