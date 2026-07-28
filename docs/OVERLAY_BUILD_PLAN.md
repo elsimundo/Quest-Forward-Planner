@@ -190,20 +190,24 @@ before this reaches users.
 
 **Still to do:** the move path below, and the uniqueness check.
 
-### C2 (remainder). Moves, and one-per-unit-per-day
+### C2 (remainder). Moves — ✅ DONE
 
-`lib/actions/bookings.ts`, `booking-moves.ts`, `undo.ts` write amendments rather than editing
-copies. Moving a TMS booking creates an amendment carrying its `tms_booking_id` at the new
-position — the original position needs no storage, since TMS still holds it.
+Before moving, materialise any TMS bookings sitting at source or target slots: `materialiseTmsSlots`
+creates a local amendment for each one, identical to what TMS says. After that every source and
+target is an ordinary row and the existing swap/overwrite/sentinel logic works unchanged.
 
-**One booking per unit per day moves into application code.** The Postgres partial unique
-index can't see TMS rows any more (`TMS_WRITE_BACK.md` §9). Check against cache + amendments
-inside the write transaction. This is a check, not a guarantee, and it is racy — see Risks.
+This also restores the one-booking-per-unit-per-day guarantee for moves. Once a TMS-occupied
+target exists as a row, the Postgres partial index sees it. The index can't span two databases,
+but by this point it doesn't have to.
 
-`booking-moves.ts`'s two-pass sentinel trick still applies to amendment-vs-amendment
-collisions; it does nothing about amendment-vs-TMS ones.
+**Rejections roll back materialised rows.** A normal `return` from a transaction commits it; so
+rejections must throw (`MoveRejected`) instead. Verified: materialised rows are invisible after
+a rejected move.
 
-### C3. Supersede flagging in the UI
+The existing sentinel (rigid offset + swap/overwrite) continues to handle amendment-vs-amendment
+collisions. TMS collisions are visible to clash detection because both sides are now rows.
+
+### C3. Supersede flagging in the UI — ⏳ NEXT
 
 Surface B4's second case: a badge plus a way to accept TMS's version (discard the amendment)
 or re-apply the change from TMS's new position.

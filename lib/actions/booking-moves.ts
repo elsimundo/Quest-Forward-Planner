@@ -4,10 +4,12 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { bookings, bookingEvents, units, type BookingAction } from "@/lib/db/schema";
+import { bookings, bookingEvents, units, unitModalities, type BookingAction } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
 import { getUnitRegistrations } from "@/lib/db/unit-labels";
+import { nextBookingRef } from "@/lib/db/booking-ref";
+import { resolveTmsCells, tmsCellKey } from "@/lib/db/tms/overlay";
 
 const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
 
@@ -19,6 +21,107 @@ export type MoveBookingsResult =
   | { ok: false; error: string; code: "PERMISSION" | "VALIDATION" | "LOCKED" | "CONFLICT" };
 
 type BookingRow = typeof bookings.$inferSelect;
+
+// Rejecting a move by RETURNING from inside db.transaction commits whatever the transaction
+// has already written — and this one materialises rows (see materialiseTmsSlots) before it
+// can know whether the move is legal. Throwing is what rolls that back, so every rejection
+// path below throws this and the outer catch unwraps it into the normal result shape.
+class MoveRejected extends Error {
+  constructor(public result: Extract<MoveBookingsResult, { ok: false }>) {
+    super("move rejected");
+  }
+}
+
+// Under the overlay, a move's source — or its target — may be an untouched TMS booking we
+// hold no row for (docs/OVERLAY_BUILD_PLAN.md C2). Rather than teach the repositioning
+// algorithm about two data sources, we first write a local amendment for any such slot,
+// identical to what TMS says. After that every source and target is an ordinary local row and
+// the existing swap/overwrite/sentinel logic below works untouched.
+//
+// This is also what restores the one-booking-per-unit-per-day guarantee for moves: once a
+// TMS-occupied target exists as a row, the normal clash detection sees it. The Postgres
+// partial index can't span two databases, but by this point it doesn't have to.
+async function materialiseTmsSlots(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  moves: MoveSpec[],
+  actorId: number,
+) {
+  const wanted = new Map<string, { unitId: number; date: string }>();
+  for (const m of moves) {
+    wanted.set(tmsCellKey(m.fromUnitId, m.fromDate), { unitId: m.fromUnitId, date: m.fromDate });
+    wanted.set(tmsCellKey(m.toUnitId, m.toDate), { unitId: m.toUnitId, date: m.toDate });
+  }
+  const unitIds = [...new Set([...wanted.values()].map((s) => s.unitId))];
+
+  const liveRows = await tx
+    .select({ unitId: bookings.unitId, date: bookings.date })
+    .from(bookings)
+    .where(and(inArray(bookings.unitId, unitIds), isNull(bookings.deletedAt)));
+  const occupied = new Set(liveRows.map((r) => tmsCellKey(r.unitId, r.date)));
+
+  const needed = [...wanted.values()].filter((s) => !occupied.has(tmsCellKey(s.unitId, s.date)));
+  if (!needed.length) return;
+
+  const unitRows = await tx
+    .select({ id: units.id, companyId: units.companyId })
+    .from(units)
+    .where(inArray(units.id, unitIds));
+  const companyByUnit = new Map(unitRows.map((u) => [u.id, u.companyId]));
+
+  const tagRows = await tx
+    .select({ unitId: unitModalities.unitId, modalityId: unitModalities.modalityId })
+    .from(unitModalities)
+    .where(inArray(unitModalities.unitId, unitIds));
+  const modalityByUnit = new Map(tagRows.map((t) => [t.unitId, t.modalityId]));
+
+  // Grouped by company so a slot is never resolved against the wrong company's TMS data.
+  const byCompany = new Map<number, { unitId: number; date: string }[]>();
+  for (const s of needed) {
+    const companyId = companyByUnit.get(s.unitId);
+    if (companyId === undefined) continue;
+    const forCompany = byCompany.get(companyId) ?? [];
+    forCompany.push(s);
+    byCompany.set(companyId, forCompany);
+  }
+
+  for (const [companyId, slots] of byCompany) {
+    const cells = await resolveTmsCells(companyId, slots);
+    if (!cells.size) continue;
+
+    // A TMS booking already claimed by a row — live or suppressed — must not be materialised
+    // again: tms_booking_id is UNIQUE. A suppressed claim means the scheduler cleared that
+    // booking, so the slot is genuinely empty and should stay that way.
+    const claimed = new Set(
+      (
+        await tx
+          .select({ tmsBookingId: bookings.tmsBookingId })
+          .from(bookings)
+          .where(inArray(bookings.tmsBookingId, [...cells.values()].map((c) => c.tmsBookingId)))
+      ).map((r) => r.tmsBookingId as number),
+    );
+
+    for (const s of slots) {
+      const cell = cells.get(tmsCellKey(s.unitId, s.date));
+      if (!cell || claimed.has(cell.tmsBookingId)) continue;
+      const modalityId = modalityByUnit.get(s.unitId);
+      if (modalityId === undefined) continue;
+      await tx.insert(bookings).values({
+        bookingRef: await nextBookingRef(tx),
+        unitId: s.unitId,
+        companyId,
+        modalityId,
+        date: s.date,
+        siteId: cell.siteId,
+        status: cell.status,
+        notes: cell.notes,
+        createdBy: actorId,
+        updatedBy: actorId,
+        tmsBookingId: cell.tmsBookingId,
+        tmsUpdatedAt: cell.tmsUpdatedAt,
+      });
+    }
+  }
+}
 
 // Repositioning has to survive swaps and day-shift chains where a row's target is
 // still occupied by another row that hasn't been repositioned yet. Postgres enforces a
@@ -111,7 +214,12 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
   if (!actor) return { ok: false, error: "You don't have permission to move bookings.", code: "PERMISSION" };
   if (!moves.length) return { ok: false, error: "Nothing to move.", code: "VALIDATION" };
 
-  return db.transaction(async (tx) => {
+  try {
+    return await db.transaction(async (tx) => {
+    // Give every source and target slot a local row first — see materialiseTmsSlots. Any
+    // rejection after this point throws, so these writes roll back with it.
+    await materialiseTmsSlots(tx, moves, actor.id);
+
     const sourceKey = (m: MoveSpec) => `${m.fromUnitId}|${m.fromDate}`;
     const sourceKeys = new Set(moves.map(sourceKey));
 
@@ -126,7 +234,7 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
       }),
     );
     if (sources.some((s) => !s)) {
-      return { ok: false, error: "One of the selected bookings no longer exists — refresh and try again.", code: "CONFLICT" };
+      throw new MoveRejected({ ok: false, error: "One of the selected bookings no longer exists — refresh and try again.", code: "CONFLICT" });
     }
     // Hard company scoping (docs/DECISIONS.md #22) — every source booking, and every
     // target unit a move lands on, must belong to the actor's allowed company. A move
@@ -134,7 +242,7 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
     // a booking's denormalised company_id pointing at the wrong company (§4.3).
     const sourceRows = sources as BookingRow[];
     if (sourceRows.some((s) => !companyAllowed(actor.companyAccess, s.companyId))) {
-      return { ok: false, error: "One of the selected bookings no longer exists — refresh and try again.", code: "CONFLICT" };
+      throw new MoveRejected({ ok: false, error: "One of the selected bookings no longer exists — refresh and try again.", code: "CONFLICT" });
     }
     const targetUnitIds = [...new Set(moves.map((m) => m.toUnitId))];
     const targetUnits = await tx.select({ id: units.id, companyId: units.companyId }).from(units).where(inArray(units.id, targetUnitIds));
@@ -144,10 +252,10 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
       return targetCompanyId === undefined || targetCompanyId !== sourceRows[i].companyId;
     });
     if (crossesCompany) {
-      return { ok: false, error: "Can't move a booking to a different company's unit.", code: "VALIDATION" };
+      throw new MoveRejected({ ok: false, error: "Can't move a booking to a different company's unit.", code: "VALIDATION" });
     }
     if (sources.some((s) => s!.publishedAt)) {
-      return { ok: false, error: "Can't move a published/locked booking. Unlock it first.", code: "LOCKED" };
+      throw new MoveRejected({ ok: false, error: "Can't move a published/locked booking. Unlock it first.", code: "LOCKED" });
     }
 
     // Targets that are occupied by something *outside* the moving set are real clashes
@@ -167,11 +275,11 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
     const clashes = targets.filter((t): t is BookingRow => !!t);
 
     if (clashes.length && mode === "move") {
-      return {
+      throw new MoveRejected({
         ok: false,
         error: "Those slots are no longer free — someone else may have booked them. Refresh and try again.",
         code: "CONFLICT",
-      };
+      });
     }
 
     const batchId = randomUUID();
@@ -230,5 +338,9 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
           ? `Overwritten — moved ${n} booking${n > 1 ? "s" : ""}`
           : `Moved ${n} booking${n > 1 ? "s" : ""}`;
     return { ok: true, message: label, batchId };
-  });
+    });
+  } catch (err) {
+    if (err instanceof MoveRejected) return err.result;
+    throw err;
+  }
 }

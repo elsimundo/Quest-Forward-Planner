@@ -274,28 +274,78 @@ export async function getOverlayBookings(
  *
  * Reads through the same 5-minute cache the grid uses, so this costs nothing on the hot path.
  */
-export async function resolveTmsBookingAt(
+export type TmsCell = {
+  tmsBookingId: number;
+  tmsUpdatedAt: Date;
+  siteId: number;
+  status: string;
+  notes: string | null;
+};
+
+export const tmsCellKey = (unitId: number, date: string) => `${unitId}|${date}`;
+
+/**
+ * Batch form: resolve many unit+date slots at once.
+ *
+ * Used by the move path, which needs every source AND every target slot resolved. Doing it
+ * one slot at a time would re-read the same reference tables per booking — a 30-booking
+ * multi-select would issue 60 rounds of the same three queries.
+ */
+export async function resolveTmsCells(
   companyId: number,
-  unitId: number,
-  date: string,
-): Promise<{ tmsBookingId: number; tmsUpdatedAt: Date } | null> {
+  slots: { unitId: number; date: string }[],
+): Promise<Map<string, TmsCell>> {
+  const out = new Map<string, TmsCell>();
+  if (!slots.length) return out;
+
   const [company] = await db
     .select({ tmsCompanyId: companies.tmsCompanyId })
     .from(companies)
     .where(eq(companies.id, companyId))
     .limit(1);
-  if (!company?.tmsCompanyId) return null;
+  if (!company?.tmsCompanyId) return out;
 
-  const [unit] = await db
-    .select({ tmsUnitId: units.tmsUnitId })
+  const localUnits = await db
+    .select({ id: units.id, tmsUnitId: units.tmsUnitId })
     .from(units)
-    .where(and(eq(units.id, unitId), eq(units.companyId, companyId), isNull(units.deletedAt)))
-    .limit(1);
-  if (!unit?.tmsUnitId) return null;
+    .where(and(eq(units.companyId, companyId), isNull(units.deletedAt), isNotNull(units.tmsUnitId)));
+  const tmsUnitIdByLocal = new Map(localUnits.map((u) => [u.id, u.tmsUnitId as number]));
 
-  const { bookings: tmsBookings } = await getTmsBookings(company.tmsCompanyId);
-  const hit = tmsBookings.find((b) => b.unitId === unit.tmsUnitId && b.date === date);
-  return hit ? { tmsBookingId: hit.id, tmsUpdatedAt: hit.updatedAt } : null;
+  const localSites = await db
+    .select({ id: sites.id, tmsLocationId: sites.tmsLocationId })
+    .from(sites)
+    .where(and(eq(sites.companyId, companyId), isNull(sites.deletedAt), isNotNull(sites.tmsLocationId)));
+  const siteIdByTmsLocationId = new Map(localSites.map((s) => [s.tmsLocationId as number, s.id]));
+
+  const { bookings: tmsBookings, statusNameById } = await getTmsBookings(company.tmsCompanyId);
+  const byTmsSlot = new Map(tmsBookings.map((b) => [`${b.unitId}|${b.date}`, b]));
+
+  for (const s of slots) {
+    const tmsUnitId = tmsUnitIdByLocal.get(s.unitId);
+    if (tmsUnitId === undefined) continue;
+    const hit = byTmsSlot.get(`${tmsUnitId}|${s.date}`);
+    if (!hit) continue;
+    const siteId = siteIdByTmsLocationId.get(hit.locationId);
+    if (siteId === undefined) continue; // unmappable site — treat the slot as not resolvable
+    out.set(tmsCellKey(s.unitId, s.date), {
+      tmsBookingId: hit.id,
+      tmsUpdatedAt: hit.updatedAt,
+      siteId,
+      status: localStatusKeyForTmsStatus(hit.statusId, statusNameById).key,
+      notes: hit.notes,
+    });
+  }
+  return out;
+}
+
+/** Single-slot convenience wrapper over {@link resolveTmsCells}. */
+export async function resolveTmsBookingAt(
+  companyId: number,
+  unitId: number,
+  date: string,
+): Promise<TmsCell | null> {
+  const cells = await resolveTmsCells(companyId, [{ unitId, date }]);
+  return cells.get(tmsCellKey(unitId, date)) ?? null;
 }
 
 /**
