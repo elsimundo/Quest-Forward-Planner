@@ -151,6 +151,7 @@ hospital can appear in both the CT and MRI grids (confirm with client, SPEC §13
 | `kind` | text, null | hospital \| LHC \| CDC \| yard \| other — taxonomy TBD, SPEC §13 Q7. Local-only, never touched by the sync |
 | `company_id` | FK → `companies`, not null | |
 | `tms_location_id` | int, unique, null | TMS `locations.id` — the sync's upsert key. Null for a site created locally via the drawer's free-text flow |
+| `tms_pad_id` | int, unique, null | TMS `pads.id`, for a site representing a **pad** rather than a location (migration `0013`, `docs/TMS_WRITE_BACK.md` §6). **Dormant — null on every row**: TMS's `pads` table is empty and no booking in TMS, for any company, sets `pad_id`. Added at the client's request so the planner is ready for a company that adopts pads later. Mutually exclusive with `tms_location_id` (a site is one or the other, never both) — not enforced by a CHECK yet, deliberately, since there's no data on either side to validate such a rule against. Nothing populates it: the sync has no pad support, by design |
 | `town` / `postcode` / `nominal_code` | text, null | From TMS; not collected for locally-created sites |
 | `pending_review` | bool, default false | True when created via free-text, awaiting admin approval. Never set by the sync |
 | `deleted_at` | timestamptz, null | Soft delete. Set by the sync when a linked site disappears from TMS |

@@ -139,6 +139,20 @@ export const sites = pgTable(
     // TMS locations.id — the sync's upsert key. Null for a site created locally via the
     // booking drawer's free-text flow (pendingReview) — those are never touched by sync.
     tmsLocationId: integer("tms_location_id").unique(),
+    // TMS `pads.id`, for a site that represents a PAD rather than a location. Dormant today
+    // and null on every row: TMS's `pads` table is empty and no booking in TMS — any company
+    // — sets `pad_id`. Added now because the client wants the planner to work for a company
+    // that starts using pads later (docs/TMS_WRITE_BACK.md §6).
+    //
+    // Mutually exclusive with `tmsLocationId`: a site is either a TMS location or a TMS pad,
+    // never both. Not enforced by a constraint (nothing populates either path for pads yet);
+    // if pads ever go live, add the CHECK then, when there's real data to validate against.
+    //
+    // The models differ in shape, which is why this is a separate column rather than reusing
+    // `tmsLocationId`: TMS puts `location_id` AND `pad_id` on a booking, whereas ours points
+    // at a single `site_id` that may itself be a pad (via `parentSiteId`). Publish translates
+    // between the two — see the build plan's D2.
+    tmsPadId: integer("tms_pad_id").unique(),
     town: text("town"),
     postcode: text("postcode"),
     nominalCode: text("nominal_code"),

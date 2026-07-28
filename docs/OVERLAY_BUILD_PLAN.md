@@ -29,12 +29,18 @@ consumers must move together or they'll disagree: the server gate in
 *Client asked for this directly (`TMS_WRITE_BACK.md` §3.3). Makes publishability
 admin-editable instead of a code change.*
 
-### A2. `sites.tms_pad_id`
+### A2. `sites.tms_pad_id` — ✅ DONE (migration 0013)
 
-Nullable column, dormant for now — TMS's `pads` table is empty and no booking anywhere sets
-`pad_id`. Populated by the sync if pads ever appear. Publish-time translation (a pad-site
-booking becomes `location_id` = parent's `tms_location_id`, `pad_id` = the pad's
-`tms_pad_id`) comes in D2.
+Nullable, unique, dormant — TMS's `pads` table is empty and no booking anywhere sets
+`pad_id`. Publish-time translation (a pad-site booking becomes `location_id` = parent's
+`tms_location_id`, `pad_id` = the pad's `tms_pad_id`) comes in D2.
+
+**Sync support was deliberately not built.** The original note here said "populated by the
+sync if pads ever appear" — but writing that now would mean guessing at semantics with zero
+data to test against, chiefly *does a TMS pad become a `sites` row, child of its location's
+site?* That's a real modelling decision, not a mechanical one, and it changes how `syncSites`
+behaves. Better answered when a company actually uses pads. The column is the part worth
+having early, because backfilling a column is easy and reshaping a live model is not.
 
 *Keeps `sites.parent_site_id` exactly as built — see `TMS_WRITE_BACK.md` §6.*
 
