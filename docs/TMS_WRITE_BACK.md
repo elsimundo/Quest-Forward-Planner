@@ -1,10 +1,16 @@
 # Publishing back to TMS — model, and what we need from Quest
 
-**Status:** Client answered 2026-07-28 (Dave Emerson). The write API is confirmed as
-coming, but **after** we build a proof of concept — so the local side is unblocked and the
-TMS write path stays deferred. Dave's reply also **changes the storage model** (§1) and
-therefore the conflict model (§2). §4 is the new part: what this means for the code that
-already exists.
+**Status: design settled** (client sign-off across two rounds, 2026-07-28, Dave Emerson).
+Ready to scope into an implementation plan; not yet built.
+
+The headline is that the client **changed the storage model** — TMS bookings are no longer
+copied into our database (§1), which in turn simplifies conflict detection (§2) and retires
+the booking import that already exists (§4). The write API is confirmed as coming, but
+**after** we build a proof of concept, so the local side is unblocked and the TMS write path
+stays stubbed.
+
+One unresolved risk (§9): "one booking per unit per day" can no longer be enforced by a
+database constraint. Everything else is agreed.
 
 The read side (units, sites) is built and running — see `docs/TMS_INTEGRATION_PLAN.md`.
 
@@ -266,12 +272,52 @@ Coolify). Don't build channel subscriptions before we know polling is insufficie
 
 ---
 
-## 8. Still open on our side
+## 8. Degraded mode when TMS is unavailable — agreed
+
+**Client-approved 2026-07-28.** If TMS can't be reached, the planner shows **the last data
+it successfully loaded**, clearly marked out of date, **with publishing disabled**. It does
+not show an empty grid and does not refuse to load.
+
+Publishing is disabled in this state for a specific reason: the publish-time conflict
+re-check (§2) requires reading live TMS. With TMS unreachable that check can't run, so
+publishing would mean writing blind — precisely the thing the conflict model exists to
+prevent.
+
+### ⚠️ This requires a persisted cache. It is not the import Dave rejected.
+
+For the fallback to survive a server restart or a deploy, the 5-minute TMS cache (§7) has to
+be **persisted, not held in memory**. That means TMS booking data does get written to our
+Postgres — which looks, at a glance, like the booking import the client explicitly asked us
+to stop doing (§1). It isn't, and the difference has to stay obvious in the code, or someone
+will later find a table full of TMS bookings and reasonably conclude we ignored the client.
+
+| | The rejected import | This cache |
+|---|---|---|
+| Table | `bookings` — same table as our own | its own table, e.g. `tms_booking_cache` |
+| Editable by users | yes — schedulers edited these rows | never; no code path writes it but the refresh |
+| Authority | became a second source of truth that drifted | never authoritative; TMS is, always |
+| Lifecycle | upserted and merged, rows persisted for months | replaced wholesale each refresh |
+| Local fields | carried status, notes, publish state | carries none — those live only on amendments |
+| Age visible to user | no | yes, always — `fetched_at` drives the staleness banner |
+
+**Rules to keep it honest:**
+
+1. The cache lives in its **own table**, never in `bookings`.
+2. **Nothing but the refresh job writes it.** No user action, ever.
+3. Every read carries `fetched_at`, and the UI shows the age whenever it isn't fresh.
+4. It is **replaced, not merged** — no upsert logic, no conflict resolution, no soft deletes.
+   A refresh is a wholesale swap, so nothing can silently persist past its usefulness.
+5. Amendments **never** reference cache rows as if they were real bookings — they reference
+   `tms_booking_id`, which is TMS's identifier, valid whether or not the cache holds it.
+
+If any of those five stop being true, this has quietly turned back into the import the
+client rejected, and it should be treated as a bug.
+
+---
+
+## 9. Still open on our side
 
 1. **Enforcing one-booking-per-unit-per-day across two databases** (§3.4). The Postgres
    partial unique index can't see TMS rows any more, so this moves into application code and
    becomes a check rather than a guarantee. Flagged to Dave; he's confirmed the rule matters.
-2. **Availability.** If TMS is unreachable the grid can't render at all under this model,
-   where previously it fell back to the last import. The 5-minute server-side cache in §7
-   softens this — a cached copy can still render, clearly marked stale. Needs deciding
-   explicitly rather than falling out by accident.
+   This is now the only unresolved risk in the design.
