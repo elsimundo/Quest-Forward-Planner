@@ -37,11 +37,14 @@ export type OverlayBooking = {
   /** TMS's own booking id, when this row corresponds to one. Null for a local-only booking. */
   tmsBookingId: number | null;
   /**
-   * True for the faded original left behind when a scheduler moved a TMS booking. A ghost is
-   * NOT editable and NOT selectable — it's a rendering of TMS's current truth, not one of our
-   * rows. `movedTo` says where its real counterpart now sits.
+   * True for the faded original showing where TMS still has a booking the planner has changed.
+   * A ghost is NOT editable and NOT selectable — it's a rendering of TMS's current truth, not
+   * one of our rows.
    */
   isGhost: boolean;
+  /** Why a ghost is there: the booking was moved elsewhere, or cleared outright. */
+  ghostReason: "moved" | "cleared" | null;
+  /** Where its real counterpart now sits. Null for a `cleared` ghost — there isn't one. */
   movedTo: { unitId: number; date: string } | null;
   /** On a moved amendment: where TMS still has it. Mirrors `movedTo` for the return link. */
   movedFrom: { unitId: number; date: string } | null;
@@ -87,7 +90,7 @@ export async function getOverlayBookings(
     return {
       bookings: amendmentsOnly
         .filter((a) => a.date >= from && a.date <= to)
-        .map((a) => toOverlay(a, null, false, null, null)),
+        .map((a) => toOverlay(a, null, null)),
       fetchedAt: new Date(),
       unplaced: {},
     };
@@ -130,6 +133,11 @@ export async function getOverlayBookings(
   // ghost and its counterpart have to be resolvable. The live amendment set is small by
   // design — a published amendment retires (docs/TMS_WRITE_BACK.md §5) — so this stays cheap.
   const amendments = await loadAmendments(companyId, modalityId);
+  // A cleared TMS booking is represented by a SOFT-DELETED amendment carrying its
+  // tms_booking_id — "we propose removing this". Those rows are invisible to loadAmendments
+  // (it filters deletedAt), so they're loaded separately: without them a cleared booking
+  // would keep rendering from TMS and the clear would look like it did nothing.
+  const suppressedTmsIds = await loadSuppressedTmsBookingIds(companyId, modalityId);
   const amendmentByTmsBookingId = new Map(
     amendments.filter((a) => a.tmsBookingId !== null).map((a) => [a.tmsBookingId as number, a]),
   );
@@ -155,6 +163,33 @@ export async function getOverlayBookings(
       continue;
     }
 
+    // Cleared in the planner. TMS still has it, so it stays visible as a ghost rather than
+    // vanishing — an empty cell would hide the fact that the planner and TMS disagree, which
+    // is the whole thing ghosts exist to prevent. Unlike a moved ghost it links nowhere,
+    // because there is no counterpart to link to.
+    if (suppressedTmsIds.has(tb.id)) {
+      if (tb.date >= from && tb.date <= to) {
+        const { key } = localStatusKeyForTmsStatus(tb.statusId, statusNameById);
+        out.push({
+          unitId,
+          date: tb.date,
+          siteId,
+          siteName: siteNameById.get(siteId) ?? "?",
+          status: key,
+          notes: tb.notes,
+          publishedAt: null,
+          updatedAt: tb.updatedAt,
+          tmsConflictAt: null,
+          tmsBookingId: tb.id,
+          isGhost: true,
+          ghostReason: "cleared",
+          movedTo: null,
+          movedFrom: null,
+        });
+      }
+      continue;
+    }
+
     const amendment = amendmentByTmsBookingId.get(tb.id);
 
     if (!amendment) {
@@ -175,6 +210,7 @@ export async function getOverlayBookings(
         tmsConflictAt: null,
         tmsBookingId: tb.id,
         isGhost: false,
+        ghostReason: null,
         movedTo: null,
         movedFrom: null,
       });
@@ -198,6 +234,7 @@ export async function getOverlayBookings(
         tmsConflictAt: null,
         tmsBookingId: tb.id,
         isGhost: true,
+        ghostReason: "moved",
         movedTo: { unitId: amendment.unitId, date: amendment.date },
         movedFrom: null,
       });
@@ -215,7 +252,7 @@ export async function getOverlayBookings(
     if (a.date < from || a.date > to) continue;
     const tmsSlot = a.tmsBookingId !== null ? tmsSlotByBookingId.get(a.tmsBookingId) ?? null : null;
     const moved = tmsSlot !== null && (tmsSlot.unitId !== a.unitId || tmsSlot.date !== a.date);
-    out.push(toOverlay(a, a.tmsBookingId, false, null, moved ? tmsSlot : null));
+    out.push(toOverlay(a, a.tmsBookingId, moved ? tmsSlot : null));
   }
 
   // A ghost and a real booking can't legitimately share a slot — a ghost only exists where the
@@ -225,6 +262,40 @@ export async function getOverlayBookings(
   const deduped = out.filter((b) => !b.isGhost || !realSlots.has(slot(b.unitId, b.date)));
 
   return { bookings: deduped, fetchedAt, unplaced };
+}
+
+/**
+ * The TMS booking sitting at a given unit + date, if any.
+ *
+ * The write paths need this because, under the overlay, a scheduler can act on a booking that
+ * has **no local row at all** — an untouched TMS booking. Editing or clearing one has to
+ * create an amendment carrying its `tms_booking_id`, not a free-standing local booking, or
+ * the merge would render both the TMS original and the new row in the same cell.
+ *
+ * Reads through the same 5-minute cache the grid uses, so this costs nothing on the hot path.
+ */
+export async function resolveTmsBookingAt(
+  companyId: number,
+  unitId: number,
+  date: string,
+): Promise<{ tmsBookingId: number; tmsUpdatedAt: Date } | null> {
+  const [company] = await db
+    .select({ tmsCompanyId: companies.tmsCompanyId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1);
+  if (!company?.tmsCompanyId) return null;
+
+  const [unit] = await db
+    .select({ tmsUnitId: units.tmsUnitId })
+    .from(units)
+    .where(and(eq(units.id, unitId), eq(units.companyId, companyId), isNull(units.deletedAt)))
+    .limit(1);
+  if (!unit?.tmsUnitId) return null;
+
+  const { bookings: tmsBookings } = await getTmsBookings(company.tmsCompanyId);
+  const hit = tmsBookings.find((b) => b.unitId === unit.tmsUnitId && b.date === date);
+  return hit ? { tmsBookingId: hit.id, tmsUpdatedAt: hit.updatedAt } : null;
 }
 
 /**
@@ -308,6 +379,24 @@ type AmendmentRow = {
   tmsBookingId: number | null;
 };
 
+// tms_booking_id is UNIQUE on `bookings`, so a TMS booking has at most one amendment row
+// ever — live or soft-deleted. That invariant is what makes "is this one suppressed?" a
+// simple set membership rather than a per-row history question.
+async function loadSuppressedTmsBookingIds(companyId: number, modalityId: number): Promise<Set<number>> {
+  const rows = await db
+    .select({ tmsBookingId: bookings.tmsBookingId })
+    .from(bookings)
+    .where(
+      and(
+        eq(bookings.companyId, companyId),
+        eq(bookings.modalityId, modalityId),
+        isNotNull(bookings.tmsBookingId),
+        isNotNull(bookings.deletedAt),
+      ),
+    );
+  return new Set(rows.map((r) => r.tmsBookingId as number));
+}
+
 async function loadAmendments(companyId: number, modalityId: number): Promise<AmendmentRow[]> {
   return db
     .select({
@@ -332,8 +421,6 @@ async function loadAmendments(companyId: number, modalityId: number): Promise<Am
 function toOverlay(
   a: AmendmentRow,
   tmsBookingId: number | null,
-  isGhost: boolean,
-  movedTo: { unitId: number; date: string } | null,
   movedFrom: { unitId: number; date: string } | null,
 ): OverlayBooking {
   return {
@@ -347,8 +434,9 @@ function toOverlay(
     updatedAt: a.updatedAt,
     tmsConflictAt: a.tmsConflictAt,
     tmsBookingId,
-    isGhost,
-    movedTo,
+    isGhost: false,
+    ghostReason: null,
+    movedTo: null,
     movedFrom,
   };
 }

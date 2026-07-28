@@ -19,6 +19,7 @@ import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
 import { computeCapabilityWarnings, type CapabilityWarning } from "@/lib/capability-matching";
 import { nextBookingRef } from "@/lib/db/booking-ref";
+import { resolveTmsBookingAt } from "@/lib/db/tms/overlay";
 
 const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
 
@@ -150,6 +151,25 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
       .where(and(eq(bookings.unitId, input.unitId), eq(bookings.date, input.date), isNull(bookings.deletedAt)))
       .limit(1);
 
+    // Under the overlay, the cell may be occupied by a TMS booking we hold no row for
+    // (docs/OVERLAY_BUILD_PLAN.md C2). Saving over it must create an AMENDMENT carrying that
+    // booking's tms_booking_id — a free-standing local row would leave the TMS original
+    // unclaimed, and the merge would then render both in the same cell.
+    const tmsAtSlot = existingBooking
+      ? null
+      : await resolveTmsBookingAt(unit.companyId, input.unitId, input.date);
+
+    // A previously CLEARED TMS booking is a soft-deleted row still holding that
+    // tms_booking_id, which is UNIQUE — so re-booking that slot has to revive the existing
+    // row rather than insert a second one, which would violate the constraint.
+    const [suppressed] = tmsAtSlot
+      ? await tx
+          .select()
+          .from(bookings)
+          .where(eq(bookings.tmsBookingId, tmsAtSlot.tmsBookingId))
+          .limit(1)
+      : [];
+
     if (existingBooking?.publishedAt) {
       return { ok: false, error: "This booking is published and locked. Unlock it first.", code: "LOCKED" };
     }
@@ -208,6 +228,32 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
         bookingBefore: { ...existingBooking, unitRegistration: unit.registration },
         bookingAfter: { ...updated, unitRegistration: unit.registration, capabilityWarnings: warnings },
       });
+    } else if (suppressed) {
+      // Revive the cleared amendment in place, at the slot being booked.
+      const now = new Date();
+      const [revived] = await tx
+        .update(bookings)
+        .set({
+          unitId: input.unitId,
+          date: input.date,
+          siteId: site.id,
+          status: input.status,
+          notes,
+          deletedAt: null,
+          deletedBy: null,
+          updatedBy: actor.id,
+          updatedAt: now,
+          tmsConflictAt: null,
+        })
+        .where(eq(bookings.id, suppressed.id))
+        .returning();
+      await tx.insert(bookingEvents).values({
+        actorId: actor.id,
+        action: "create",
+        batchId,
+        bookingBefore: { ...suppressed, unitRegistration: unit.registration },
+        bookingAfter: { ...revived, unitRegistration: unit.registration, capabilityWarnings: warnings },
+      });
     } else {
       const [created] = await tx
         .insert(bookings)
@@ -222,6 +268,9 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
           notes,
           createdBy: actor.id,
           updatedBy: actor.id,
+          // Claims the TMS booking this cell is showing, when there is one — see above.
+          tmsBookingId: tmsAtSlot?.tmsBookingId ?? null,
+          tmsUpdatedAt: tmsAtSlot?.tmsUpdatedAt ?? null,
         })
         .returning();
       await tx.insert(bookingEvents).values({
@@ -254,7 +303,71 @@ export async function clearBooking(input: ClearBookingInput): Promise<ClearBooki
       .where(and(eq(bookings.unitId, input.unitId), eq(bookings.date, input.date), isNull(bookings.deletedAt)))
       .limit(1);
 
-    if (!existing) return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
+    // No local row doesn't mean nothing is there — the cell may be showing an untouched TMS
+    // booking. Clearing one records a SUPPRESSION: an amendment carrying its tms_booking_id,
+    // created already soft-deleted, meaning "we propose removing this". The merge reads those
+    // and stops rendering the TMS original (lib/db/tms/overlay.ts).
+    if (!existing) {
+      const [unitRow] = await tx
+        .select({ id: units.id, registration: units.registration, companyId: units.companyId, })
+        .from(units)
+        .where(and(eq(units.id, input.unitId), isNull(units.deletedAt)))
+        .limit(1);
+      if (!unitRow || !companyAllowed(actor.companyAccess, unitRow.companyId)) {
+        return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
+      }
+      const tms = await resolveTmsBookingAt(unitRow.companyId, input.unitId, input.date);
+      if (!tms) return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
+
+      const [tag] = await tx
+        .select({ modalityId: unitModalities.modalityId })
+        .from(unitModalities)
+        .where(eq(unitModalities.unitId, input.unitId))
+        .limit(1);
+      if (!tag) return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
+
+      const now = new Date();
+      const [created] = await tx
+        .insert(bookings)
+        .values({
+          bookingRef: await nextBookingRef(tx),
+          unitId: input.unitId,
+          companyId: unitRow.companyId,
+          modalityId: tag.modalityId,
+          date: input.date,
+          // A suppression still needs a site to satisfy the NOT NULL FK; the TMS original's
+          // own site is the honest choice, and it's what the audit snapshot should show.
+          siteId: (
+            await tx
+              .select({ id: sites.id })
+              .from(sites)
+              .where(and(eq(sites.companyId, unitRow.companyId), isNull(sites.deletedAt)))
+              .limit(1)
+          )[0].id,
+          status: "confirmed",
+          createdBy: actor.id,
+          updatedBy: actor.id,
+          deletedAt: now,
+          deletedBy: actor.id,
+          updatedAt: now,
+          tmsBookingId: tms.tmsBookingId,
+          tmsUpdatedAt: tms.tmsUpdatedAt,
+        })
+        .returning();
+
+      const batchId = randomUUID();
+      await tx.insert(bookingEvents).values({
+        actorId: actor.id,
+        action: "delete",
+        batchId,
+        bookingBefore: { ...created, deletedAt: null, unitRegistration: unitRow.registration },
+        bookingAfter: null,
+      });
+
+      revalidatePath("/");
+      return { ok: true, message: `Cleared — ${unitRow.registration} on ${input.date}`, batchId };
+    }
+
     if (!companyAllowed(actor.companyAccess, existing.companyId)) {
       return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
     }

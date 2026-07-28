@@ -26,9 +26,12 @@ export function GhostChip({
   const catalog = useStatusCatalog();
   const st = catalog.get(booking.status);
 
-  const title = toLabel
-    ? `${booking.siteName} — still here in TMS. Moved to ${toLabel} in the planner, not yet published. Click to jump there.`
-    : `${booking.siteName} — still here in TMS, moved elsewhere in the planner and not yet published.`;
+  const cleared = booking.ghostReason === "cleared";
+  const title = cleared
+    ? `${booking.siteName} — cleared in the planner, but TMS still has it here until this is published.`
+    : toLabel
+      ? `${booking.siteName} — still here in TMS. Moved to ${toLabel} in the planner, not yet published. Click to jump there.`
+      : `${booking.siteName} — still here in TMS, moved elsewhere in the planner and not yet published.`;
 
   return (
     <button
@@ -44,7 +47,10 @@ export function GhostChip({
         opacity: 0.45,
       }}
     >
-      <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px] italic" style={{ color: st.text }}>
+      <span
+        className={`line-clamp-2 flex-1 px-2 text-xs leading-[14px] italic ${cleared ? "line-through" : ""}`}
+        style={{ color: st.text }}
+      >
         {booking.siteName}
       </span>
       {onGoTo && (

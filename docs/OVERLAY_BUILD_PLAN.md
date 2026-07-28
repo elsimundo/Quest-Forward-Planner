@@ -161,7 +161,36 @@ The destination cell flashes amber for 2s on arrival, so the eye lands on the bo
 than on "some row that scrolled past". The ghost is a `<button>` because it is a link — it
 still never drags, selects, opens the drawer, or counts toward publishing.
 
-### C2. Writes create amendments
+### C2. Writes create amendments — 🟡 PARTLY DONE (drawer only)
+
+**Done:** `saveBooking` and `clearBooking` (`lib/actions/bookings.ts`).
+
+Editing a cell showing an untouched TMS booking now creates an amendment carrying its
+`tms_booking_id`, rather than a free-standing local row — which would have left the TMS
+original unclaimed and rendered *both* in the same cell. Clearing one records a
+**suppression**: an amendment created already soft-deleted, meaning "we propose removing
+this". The merge reads suppressions and stops rendering the TMS original, leaving a
+struck-through `cleared` ghost so the disagreement with TMS stays visible rather than the
+booking silently vanishing.
+
+`resolveTmsBookingAt` (`lib/db/tms/overlay.ts`) is what lets a write path tell "empty cell"
+from "cell showing a TMS booking we hold no row for". It reads through the same 5-minute
+cache, so it costs nothing on the hot path.
+
+Because `bookings.tms_booking_id` is UNIQUE, a TMS booking has at most one amendment row
+ever, live or suppressed. Re-booking a cleared slot therefore has to **revive** that row
+rather than insert a second one, which would violate the constraint — handled in
+`saveBooking`.
+
+**⚠️ Open question for the client:** should a *cleared* TMS booking show a ghost at all? A
+moved one clearly should — the client asked for it. Cleared is our inference from the same
+principle (nothing silently disappears; the planner must never disagree with TMS invisibly).
+The counter-argument is that "clear" ought to leave the cell looking clear. Confirm with Dave
+before this reaches users.
+
+**Still to do:** the move path below, and the uniqueness check.
+
+### C2 (remainder). Moves, and one-per-unit-per-day
 
 `lib/actions/bookings.ts`, `booking-moves.ts`, `undo.ts` write amendments rather than editing
 copies. Moving a TMS booking creates an amendment carrying its `tms_booking_id` at the new
