@@ -48,6 +48,12 @@ export type OverlayBooking = {
   movedTo: { unitId: number; date: string } | null;
   /** On a moved amendment: where TMS still has it. Mirrors `movedTo` for the return link. */
   movedFrom: { unitId: number; date: string } | null;
+  /**
+   * TMS has changed this booking since we last amended it (`tms_updated_at` in the amendment
+   * differs from the live value in TMS). Stage C3: surface this so the scheduler can accept
+   * TMS's version or re-apply their change. Null for new bookings (no `tms_booking_id`).
+   */
+  tmsSupersedes: boolean;
 };
 
 export type OverlayResult = {
@@ -90,7 +96,7 @@ export async function getOverlayBookings(
     return {
       bookings: amendmentsOnly
         .filter((a) => a.date >= from && a.date <= to)
-        .map((a) => toOverlay(a, null, null)),
+        .map((a) => toOverlay(a, null, null, false)),
       fetchedAt: new Date(),
       unplaced: {},
     };
@@ -185,6 +191,7 @@ export async function getOverlayBookings(
           ghostReason: "cleared",
           movedTo: null,
           movedFrom: null,
+          tmsSupersedes: false,
         });
       }
       continue;
@@ -213,6 +220,7 @@ export async function getOverlayBookings(
         ghostReason: null,
         movedTo: null,
         movedFrom: null,
+        tmsSupersedes: false,
       });
       continue;
     }
@@ -237,6 +245,7 @@ export async function getOverlayBookings(
         ghostReason: "moved",
         movedTo: { unitId: amendment.unitId, date: amendment.date },
         movedFrom: null,
+        tmsSupersedes: false,
       });
     }
   }
@@ -252,7 +261,7 @@ export async function getOverlayBookings(
     if (a.date < from || a.date > to) continue;
     const tmsSlot = a.tmsBookingId !== null ? tmsSlotByBookingId.get(a.tmsBookingId) ?? null : null;
     const moved = tmsSlot !== null && (tmsSlot.unitId !== a.unitId || tmsSlot.date !== a.date);
-    out.push(toOverlay(a, a.tmsBookingId, moved ? tmsSlot : null));
+    // Compute whether TMS has changed this booking since we amended it.
   }
 
   // A ghost and a real booking can't legitimately share a slot — a ghost only exists where the
@@ -472,6 +481,7 @@ function toOverlay(
   a: AmendmentRow,
   tmsBookingId: number | null,
   movedFrom: { unitId: number; date: string } | null,
+  tmsSupersedes: boolean,
 ): OverlayBooking {
   return {
     unitId: a.unitId,
@@ -488,5 +498,6 @@ function toOverlay(
     ghostReason: null,
     movedTo: null,
     movedFrom,
+    tmsSupersedes,
   };
 }
