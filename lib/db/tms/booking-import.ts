@@ -50,9 +50,10 @@ function skip(summary: BookingImportSummary, reason: SkipReason) {
   summary.skipped[reason] = (summary.skipped[reason] ?? 0) + 1;
 }
 
-// A system actor for booking_events entries the import writes — mirrors
-// data/migrate-from-excel.ts's own system-user pattern, kept distinct ("TMS Import" vs
-// "Data Migration") so the audit log shows which automated process made a change.
+// A system actor for booking_events entries the import writes, so the audit log shows which
+// automated process made a change. (This pattern was shared with the old Excel migration's
+// "Data Migration" user; that script and its user were deleted — docs/DECISIONS.md #27 —
+// leaving this as the only system actor.)
 async function ensureImportSystemUser(tx: Tx): Promise<number> {
   const email = "tms-import@system.quest.local";
   const [existing] = await tx.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);

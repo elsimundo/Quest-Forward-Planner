@@ -35,6 +35,14 @@ pnpm dev                     # http://localhost:3000
 
 Requires a local Postgres instance (or point `.env` at a Coolify/remote dev database).
 
+**Populating it with data.** There is no seed script — all real data comes from TMS
+(`docs/TMS_INTEGRATION_PLAN.md`). Point `MYSQL_AUTH_DATABASE_URL` at the read-only TMS
+database, then run the reference sync at `/admin/tms-sync` (companies, units, sites)
+followed by the booking import at `/admin/tms-booking-import`. The Excel workbook that
+used to seed local environments was removed on 2026-07-28 — see `docs/DECISIONS.md` #27.
+Don't reintroduce a spreadsheet or hand-written seeding path; an empty table means TMS
+has nothing to give, which is information worth seeing rather than papering over.
+
 ## Scripts
 
 | Command | Does |
@@ -45,7 +53,6 @@ Requires a local Postgres instance (or point `.env` at a Coolify/remote dev data
 | `pnpm db:migrate` | Apply pending Drizzle migrations |
 | `pnpm db:studio` | Drizzle Studio — inspect the DB visually |
 | `pnpm db:create-user` | Bootstrap a local `users` row (SPEC.md §1 — seeded manually for the pilot team) |
-| `pnpm db:migrate-excel` | Import `data/CT_Forward_Planner_23012025.xlsx` — units, unit_specs, sites, bookings. Idempotent. |
 | `pnpm lint` / `pnpm typecheck` | Standard checks — run before opening a PR |
 
 A test-suite script lands once a test framework is chosen — not yet in `package.json`.
@@ -64,7 +71,6 @@ lib/
 docs/                 Architecture, decisions, database reference (see below)
 reference/            Client-approved mock-up — the UX source of truth
 design-system/        Quest Medical brand tokens and component reference
-data/                 Source Excel workbook + one-off migration script
 SPEC.md               Full functional specification
 CLAUDE.md             Orientation for AI assistants working in this repo
 ```
@@ -77,6 +83,7 @@ CLAUDE.md             Orientation for AI assistants working in this repo
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How is it put together? |
 | [`docs/DECISIONS.md`](./docs/DECISIONS.md) | Why this choice and not that one? |
 | [`docs/DATABASE.md`](./docs/DATABASE.md) | What does the schema actually look like? |
+| [`docs/TMS_WRITE_BACK.md`](./docs/TMS_WRITE_BACK.md) | How do published bookings reach TMS, and what's blocking it? |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How do I work in this repo day to day? |
 | [`CLAUDE.md`](./CLAUDE.md) | Orientation for AI coding assistants |
 

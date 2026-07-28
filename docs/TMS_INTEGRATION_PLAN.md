@@ -271,9 +271,12 @@ Power), so `viewer` (read-only) is the common tier.
 
 ## 8. What this changes about the current build
 
-- **The Excel migration (`data/migrate-from-excel.ts`) is superseded.** Its 219 sites and
-  15,408 bookings were scaffolding; real data comes from the TMS sync (§6). Keep the script
-  for reference / local seeding, but it's no longer the source.
+- **The Excel migration is deleted, not merely superseded.** Its 219 sites and 15,408
+  bookings were scaffolding; real data comes from the TMS sync (§6). This bullet originally
+  said to keep the script for local seeding — that was reversed on 2026-07-28 at the
+  client's request: the script, the workbook, and every row they produced were removed
+  outright, because Excel rows sitting alongside TMS rows made the real data impossible to
+  identify. See `docs/DECISIONS.md` #27. There is no seeding path now, by design.
 - **`STATUSES` enum → `booking_statuses` table** (§3). Biggest single edit.
 - **`units.id` text→serial, `modality_id`→`unit_modalities` join** (§4.1, §4.2).
 - **`company_id` / `modality_id` / `booking_ref` / `tms_booking_id` on `bookings`** (§4.3).

@@ -27,7 +27,8 @@ the drawer, publish workflow) even though only CT ships first.
 | Local dev setup, conventions, PR workflow | `CONTRIBUTING.md` |
 | Approved visual design, exact interaction behaviour | `reference/quest-ct-forward-planner.jsx` — a working mock-up, client-approved. Match its layout, colours, and interaction patterns; don't redesign from scratch. |
 | Brand tokens (colour, type, spacing, components) | `design-system/` — the Quest Medical design system package |
-| Source data to migrate | `data/CT_Forward_Planner_23012025.xlsx` |
+| Where the real data comes from | `docs/TMS_INTEGRATION_PLAN.md` — TMS is the sole source of units, sites, and bookings |
+| How published bookings get *back* to TMS | `docs/TMS_WRITE_BACK.md` — the model, and the API questions blocking it. **Nothing writes to TMS today; the connection is read-only.** |
 
 ## Ground rules
 
@@ -37,10 +38,19 @@ the drawer, publish workflow) even though only CT ships first.
   rounds of client review (multi-select, drag-and-drop, undo/redo, clash resolution,
   publish/lock). Re-implement its behaviour faithfully in the real stack rather than
   reinterpreting it — most of the hard UX decisions are already made and tested.
+- **TMS is the only source of real data.** The client's Excel workbook was test data and
+  is *gone* — the file, the migration script, and every row it ever wrote were removed on
+  2026-07-28 at the client's request, because Excel-derived rows sitting next to real TMS
+  rows made it impossible to tell which was which (`docs/DECISIONS.md` #27). Don't
+  re-import it, don't re-add a spreadsheet seeding path, and don't hand-seed
+  `units`/`sites`/`bookings` to make a local environment look populated. If a table is
+  empty, that is the honest state — TMS either has the data or it doesn't, and "TMS
+  doesn't have it" is a client question, not a gap to fill with invented rows.
 - **Nothing hard-deletes.** Every destructive-looking action (clear, overwrite, retiring
   a unit) is a soft delete (`deleted_at`) — see `SPEC.md` §2c and `docs/DECISIONS.md`.
   If you're about to write a `DELETE` statement against `bookings`, `units`, `sites`, or
-  `companies`, stop — that's very likely a bug.
+  `companies`, stop — that's very likely a bug. (The one-off Excel purge above was an
+  explicit, client-authorised exception — not a precedent.)
 - **Every mutation goes through the audit log** (`booking_events`). If you add a new kind
   of write to `bookings`, add a matching `action` value and make sure undo works for it.
 - **Permissions are enforced server-side, always.** UI role-gating is a convenience, not

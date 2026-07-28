@@ -1,9 +1,18 @@
-// SPEC.md §2a. requirement_key vocabulary isn't fixed anywhere yet — the admin page that
-// creates site_capability_requirements rows (slice 7) doesn't exist, so this has never
-// been exercised against real data. Matching is case-insensitive/whitespace-normalised
-// against unit_specs keys (which are raw text from the source spreadsheet, e.g. "Cardiac",
-// "Mako approved") — whoever sets requirement keys via the admin page needs to use text
-// that matches a unit_specs key this way for the check to actually fire.
+// SPEC.md §2a. Matching is case-insensitive/whitespace-normalised between a site's
+// requirement_key and a unit_specs key, so whoever sets requirement keys via
+// /admin/site-requirements has to use text that lines up with a unit_specs key for the
+// check to fire at all.
+//
+// ⚠️ This currently never fires, because BOTH inputs are empty. `unit_specs` was only ever
+// populated from the Excel workbook's "CT inventory checklist" tab, which was purged on
+// 2026-07-28 (docs/DECISIONS.md #27), and nothing can refill it: TMS holds no capability
+// data (requires_special_access is 0, special_access_details empty, and
+// customer_unit_type_id null on all 147 live InHealth units), and no admin UI writes
+// unit_specs. `site_capability_requirements` has an admin UI but zero rows.
+//
+// Keep this code — the feature is client-approved and modality-generic — but don't assume
+// it's exercised, and don't seed fake specs to make it light up. Where capability data
+// should come from is an open client question (docs/DATABASE.md, `unit_specs`).
 export type CapabilityWarning = { requirementKey: string; message: string };
 
 function normaliseKey(key: string): string {

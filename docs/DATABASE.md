@@ -54,8 +54,10 @@ companies ──┐             units
 
 ### `modalities`
 Reference data. One row per fleet type — CT, MRI, and whatever else Quest schedules the
-same way. **v1 launch has only a `CT` row seeded**; adding a new modality later is a
-seed, not a migration.
+same way. Created on demand by the sync from TMS's own modality names (`ensureModality` in
+`lib/db/tms/sync.ts`), *not* seeded by a migration — six exist today (`CT`, `Cardiac`,
+`Cath Labs`, `MRI`, `Mammography`, `Endoscopy`). **v1 launch still exposes only CT in the
+UI** (SPEC §2d); the rest simply exist as tags until a second sheet is switched on.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -74,7 +76,7 @@ equivalent once that modality is added).
 | `company_id` | FK → `companies`, not null | |
 | `registration` | text | Display identity (e.g. `"CT15"`) — what used to be `id` |
 | `display_order` | int | Column order in the grid, within its modality |
-| `description` | text | Full spec line from the source sheet header |
+| `description` | text | Free-text detail line, shown as the grid column tooltip and included in unit search. **Currently null on every row** — it used to hold the Excel sheet's header text, which was cleared in the 2026-07-28 purge (`docs/DECISIONS.md` #27). Nothing writes it today; the sync doesn't set it. Candidate TMS sources when it's repopulated: `units.manufacturer` (54/147 InHealth units populated), `units.unit_type` (81), `units.notes` (80, holds real scanner models like "Canon, Aquillion Prime") |
 | `active` | bool | Local-only — the sync sets it `true` on create and never touches it again, so an admin's decision to hide a unit survives every later sync run |
 | `deleted_at` | timestamptz, null | Soft delete — SPEC §2c. Set by the sync when a linked unit disappears from TMS |
 | `tms_unit_id` | int, unique, null | TMS `units.id` — the sync's upsert key. Null for a unit that's never been synced |
@@ -103,10 +105,9 @@ authoritative for removal would silently drop a booked unit off its own sheet. R
 stale tag, if ever needed, is a manual admin action, not something an unattended sync does.
 
 ### `unit_specs`
-Reference data, from the modality's own inventory-checklist source tab. Key/value per
-unit — deliberately generic so each modality's spec sheet (CT: cardiac, MAKO,
-insufflator; MRI: e.g. tesla strength, bore diameter — TBC with client) fits without a
-schema change.
+Key/value capability data per unit — deliberately generic so each modality's spec sheet
+(CT: cardiac, MAKO, insufflator; MRI: e.g. tesla strength, bore diameter — TBC with
+client) fits without a schema change.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -115,6 +116,16 @@ schema change.
 | `value` | text | |
 
 Drives the capability-matching warning (SPEC §2a).
+
+> **⚠️ Empty, with no data source — the capability feature cannot currently fire.**
+> Its only ever source was the workbook's "CT inventory checklist" tab, purged on
+> 2026-07-28 (`docs/DECISIONS.md` #27). TMS has no equivalent: across all 147 live
+> InHealth units, `requires_special_access` is 0 on every row, `special_access_details`
+> is empty on every row, and `customer_unit_type_id` is null on every row — so a sync
+> cannot fill this table either. There is also **no admin UI that writes `unit_specs`**
+> (only `site_capability_requirements` has one). Both halves of the SPEC §2a check are
+> therefore empty and the warning is dead code until the client decides where capability
+> data should come from. Don't hand-seed it to make the feature look alive.
 
 ### `companies`
 Reference data. NHS Trusts, Ramsay, Circle, Spire, Healthshare, medneo, etc. Only one row
@@ -314,56 +325,52 @@ scheduler-edited data) with a different summary shape.
 
 ## Migration & seeding
 
-**Superseded as a source of truth by the TMS integration**
-(`docs/TMS_INTEGRATION_PLAN.md` §8) — real units, locations, and bookings come from TMS,
-not this workbook. The script below is kept runnable purely as a local-dev seeding
-convenience; the description that follows is historical. Its bookings were soft-deleted
-ahead of the first TMS booking import (`docs/DECISIONS.md` #21, client call — the Excel
-data was only ever test data) so they don't collide with TMS's real confirmed bookings on
-the same unit/date slots.
+**There is no seed script, and no spreadsheet.** All real data comes from TMS — companies,
+units, and sites via the reference sync (`lib/db/tms/sync.ts`, `/admin/tms-sync`), bookings
+via the import (`lib/db/tms/booking-import.ts`, `/admin/tms-booking-import`). To bring a
+fresh database up: run `pnpm db:migrate`, create a user with `pnpm db:create-user`, then run
+the sync followed by the import.
 
-**v1 launch is CT-only** (SPEC §2d) — seed a single `modalities` row (`"CT"`) before
-running the rest of the migration, and set it on every migrated unit. MRI/other
-modalities are added later the same way: a new `modalities` row, then their own units and
-specs — no schema change needed.
+Nothing else needs hand-seeding:
 
-`data/migrate-from-excel.ts` parses the source workbook — run with `pnpm db:migrate-excel`
-(idempotent: re-running skips units/specs/bookings that already exist). What it actually
-does, confirmed against the real file (not the pre-implementation guess below the line):
+- **`booking_statuses`** — the eight client-approved rows are seeded by migration `0005`
+  (`docs/DECISIONS.md` #18). TMS does not own these; the app does.
+- **`companies`** — the InHealth row is seeded by migration `0006`, then linked to TMS
+  company 3 by the first sync run.
+- **`modalities`** — *not* seeded by any migration. The sync creates each row on demand
+  from TMS's own modality names (`ensureModality` in `lib/db/tms/sync.ts`), which is how
+  the current six (`CT`, `Cardiac`, `Cath Labs`, `MRI`, `Mammography`, `Endoscopy`) got
+  there. v1 launch is still CT-only in the UI (SPEC §2d); the others simply exist as tags.
 
-- **Real column layout**: `CT FP`'s unit columns run D→AH (`CT15`→`CT45`, 31 units) — the
-  header's own row 1 (richer, concatenated rich-text runs) is used for `units.description`;
-  row 2 is a shorter duplicate and isn't used.
-- **Real day-rows vs. a hidden summary block**: the sheet has a recurring "AVAILABLE IN
-  MONTH / NOT AVAILABLE / RD / OR / EMPTY" block roughly once a month that reuses that
-  month's first date as its row label — a plain "is column A a date" check doesn't exclude
-  it. Real day-rows are identified by column B holding an actual `Mon`–`Sun` abbreviation;
-  everything else is skipped.
-- **Status decoded from fill colour**, with `weekend` decided by day-of-week (Sat/Sun)
-  rather than colour — the sheet uses three different grey fills for it, two of which are
-  Excel theme+tint colours with no RGB code. An explicit status colour (e.g. bidding-red)
-  still overrides the weekend default. See `docs/DECISIONS.md` #10 for the full reasoning.
-- `sites` from distinct cell text values, whitespace-normalised. Only the confirmed
-  `"... – cancelled chargeable"` suffix is stripped into `status`/`notes` — every other
-  dash-suffixed pattern found in the real data (`"– Canon PM"`, `"– 6 monthly"`,
-  `"– unstaffed"`, `"– ENT"` (a department name, not a status)) is left in the site name,
-  since stripping generically would destroy real information.
-- **Duplicate date rows**: none were found in this particular export (730 distinct real
-  dates, zero repeats) — SPEC's warning may describe an earlier version of the file. The
-  "keep the fullest row" dedup logic is still implemented defensively for future re-exports.
-- `CT inventory checklist` tab → `unit_specs`, **exact unit-ID match only**. The checklist
-  and the planner grid disagree on naming in places (`RCT28`/`RCT29` vs. `CT28`/`CT29`) and
-  the checklist has no column for `RCT22` or `CT35`–`CT45` — unmatched units get no specs
-  rather than a guessed mapping, logged clearly by the script.
-- A system user (`migration@system.quest.local`, role `admin`, random unusable password)
-  is upserted to satisfy `bookings.created_by`/`updated_by` and `booking_events.actor_id`
-  for migrated rows. Every inserted booking gets a matching `booking_events` row
-  (`action: 'create'`) in the same transaction, all sharing one `batch_id` for the run.
+### The Excel workbook is gone (2026-07-28)
 
-The four fill colours SPEC §13 Q5 flagged as undocumented (`F8CBAD`, `B4C6E7`, `E2EFDA`,
-`E08B8B`, plus a 5th found during the scan, `808080`) turned out to only ever appear in the
-summary block above — they're excluded along with it, not mapped to a status. See
-`docs/DECISIONS.md` #10.
+The client's `CT_Forward_Planner_23012025.xlsx`, the `data/migrate-from-excel.ts` script,
+the `pnpm db:migrate-excel` command, and the `exceljs` dependency were all **removed**, and
+every row the migration ever wrote was **hard-deleted** from Postgres — the one deliberate
+exception to this project's no-hard-delete rule (`docs/DECISIONS.md` #27). The client asked
+for it directly: Excel-derived rows sitting alongside real TMS rows made it impossible to
+tell which data was real, and the workbook had only ever been test data.
+
+What was removed, for the record:
+
+| Removed | Count |
+|---|---|
+| `bookings` (Excel migration + 1 manual test row) | 15,409 |
+| `booking_events` for those bookings | 30,935 |
+| `sites` never linked to a TMS location | 219 |
+| `units` never linked to a TMS unit | 3 (`CT15`, `CT16`, `CT24`) |
+| `unit_specs` (from the "CT inventory checklist" tab) | 138 |
+| `units.description` values (sheet header text) | 28, nulled |
+| The `migration@system.quest.local` system user | 1 |
+
+`RCT22` was **kept** despite having no `tms_unit_id`: it carries live TMS-imported
+bookings, so it is a genuine unit TMS simply never tagged — the exact case
+`docs/DECISIONS.md` #24 warns about. Anything reasoning about "is this row real?" should
+key off actual booking linkage, not the presence of `tms_unit_id` alone.
+
+Two features lost their data source in this purge and are documented in place above:
+`unit_specs` (capability matching — now unfillable, see the warning on that table) and
+`units.description` (repopulatable from TMS, see that column's note).
 
 ## Query conventions
 

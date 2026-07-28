@@ -486,11 +486,12 @@ Not covered by the mock-up (it's single-user, in-memory) — defaults for the re
 
 ## 13. Migration & open client questions
 
-**Migration script** (one-off, keep in repo): parse `CT FP` tab → `units` from header row,
-`sites` from distinct cell values (trim; the sheet has inconsistent spacing and embedded
-notes like "— cancelled chargeable" in site text — strip status suffixes into status/notes),
-`bookings` from non-empty cells with status decoded from fill colour per §3. Skip duplicate
-date rows (the sheet contains repeated `01/02/2025` rows — keep the fullest).
+~~**Migration script** (one-off, keep in repo): parse `CT FP` tab...~~ **Obsolete — the
+Excel migration no longer exists.** The workbook was only ever test data; on 2026-07-28 the
+client asked for every trace of it to be removed, and the script, the file, and all 15,409
+rows it had written were deleted outright (`docs/DECISIONS.md` #27). All real units, sites,
+and bookings come from TMS (`docs/TMS_INTEGRATION_PLAN.md`). Nothing in this spec should be
+read as requiring a spreadsheet import path.
 
 Open questions to resolve with the client:
 1. **TMS integration mechanics** — confirmed as out of scope for now ("not for the time
@@ -514,7 +515,18 @@ Open questions to resolve with the client:
    every occurrence is confined to a recurring "AVAILABLE IN MONTH / NOT AVAILABLE / RD /
    OR / EMPTY" summary block that reuses each month's first date as a row label. The
    migration script excludes these rows entirely rather than mapping the colours to a
-   status. See `docs/DECISIONS.md` #10 and `data/migrate-from-excel.ts`.
+   status. See `docs/DECISIONS.md` #10. (The script itself has since been deleted — #27.)
+
+6. **Where does unit capability data come from now?** — **new, unresolved, blocking §2a.**
+   The capability-matching warning compares a site's `site_capability_requirements` against
+   a unit's `unit_specs`. `unit_specs` was only ever filled from the workbook's "CT
+   inventory checklist" tab, which is gone (#27), and **TMS has no replacement**: across all
+   147 live InHealth units, `requires_special_access` is 0, `special_access_details` is
+   empty, and `customer_unit_type_id` is null on every row. There is also no admin UI that
+   writes `unit_specs`. So §2a is currently dead code. The client needs to decide one of:
+   (a) Quest populates the capability fields in TMS, and we sync them; (b) we build an admin
+   editor so the planner owns capability data outright; or (c) §2a is dropped from scope.
+   Until then the tables stay empty — do not seed them to make the feature appear to work.
 6. **Other modalities (§2d)** — get the MRI (and any other fleet's) equivalent of the
    `CT FP` and `CT inventory checklist` tabs, confirm its capability list for §2a, and
    confirm whether its sites are the same `sites` records CT already uses (same

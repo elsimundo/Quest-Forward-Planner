@@ -425,6 +425,18 @@ benefit. Only the credential-verification *logic* was reusable, not the whole au
 
 ### 18. Booking statuses become admin-managed data, not a fixed enum
 
+> **⚠️ One premise of this entry is in doubt (2026-07-28).** It rests on the client's
+> answer that TMS's own `booking_statuses` table is obsolete and shouldn't be read. A
+> direct read of TMS says otherwise: company 3's `booking_statuses` holds **exactly these
+> eight statuses** — Confirmed, Bank Holiday, Weekend Confirmed, Waiting Final, Bidding,
+> Corrective Works, Location to be Confirmed, Customer Cancelled — with matching colours
+> and descriptions. Six are merely deactivated (`active = 0`); live bookings use only
+> Confirmed (1,274) and Corrective Works (94). The *decision* below still stands (we own
+> the catalogue, and it's admin-editable), but "TMS has nothing usable here" is not true,
+> and it matters for publishing statuses back. Re-raised with Quest in
+> `docs/TMS_WRITE_BACK.md` §3.3.
+
+
 **Decided:** The status catalogue moves out of the `STATUSES` string enum into a
 `booking_statuses` table (key, label, four-part colour palette, display order, `editable`,
 `calendar_derived`, `billable`, `active`, soft-delete). `bookings.status` is now a free
@@ -846,6 +858,50 @@ mind.
 677 sites, and an artificial cap would silently hide real options with no way to reach them
 short of guessing search terms, defeating the point of "browse" in the first place. A plain
 scrollable list handles that volume fine.
+
+### 27. The Excel workbook is deleted outright — data, script, and file
+
+**Decided:** Every trace of the client's `CT_Forward_Planner_23012025.xlsx` was removed on
+2026-07-28: the workbook, `data/migrate-from-excel.ts`, the `pnpm db:migrate-excel` script,
+the `exceljs` dependency, and — **hard-deleted** from Postgres — 15,409 bookings, 30,935
+`booking_events`, 219 sites, 3 units, 138 `unit_specs` rows, 28 `units.description` values,
+and the `migration@system.quest.local` system user. This is a deliberate, one-off exception
+to the project's no-hard-delete rule (`SPEC.md` §2c), authorised by the client directly.
+
+**Why:** Client request, relayed this session: they were worried about "unnecessary tables
+caused by the Excel data" and found it impossible to tell which rows were real TMS data and
+which were spreadsheet leftovers. That confusion was real and getting worse — the workbook's
+sites and units had already been *linked* to their TMS counterparts by the sync
+(entry #24), so Excel-origin rows were no longer visually distinguishable from TMS-origin
+ones. Soft-deleting wouldn't have helped: the whole complaint was about rows being *present
+and ambiguous*, and a `deleted_at` row still shows up in every admin and audit view. The
+workbook was only ever test data (`docs/TMS_INTEGRATION_PLAN.md` §2, "the Excel workbook was
+only ever an example"), so nothing of value was destroyed.
+
+Two subtleties worth remembering:
+
+1. **`RCT22` was kept** despite having no `tms_unit_id`. It carries live TMS-imported
+   bookings, so it's a real unit TMS simply never tagged — exactly the case entry #24 warns
+   about. "Has no `tms_unit_id`" is *not* a safe test for "is Excel junk"; actual booking
+   linkage is.
+2. **138 `unit_specs` rows and 28 `units.description` values survived the first purge pass**
+   because they hang off units that *are* TMS-linked. They were Excel text sitting on real
+   TMS rows — precisely the client's complaint — and needed a second, separate pass.
+
+**Consequences (not yet resolved):** `unit_specs` is now permanently empty with no source.
+TMS has no capability data — across all 147 live InHealth units, `requires_special_access`
+is 0, `special_access_details` is empty, and `customer_unit_type_id` is null on every single
+row — and there is no admin UI that writes `unit_specs`. So SPEC §2a's capability-matching
+warning is dead code until the client says where that data should come from. `units.description`
+is likewise null everywhere, but is repopulatable from TMS `manufacturer` / `unit_type` /
+`notes` whenever that's wanted. Both are flagged in `docs/DATABASE.md`.
+
+**Not chosen:** *Soft-deleting instead* — rejected above; it preserves exactly the ambiguity
+the client asked to remove. *Dropping `unit_specs` / `site_capability_requirements` and the
+capability feature altogether* — considered and explicitly declined: the feature is
+client-approved in SPEC §2a and modality-generic by design, and deleting it to tidy an empty
+table would be trading a signed-off requirement for cosmetics. The tables stay empty and
+honest until the data question is answered.
 
 <!--
 Template for new entries:
