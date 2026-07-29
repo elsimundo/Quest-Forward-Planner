@@ -38,6 +38,35 @@ const DATE_COL_WIDTH = 190;
 const UNIT_COL_WIDTH = 132;
 const ROW_HEIGHT = 54;
 
+// Undo/redo batch ids are persisted to sessionStorage so a stray tab refresh doesn't wipe
+// the stack — the server still validates every batchId on undo (lib/actions/undo.ts), so a
+// stale or cross-tab id just fails gracefully (NOT_FOUND/LOCKED/CONFLICT) instead of corrupting
+// anything. sessionStorage (not localStorage) is deliberate: it's per-tab and clears when the
+// tab closes, matching "don't lose it on refresh" without batches leaking across tabs/sessions.
+const UNDO_STACK_KEY = "planner-undo-stack";
+const REDO_STACK_KEY = "planner-redo-stack";
+
+function readStack(key: string): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every((x) => typeof x === "string") ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStack(key: string, stack: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(stack));
+  } catch {
+    // ignore quota/privacy-mode errors — undo/redo just won't survive a refresh
+  }
+}
+
 type Unit = { id: number; registration: string; description: string | null; displayOrder: number };
 type CapabilityRequirement = { requirementKey: string; required: boolean };
 const cellKey = (date: string, unitId: number) => `${date}|${unitId}`;
@@ -120,8 +149,11 @@ export function PlannerGrid({
   } | null>(null);
   const [pending, setPending] = useState(false);
   const dragRef = useRef<{ origin: { date: string; unitId: number }; keys: string[] } | null>(null);
-  const [undoStack, setUndoStack] = useState<string[]>([]);
-  const [redoStack, setRedoStack] = useState<string[]>([]);
+  const [undoStack, setUndoStack] = useState<string[]>(() => readStack(UNDO_STACK_KEY));
+  const [redoStack, setRedoStack] = useState<string[]>(() => readStack(REDO_STACK_KEY));
+
+  useEffect(() => writeStack(UNDO_STACK_KEY, undoStack), [undoStack]);
+  useEffect(() => writeStack(REDO_STACK_KEY, redoStack), [redoStack]);
 
   // Only REAL bookings — ghosts are excluded deliberately. A ghost is a rendering of where
   // TMS still has a booking a scheduler has moved (lib/db/tms/overlay.ts); it isn't one of
