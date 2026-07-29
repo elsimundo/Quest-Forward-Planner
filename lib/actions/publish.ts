@@ -1,13 +1,15 @@
 "use server";
 
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { bookings, bookingEvents, bookingStatuses, units } from "@/lib/db/schema";
+import { bookings, bookingEvents, bookingStatuses, companies, units } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
 import { getUnitRegistrations } from "@/lib/db/unit-labels";
+import { getTmsBookings } from "@/lib/db/tms/booking-cache";
+import { classifyForPublish, type PublishExclusionReason } from "@/lib/publish-eligibility";
 
 // Publishing (forwarding to TMS) is day-to-day scheduling work — scheduler and up.
 const PUBLISH_ROLES = ["scheduler", "admin", "super_admin"] as const;
@@ -46,45 +48,75 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
       ).map((r) => r.key),
     );
 
-    const rows: BookingRow[] = [];
-    let conflictedSkipped = 0;
-    let notConfirmedSkipped = 0;
+    const candidateRows: BookingRow[] = [];
     for (const t of targets) {
       const [row] = await tx
         .select()
         .from(bookings)
         .where(and(eq(bookings.unitId, t.unitId), eq(bookings.date, t.date), isNull(bookings.deletedAt)))
         .limit(1);
-      if (!row || row.publishedAt) continue;
-      // Hard company scoping (docs/DECISIONS.md #22) — silently skip, same as any other
+      if (!row) continue;
+      // Hard company scoping (docs/DECISIONS.md #22) — silently drop, same as any other
       // ineligible target, rather than a distinct error that would confirm cross-company
       // data exists at that unit/date.
       if (!companyAllowed(actor.companyAccess, row.companyId)) continue;
-      // A booking with an outstanding TMS conflict (docs/DECISIONS.md #21) shouldn't be
-      // forwarded as final until a scheduler has actually looked at it — publishing past
-      // a known TMS disagreement would just forward whichever side happened to win the
-      // race, silently. Resolve it (edit or move it) first.
-      if (row.tmsConflictAt) {
-        conflictedSkipped++;
-        continue;
+      candidateRows.push(row);
+    }
+
+    // TMS-supersede check (docs/OVERLAY_BUILD_PLAN.md C3/D1) — a booking TMS has changed
+    // since it was amended must not be forwarded until a scheduler has looked at it
+    // (lib/db/tms/overlay.ts computes the same comparison for the ↻ badge; this is the
+    // server re-deriving it fresh at publish time rather than trusting a client-sent flag).
+    // Grouped by company so each company's TMS cache is read at most once per call.
+    const companyIds = [...new Set(candidateRows.map((r) => r.companyId))];
+    const tmsCompanyIdByLocal = new Map(
+      companyIds.length
+        ? (
+            await tx
+              .select({ id: companies.id, tmsCompanyId: companies.tmsCompanyId })
+              .from(companies)
+              .where(inArray(companies.id, companyIds))
+          ).map((c) => [c.id, c.tmsCompanyId])
+        : [],
+    );
+    const tmsSupersedesById = new Map<number, boolean>();
+    for (const companyId of companyIds) {
+      const tmsCompanyId = tmsCompanyIdByLocal.get(companyId);
+      if (!tmsCompanyId) continue;
+      const rowsForCompany = candidateRows.filter((r) => r.companyId === companyId && r.tmsBookingId !== null);
+      if (!rowsForCompany.length) continue;
+      const { bookings: tmsBookings } = await getTmsBookings(tmsCompanyId);
+      const tmsById = new Map(tmsBookings.map((b) => [b.id, b]));
+      for (const row of rowsForCompany) {
+        const tmsBooking = tmsById.get(row.tmsBookingId as number);
+        const supersedes = !!(tmsBooking && row.tmsUpdatedAt && tmsBooking.updatedAt.getTime() !== row.tmsUpdatedAt.getTime());
+        tmsSupersedesById.set(row.id, supersedes);
       }
-      // Only a status an admin has marked publishable is final enough to forward —
-      // client-confirmed (docs/DECISIONS.md #24), now admin-editable (docs/TMS_WRITE_BACK.md
-      // §3.3). Out of the box that's `confirmed` and its weekend/bank-holiday calendar forms;
-      // everything still "in discussion" stays sandbox-only until a scheduler moves it on.
-      if (!publishableKeys.has(row.status)) {
-        notConfirmedSkipped++;
-        continue;
+    }
+
+    const rows: BookingRow[] = [];
+    const skippedByReason: Partial<Record<PublishExclusionReason, number>> = {};
+    for (const row of candidateRows) {
+      const result = classifyForPublish(
+        { status: row.status, publishedAt: row.publishedAt, tmsConflictAt: row.tmsConflictAt, tmsSupersedes: tmsSupersedesById.get(row.id) ?? false },
+        publishableKeys,
+      );
+      if (result.eligible) {
+        rows.push(row);
+      } else if (result.reason !== "already-published") {
+        // Already-published is routine (re-sweeping a range that includes locked bookings is
+        // expected, SPEC.md §2b) and never counted as an exception. The other three reasons
+        // are genuine "something needs resolving" cases — surfaced in the message.
+        skippedByReason[result.reason] = (skippedByReason[result.reason] ?? 0) + 1;
       }
-      rows.push(row);
     }
 
     if (!rows.length) {
-      const message = conflictedSkipped
-        ? `Nothing published — ${conflictedSkipped} booking${conflictedSkipped > 1 ? "s" : ""} still ${conflictedSkipped > 1 ? "have" : "has"} an unresolved TMS conflict.`
-        : notConfirmedSkipped
-          ? `Nothing published — ${notConfirmedSkipped} booking${notConfirmedSkipped > 1 ? "s" : ""} still ${notConfirmedSkipped > 1 ? "need" : "needs"} to be Confirmed first.`
-          : "Nothing to publish — those bookings are already published.";
+      const parts: string[] = [];
+      if (skippedByReason["tms-supersedes"]) parts.push(`${skippedByReason["tms-supersedes"]} need a TMS update resolved`);
+      if (skippedByReason["tms-conflict"]) parts.push(`${skippedByReason["tms-conflict"]} have an unresolved TMS conflict`);
+      if (skippedByReason["not-publishable-status"]) parts.push(`${skippedByReason["not-publishable-status"]} still need to be Confirmed`);
+      const message = parts.length ? `Nothing published — ${parts.join(", ")}.` : "Nothing to publish — those bookings are already published.";
       return { ok: true, count: 0, batchId: null, message };
     }
 

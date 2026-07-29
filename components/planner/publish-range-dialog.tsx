@@ -4,13 +4,15 @@ import { useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { fmtDate, type DayInfo } from "@/lib/dates";
+import { PublishBreakdown, type PublishExclusion } from "./publish-breakdown";
+import type { PublishTarget } from "@/lib/actions/publish";
 
 export function PublishRangeDialog({
   open,
   days,
   defaultFrom,
   defaultTo,
-  countEligible,
+  preflight,
   onConfirm,
   onClose,
 }: {
@@ -18,10 +20,10 @@ export function PublishRangeDialog({
   days: DayInfo[];
   defaultFrom: string;
   defaultTo: string;
-  // How many live, unpublished bookings fall within [from, to] — computed by the grid,
-  // which holds the booking data. Kept as a callback so the preview updates as the range
-  // changes without threading all bookings into this component.
-  countEligible: (from: string, to: string) => number;
+  // Classifies every live, unpublished booking in [from, to] — computed by the grid, which
+  // holds the booking data (Stage D1: docs/OVERLAY_BUILD_PLAN.md). Kept as a callback so the
+  // preview updates as the range changes without threading all bookings into this component.
+  preflight: (from: string, to: string) => { eligible: PublishTarget[]; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
 }) {
@@ -34,7 +36,7 @@ export function PublishRangeDialog({
             days={days}
             defaultFrom={defaultFrom}
             defaultTo={defaultTo}
-            countEligible={countEligible}
+            preflight={preflight}
             onConfirm={onConfirm}
             onClose={onClose}
           />
@@ -48,14 +50,14 @@ function PublishRangeBody({
   days,
   defaultFrom,
   defaultTo,
-  countEligible,
+  preflight,
   onConfirm,
   onClose,
 }: {
   days: DayInfo[];
   defaultFrom: string;
   defaultTo: string;
-  countEligible: (from: string, to: string) => number;
+  preflight: (from: string, to: string) => { eligible: PublishTarget[]; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
 }) {
@@ -63,8 +65,8 @@ function PublishRangeBody({
   const [to, setTo] = useState(defaultTo);
 
   const invalidRange = from > to;
-  const eligible = invalidRange ? 0 : countEligible(from, to);
-  const disabled = invalidRange || eligible === 0;
+  const { eligible, excluded } = invalidRange ? { eligible: [], excluded: [] } : preflight(from, to);
+  const disabled = invalidRange || eligible.length === 0;
 
   const selectClass =
     "w-full rounded-lg border border-[#e6e6e6] px-2.5 py-2 text-[13px] text-[#333333] outline-none focus:border-[#2b7bb9]";
@@ -107,22 +109,22 @@ function PublishRangeBody({
         </div>
       </div>
 
-      <div className="px-6 pb-2.5">
-        <div className="rounded-[10px] bg-[#f7f9fc] px-3.5 py-2.5 text-[13px] text-[#333333]">
-          {invalidRange
-            ? "Pick a 'From' date on or before 'To'."
-            : eligible === 0
-              ? "No unpublished bookings fall in this range."
-              : `This will publish ${eligible} booking${eligible > 1 ? "s" : ""} to TMS.`}
+      {invalidRange ? (
+        <div className="px-6 pb-2.5">
+          <div className="rounded-[10px] bg-[#f7f9fc] px-3.5 py-2.5 text-[13px] text-[#333333]">
+            Pick a &apos;From&apos; date on or before &apos;To&apos;.
+          </div>
         </div>
-      </div>
+      ) : (
+        <PublishBreakdown eligibleCount={eligible.length} excluded={excluded} />
+      )}
 
       <div className="flex gap-2.5 px-6 pt-3.5 pb-5">
         <Button className="flex-1" disabled={disabled} onClick={() => onConfirm(from, to)}>
-          🔒 Publish range
+          {excluded.length > 0 ? `🔒 Publish ${eligible.length}` : "🔒 Publish range"}
         </Button>
         <Button variant="outline" onClick={onClose}>
-          Cancel
+          {excluded.length > 0 ? "Cancel and fix" : "Cancel"}
         </Button>
       </div>
     </>

@@ -241,14 +241,39 @@ clears the flag, confirmed cleanup restores baseline. Typecheck, lint, build cle
 
 ## Stage D — publish
 
-### D1. Pre-flight dialog
+### D1. Pre-flight dialog — ✅ DONE
 
-Before writing anything, gather: conflicts (B4), non-publishable statuses (A1), already
-published, and stale cache (E1). Show *"28 of 30 will publish — 2 are in conflict"*, list the
-exceptions with reasons, offer **Publish 28** or **Cancel and fix**.
+`lib/publish-eligibility.ts` — one `classifyForPublish()` shared by the client preview and
+the server gate, same guarantee A1 established for `publishable`: what the dialog promises
+is what the server actually does. Four exclusion reasons, checked in this order (so a
+booking excluded for more than one reason gets the right explanation, not just the first
+one alphabetically): `already-published` (routine, never shown as an exception — re-sweeping
+a range that includes locked bookings is expected), `tms-conflict` (the retiring import's
+flag), `tms-supersedes` (Stage C3 — checked ahead of status, since a Confirmed booking TMS
+has since changed is a supersede problem, not a status problem), `not-publishable-status`.
 
-Folds in today's silent skipping of non-confirmed bookings (`DECISIONS.md` #24), which
-currently only surfaces afterwards.
+Both entry points go through it: **Publish range** always previews before confirming
+(`PublishRangeDialog` — updated to render the breakdown instead of a bare count);
+**Publish selected** publishes immediately when every selected booking is eligible (nothing
+to explain), and only opens a dialog (`PublishSelectedDialog`, new) when the selection
+contains an exception — preserving the fast path for the common case while closing the
+silent-skip gap for the surprising one.
+
+**A real gap this closed, not just a UI improvement:** the server gate checked
+`tmsConflictAt` (the retiring import's flag) and status, but never `tmsSupersedes` — a
+`confirmed` booking TMS had changed since the amendment was made could have been published
+without anyone resolving the disagreement, forwarding whichever side happened to win the
+race. `publishBookings` now re-derives `tmsSupersedes` fresh from live TMS at commit time
+(not trusting a client-sent flag), grouped by company so each company's TMS cache is read at
+most once per call.
+
+**Verified against live TMS, not just typechecked:** built a `confirmed`-status booking with
+a deliberately stale `tms_updated_at`, attempted to publish it through the real gate logic,
+confirmed it was blocked (`skippedByReason: { "tms-supersedes": 1 }`, `publishedAt` stayed
+null). Before this change that booking would have published silently. Typecheck, lint, build
+clean; dev server needed a restart after the edit (stale Turbopack compile, same as earlier
+in this build — not a code defect, confirmed by diffing the file on disk against what the
+error referenced).
 
 ### D2. Write path — stubbed
 

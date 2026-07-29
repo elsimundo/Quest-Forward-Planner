@@ -13,6 +13,7 @@ import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { moveBookings, type MoveMode, type MoveSpec } from "@/lib/actions/booking-moves";
 import { undoBatch } from "@/lib/actions/undo";
 import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
+import { classifyForPublish } from "@/lib/publish-eligibility";
 import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip, GhostChip } from "./cell-chip";
@@ -21,6 +22,8 @@ import { StatusLegend } from "./status-legend";
 import { SelectionBar } from "./selection-bar";
 import { ClashDialog, type Clash } from "./clash-dialog";
 import { PublishRangeDialog } from "./publish-range-dialog";
+import { PublishSelectedDialog } from "./publish-selected-dialog";
+import type { PublishExclusion } from "./publish-breakdown";
 import { BookingDrawer, type DrawerTarget } from "./booking-drawer";
 
 // Publishing (forward to TMS) is scheduler+; unlocking a published booking is admin-only
@@ -100,6 +103,7 @@ export function PlannerGrid({
   const [drag, setDrag] = useState<DragPreview | null>(null);
   const [conflict, setConflict] = useState<{ moves: MoveSpec[]; clashes: Clash[] } | null>(null);
   const [publishRange, setPublishRange] = useState<{ from: string; to: string } | null>(null);
+  const [selectedPreflight, setSelectedPreflight] = useState<{ eligible: PublishTarget[]; excluded: PublishExclusion[] } | null>(null);
   const [pending, setPending] = useState(false);
   const dragRef = useRef<{ origin: { date: string; unitId: number }; keys: string[] } | null>(null);
   const [undoStack, setUndoStack] = useState<string[]>([]);
@@ -429,36 +433,51 @@ export function PlannerGrid({
     [statuses],
   );
 
-  // Live, unpublished, publishable-status bookings within [from, to] — the eligible
-  // targets for a range sweep.
-  const eligibleInRange = useCallback(
-    (from: string, to: string): PublishTarget[] => {
-      const out: PublishTarget[] = [];
+  // Stage D1: classify every candidate against the SAME logic the server gate uses
+  // (lib/publish-eligibility.ts), so what this preview promises is what publishBookings
+  // actually does. Ghosts are never candidates — bookingLookup already excludes them, and
+  // the range sweep below reads from `bookings` directly so it must skip them explicitly.
+  const classify = useCallback(
+    (b: OverlayBooking) => classifyForPublish(b, publishableKeys),
+    [publishableKeys],
+  );
+
+  // Live, unpublished bookings within [from, to], split into what will publish and what
+  // won't — and why. Already-published bookings in range are excluded from BOTH lists
+  // entirely (re-sweeping a range that includes locked bookings is routine, not an exception
+  // worth naming — SPEC.md §2b).
+  const preflightForRange = useCallback(
+    (from: string, to: string) => {
+      const eligible: PublishTarget[] = [];
+      const excluded: PublishExclusion[] = [];
       for (const b of bookings) {
-        if (b.date >= from && b.date <= to && !b.publishedAt && publishableKeys.has(b.status)) {
-          out.push({ unitId: b.unitId, date: b.date });
-        }
+        if (b.isGhost || b.date < from || b.date > to || b.publishedAt) continue;
+        const result = classify(b);
+        if (result.eligible) eligible.push({ unitId: b.unitId, date: b.date });
+        else excluded.push({ key: cellKey(b.date, b.unitId), label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
       }
-      return out;
+      return { eligible, excluded };
     },
-    [bookings, publishableKeys],
+    [bookings, classify, unitById],
   );
 
-  const countEligibleInRange = useCallback(
-    (from: string, to: string) => eligibleInRange(from, to).length,
-    [eligibleInRange],
-  );
-
-  // How many of the current selection are actually publishable (booked, not yet locked,
-  // and in a status the catalogue marks publishable — mirrors the server's own gate).
-  const publishableSelected = useMemo(() => {
-    let n = 0;
+  // Same split, but over the current multi-select rather than a date range.
+  const preflightForSelection = useCallback(() => {
+    const eligible: PublishTarget[] = [];
+    const excluded: PublishExclusion[] = [];
     for (const k of checked) {
       const b = bookingLookup.get(k);
-      if (b && !b.publishedAt && publishableKeys.has(b.status)) n++;
+      if (!b || b.publishedAt) continue;
+      const result = classify(b);
+      if (result.eligible) eligible.push({ unitId: b.unitId, date: b.date });
+      else excluded.push({ key: k, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
     }
-    return n;
-  }, [checked, bookingLookup, publishableKeys]);
+    return { eligible, excluded };
+  }, [checked, bookingLookup, classify, unitById]);
+
+  // Just the count, for the selection bar's button label/disabled state — recomputed from
+  // the same preflight so it can never disagree with what clicking the button actually does.
+  const publishableSelected = useMemo(() => preflightForSelection().eligible.length, [preflightForSelection]);
 
   async function applyPublish(targets: PublishTarget[]) {
     if (!targets.length) return;
@@ -478,19 +497,30 @@ export function PlannerGrid({
     router.refresh();
   }
 
-  async function publishSelected() {
-    const targets: PublishTarget[] = [];
-    for (const k of checked) {
-      const b = bookingLookup.get(k);
-      if (b && !b.publishedAt) targets.push({ unitId: b.unitId, date: b.date });
+  // Stage D1: if every selected booking is eligible, publish immediately — there's nothing
+  // to explain, and adding a confirmation dialog to the common case would just be friction.
+  // Only open the pre-flight when the selection actually contains an exception, which is
+  // exactly the situation the old silent-skip behaviour used to hide.
+  function publishSelected() {
+    const { eligible, excluded } = preflightForSelection();
+    if (excluded.length === 0) {
+      void applyPublish(eligible).then(clearSelection);
+      return;
     }
+    setSelectedPreflight({ eligible, excluded });
+  }
+
+  async function confirmPublishSelected() {
+    if (!selectedPreflight) return;
+    const targets = selectedPreflight.eligible;
+    setSelectedPreflight(null);
     await applyPublish(targets);
     clearSelection();
   }
 
   async function confirmPublishRange(from: string, to: string) {
     setPublishRange(null);
-    await applyPublish(eligibleInRange(from, to));
+    await applyPublish(preflightForRange(from, to).eligible);
   }
 
   // ── undo / redo — both call the same server action; redo is just "undo the undo" ──
@@ -751,9 +781,17 @@ export function PlannerGrid({
         days={days}
         defaultFrom={publishRange?.from ?? days[0]?.date ?? ""}
         defaultTo={publishRange?.to ?? days[days.length - 1]?.date ?? ""}
-        countEligible={countEligibleInRange}
+        preflight={preflightForRange}
         onConfirm={(from, to) => void confirmPublishRange(from, to)}
         onClose={() => setPublishRange(null)}
+      />
+
+      <PublishSelectedDialog
+        open={!!selectedPreflight}
+        eligibleCount={selectedPreflight?.eligible.length ?? 0}
+        excluded={selectedPreflight?.excluded ?? []}
+        onConfirm={() => void confirmPublishSelected()}
+        onClose={() => setSelectedPreflight(null)}
       />
     </div>
     </StatusCatalogProvider>
