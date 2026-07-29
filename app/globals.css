@@ -139,4 +139,15 @@
   html {
     @apply font-sans;
   }
+  /* The planner grid is far wider than any screen, so horizontal scrolling is constant. On a
+     macOS trackpad a horizontal swipe that reaches the end of a scroll container chains up to
+     the browser and triggers back-navigation — which throws the scheduler out of the planner
+     entirely and loses their place in the grid, from what feels like an ordinary scroll.
+     Killing the gesture at the root is the only thing that covers swipes that start over the
+     toolbar or header too, where there's no scroll container to contain it.
+     `x` only: vertical overscroll is untouched. */
+  html,
+  body {
+    overscroll-behavior-x: none;
+  }
 }

@@ -651,7 +651,12 @@ export function PlannerGrid({
       />
       {showLegend && <StatusLegend />}
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto bg-white">
+      {/* overscroll-contain: reaching either end of this container must not chain the scroll
+          up to the browser, where a horizontal trackpad swipe becomes back-navigation and
+          drops the scheduler out of the planner mid-scroll. Belt-and-braces with the
+          root-level rule in globals.css — this one states the intent where the scrolling
+          actually happens. */}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto overscroll-contain bg-white">
         <div style={{ minWidth: "max-content" }}>
           <div
             className="sticky top-0 z-20 grid border-b-2 border-[#214b7f]"
