@@ -958,6 +958,150 @@ grounds. *Deleting the matching `booking_events` too*, as #27 did — that purge
 data the client said should never have existed; this one is removing duplicates of data that
 does exist and is still authoritative in TMS. Different case, different answer.
 
+### 29. "Confirmed in Forward Planner" is sync state, not a ninth status
+
+**Asked for:** the client, 2026-07-29 — *"we have confirmed in TMS which is white bg, I think
+we need a new status for confirmed in forward planner"*, clarified as *"see at a glance what
+we are planning to lock in as changes and how it affects the schedule"*.
+
+**Decided:** no new status. The question "does TMS have this yet?" is answered from data the
+planner already holds, rendered as a **marker on the chip** plus a **changes view** that fades
+back everything TMS already agrees with. `OverlayBooking` gains an `origin` field
+(`tms` | `amended` | `local`); `lib/planner-changes.ts` turns that plus `publishedAt` into one
+of four change kinds — new, amended, moved, cleared.
+
+**Why not a status:** three independent reasons, any one of which would be enough.
+
+1. **It's a different axis.** A status says what kind of work a booking is (confirmed, likely,
+   bidding, corrective works). Where it's confirmed is orthogonal — a *Likely* booking can
+   equally exist only in the planner. Encoding it as a status means cross-multiplying against
+   all eight, and the second request ("likely in Forward Planner") is inevitable.
+2. **It has nothing to map to.** Statuses round-trip to TMS by name
+   (`lib/db/tms/status-map.ts`), against company 3's catalogue of exactly eight. There is no
+   TMS status called "Confirmed in Forward Planner", so a booking in it would have no defined
+   value to send once the write API exists (`docs/TMS_WRITE_BACK.md` §3.1).
+3. **It could lie.** A status is picked from a dropdown by a person. Someone sets "confirmed
+   in TMS" on a booking TMS has never seen and the grid is confidently wrong. `origin` and
+   `published_at` are derived at read time and cannot disagree with reality.
+
+There's also a rule-level objection: `docs/CELL_STATES.md` says a cell's appearance must match
+what you can do with it. Sync state already changes that — publishable or not, locked or not.
+A new colour would change appearance while changing nothing about behaviour.
+
+**Why a marker and a view, not just one:** they answer different questions. The dot answers
+"is this cell in TMS?" while you're reading the schedule normally, so it has to be quiet — in a
+live planning week a large fraction of cells carry one, and the grid is a schedule first. The
+changes view answers "what am I about to publish?", which wants to be loud, so it dims
+everything else instead of adding more ink. Same data, two intensities.
+
+**Why the view dims rather than filters:** the client asked how changes *affect the schedule*.
+A filtered list of changed bookings loses exactly that — you can't see that the move you made
+leaves CT23 empty on the Thursday. Dimming keeps every change in the context of the work
+around it. It reuses the status filter's existing 22%-opacity mechanism rather than inventing a
+second one.
+
+**Why the changes bar doesn't report publish eligibility:** the pre-flight dialog already does
+that, against the same logic as the server gate (`lib/publish-eligibility.ts`). A second count
+in the bar would either duplicate it or quietly disagree with it — a *cleared* booking is a
+change with no live row for the publish sweep to find, so the two numbers would differ by the
+number of clears. The bar says what changed; the button opens the dialog that says what will
+actually go.
+
+**Also changed:** the legend gained a second row. It described only status, which is part of
+why the two axes got conflated in the first place.
+
+**Left open, deliberately:** publishing a *clear* isn't wired up — `publishBookings` only
+touches live rows, so a cleared booking counts as a change here but no publish path sends the
+removal to TMS. That gap predates this work and belongs with the write API
+(`docs/TMS_WRITE_BACK.md` §3.2, still deferred); this change surfaces it rather than papering
+over it.
+
+**Not chosen:** *A ninth status* — above. *A separate "finalised" sign-off step before publish*
+— offered to the client as the other reading of the request; they confirmed it's visibility
+they want, not a new approval gate. Worth revisiting only if they ask for it explicitly, since
+it adds a role question (who signs off, who can undo it) that publish already answers.
+
+### 30. The publish pre-flight sweep was reporting on TMS's whole schedule, not the planner's changes
+
+**Found:** the client, testing #29 against a wide date range, saw a pre-flight dialog claim
+"1895 of 2032 will publish — 137 need attention first," with the 137 almost entirely bookings
+nobody had touched in the planner — untouched TMS rows sitting in `likely`/`tbc`/etc. because
+that's what they normally are. *"I'm not sure the warning system is correct — it's warning me
+about every booking, not just ones that have been moved in Forward Planner."*
+
+**Root cause:** `preflightForRange` (`planner-grid.tsx`) swept every live, unpublished booking
+in the date range — regardless of `origin` — through `classifyForPublish`. An untouched TMS
+booking (`origin: "tms"`) was never actually publishable in the first place (it has no local
+row for `publishBookings` to act on — `lib/actions/publish.ts` silently drops it at the "row
+not found" step), so it was landing in the *excluded* list with a real-looking reason
+("Not yet Confirmed") for something that was never a candidate to begin with. Same root cause
+as the count that could overstate what the server would actually do, just visible here as
+noise rather than a shortfall.
+
+**Decided:** both pre-flight sweeps now scope to planner changes only —
+`origin !== "tms"` — before classifying anything.
+
+- **Range sweep:** an untouched TMS booking is filtered out before classification. Neither
+  eligible nor excluded; it was never a change, so this dialog has nothing to say about it.
+- **Selection sweep:** kept, not filtered — a scheduler who explicitly ctrl-clicks an untouched
+  TMS booking made a deliberate choice, and silently dropping their selection would be exactly
+  the silent behaviour `docs/TMS_WRITE_BACK.md` §5 already ruled out once (#24). It's reported
+  as excluded with a new, calm reason (`not-a-planner-change` → "Already matches TMS — nothing
+  to send") rather than the status/conflict reasons, which all imply something's actually wrong.
+- **The flat "N will publish" count is gone.** `PublishBreakdown` now takes an
+  `eligibleSummary: ChangeSummary` (`lib/planner-changes.ts`) and shows the new/amended/moved
+  breakdown inline — "5 of 8 changes will publish (3 new · 2 amended) — 3 need attention
+  first." Same data the chip dot and the changes view already use, so the three surfaces can't
+  disagree with each other.
+
+**Why filter rather than just relabel:** relabelling ("Already in TMS" instead of "Not yet
+Confirmed") would still have shown 137 lines for a range where the planner made a handful of
+changes — technically accurate, still the wrong thing to be looking at in a *publish*
+dialog. The dialog's job is "what is the planner about to send," not "what is the state of
+every booking in this range," and the fix makes the data match that job description instead
+of narrating around the mismatch.
+
+**Not chosen:** *Relabelling instead of filtering* — rejected above. *Filtering the selection
+sweep too* — rejected because an explicit selection is a deliberate action, and dropping part
+of it without saying so recreates the exact silent-skip problem #24 fixed.
+
+### 31. The "not yet in TMS" marker became a background wash, not just a dot
+
+**Asked for:** the client, adamant, after #29 shipped with a small corner dot: *"confirmed in
+Forward Planner"* needed a visibly different background colour from *"confirmed in TMS"* — a
+plain white Confirmed chip looking identical either way, dot or no dot, wasn't enough.
+
+**Decided:** `CellChip`'s fill is no longer always the status's own background colour. Whenever
+`changeKindFor` (`lib/planner-changes.ts`) returns a kind — the same data #29 already computed
+— the fill is that status colour blended 14% toward navy (`mixHex`, `lib/statuses.ts`)
+instead of the flat colour. The corner dot stays, layered on top: the wash answers "is this in
+TMS?" at a glance across the whole grid, the dot (and its tooltip) still answers "what kind of
+change is this?" once you look at one cell.
+
+**Why every status, not just Confirmed:** asked and left open in #29's write-up; the client's
+own answer here didn't specify, so the call was made against the standing architecture rather
+than special-cased. Sync state is one axis that applies uniformly to all eight statuses
+(#29's whole argument against a ninth status), so treating it as an all-eight rule cost no
+more code than special-casing Confirmed and stayed consistent with that reasoning. A `Likely`
+booking someone created in the planner gets the same tell as a `Confirmed` one now, which is
+arguably more correct, not less — the ambiguity Confirmed's white background made obvious
+exists for every status, just less visibly.
+
+**Why a blend, not a flat colour:** a single flat "changed" colour stamped over all eight
+statuses would answer "is this in TMS?" while destroying the answer to "what kind of work is
+this?" — which is the very conflation #29 was written to avoid, just moved from the data model
+into the rendering. Blending a small ratio into each status's own colour keeps both answers
+visible in one glance: still recognisably Confirmed (or Likely, or Bidding), just perceptibly
+off from how it renders once TMS actually has it.
+
+**Also updated:** the "Changed here" legend swatch (`status-legend.tsx`) now shows the actual
+wash rather than a plain white square with a dot, computed with the same `mixHex` call so the
+key can't drift from what the grid renders.
+
+**Not chosen:** *Confirmed only* — the literal wording of the ask, but narrower than the
+architecture supports and inconsistent with #29 without a reason to be. *A flat single colour
+for every "changed" cell* — rejected above, for erasing status identity.
+
 <!--
 Template for new entries:
 

@@ -73,7 +73,10 @@ function ColourField({
       <span className="w-[46px] text-[#757575]">{label}</span>
       <input
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          const raw = e.target.value.trim();
+          onChange(raw && !raw.startsWith("#") ? `#${raw}` : raw);
+        }}
         className="w-[86px] rounded border border-[#e6e6e6] px-2 py-1 font-mono text-[11px] outline-none focus:border-[#2b7bb9]"
       />
     </label>

@@ -7,12 +7,18 @@
 
 export type PublishExclusionReason =
   | "already-published"
+  | "not-a-planner-change"
   | "not-publishable-status"
   | "tms-conflict"
   | "tms-supersedes";
 
 export const PUBLISH_EXCLUSION_LABEL: Record<PublishExclusionReason, string> = {
   "already-published": "Already published",
+  // Reached only from an explicit multi-select (docs/DECISIONS.md #29) — the range sweep in
+  // planner-grid.tsx filters these out before they ever reach classification, so this label
+  // is never seen there. Deliberately calm wording: nothing is wrong, there's just nothing
+  // for this dialog to do with a booking the planner never touched.
+  "not-a-planner-change": "Already matches TMS — nothing to send",
   "not-publishable-status": "Not yet Confirmed",
   "tms-conflict": "Unresolved TMS conflict — edit and save to resolve",
   "tms-supersedes": "TMS has updated this since — open it to resolve",

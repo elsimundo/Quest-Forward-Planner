@@ -6,6 +6,9 @@ import { Button } from "@/components/ui/button";
 import { fmtDate, type DayInfo } from "@/lib/dates";
 import { PublishBreakdown, type PublishExclusion } from "./publish-breakdown";
 import type { PublishTarget } from "@/lib/actions/publish";
+import type { ChangeSummary } from "@/lib/planner-changes";
+
+const EMPTY_SUMMARY: ChangeSummary = { total: 0, breakdown: [] };
 
 export function PublishRangeDialog({
   open,
@@ -20,10 +23,12 @@ export function PublishRangeDialog({
   days: DayInfo[];
   defaultFrom: string;
   defaultTo: string;
-  // Classifies every live, unpublished booking in [from, to] — computed by the grid, which
-  // holds the booking data (Stage D1: docs/OVERLAY_BUILD_PLAN.md). Kept as a callback so the
-  // preview updates as the range changes without threading all bookings into this component.
-  preflight: (from: string, to: string) => { eligible: PublishTarget[]; excluded: PublishExclusion[] };
+  // Classifies every unpublished PLANNER CHANGE in [from, to] — computed by the grid, which
+  // holds the booking data (Stage D1: docs/OVERLAY_BUILD_PLAN.md). An untouched TMS booking
+  // is neither eligible nor excluded; it's already scoped out before this is called
+  // (docs/DECISIONS.md #29). Kept as a callback so the preview updates as the range changes
+  // without threading all bookings into this component.
+  preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
 }) {
@@ -57,7 +62,7 @@ function PublishRangeBody({
   days: DayInfo[];
   defaultFrom: string;
   defaultTo: string;
-  preflight: (from: string, to: string) => { eligible: PublishTarget[]; excluded: PublishExclusion[] };
+  preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
 }) {
@@ -65,7 +70,9 @@ function PublishRangeBody({
   const [to, setTo] = useState(defaultTo);
 
   const invalidRange = from > to;
-  const { eligible, excluded } = invalidRange ? { eligible: [], excluded: [] } : preflight(from, to);
+  const { eligible, eligibleSummary, excluded } = invalidRange
+    ? { eligible: [], eligibleSummary: EMPTY_SUMMARY, excluded: [] }
+    : preflight(from, to);
   const disabled = invalidRange || eligible.length === 0;
 
   const selectClass =
@@ -116,7 +123,7 @@ function PublishRangeBody({
           </div>
         </div>
       ) : (
-        <PublishBreakdown eligibleCount={eligible.length} excluded={excluded} />
+        <PublishBreakdown eligibleSummary={eligibleSummary} excluded={excluded} />
       )}
 
       <div className="flex gap-2.5 px-6 pt-3.5 pb-5">

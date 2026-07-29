@@ -93,6 +93,7 @@ These layer on top of a base state rather than replacing it. More than one can a
 
 | Mark | Where | Meaning |
 |---|---|---|
+| Navy-tinted fill + navy dot | whole chip / bottom-right | **TMS doesn't have this cell as shown yet** — publishing would change something here. See [Sync state](#sync-state-the-second-axis) below. |
 | `⚠` | top-right | Capability mismatch — the unit doesn't meet a requirement of the site (`SPEC.md` §2a). Informational, never blocks. |
 | `⇄` orange | bottom-left | **Legacy.** TMS and a local edit both changed since the last import. Belongs to the booking import being retired in Stage F and won't fire under the overlay. |
 | `↻` purple | bottom-left | **TMS has changed this booking since you amended it.** Open the drawer to resolve — keep your version, or take TMS's. Blocks publishing until resolved. |
@@ -106,6 +107,67 @@ These layer on top of a base state rather than replacing it. More than one can a
 `⇄` and `↻` share a corner, so `⇄` wins if both are ever true — they're different colours and
 different symbols specifically so the retiring one is never mistaken for the new one while
 both exist in the codebase.
+
+---
+
+## Sync state — the second axis
+
+The base states above answer *"what is this unit doing that day?"*. There's a second, entirely
+independent question — *"does TMS have this yet?"* — and the states deliberately don't answer
+it. Base state 2 renders four different provenances identically on purpose.
+
+That's right for reading a schedule and wrong for the moment before publishing, which is what
+the sync marker and the changes view are for (`docs/DECISIONS.md` #29). It's derived, never
+stored: `lib/planner-changes.ts` reads `origin` and `publishedAt` off the `OverlayBooking` and
+returns one of four kinds, or null when TMS already agrees.
+
+The marker is two layers, both driven by the same value (`docs/DECISIONS.md` #31):
+
+- **The fill itself** is the status colour blended 14% toward navy (`mixHex`,
+  `lib/statuses.ts`) instead of the flat colour — a Confirmed chip that only exists in the
+  planner is visibly *not* the same white as one TMS already has. A small dot alone wasn't
+  enough for the client to trust at a glance; the client's own words were that they were
+  "adamant" about needing a different background, not just a mark.
+- **The corner dot** stays on top of the wash, because the wash alone can't say *which* kind of
+  change this is — that's still in the tooltip.
+
+| Kind | Meaning |
+|---|---|
+| **new** | `origin: "local"` — exists only here; TMS has never seen it. |
+| **amended** | `origin: "amended"`, same slot as TMS — edited in place. |
+| **moved** | `origin: "amended"`, different slot, counted at the **destination** — the ghost it left behind is a signpost, not a second change. |
+| **cleared** | Carried by the `⌫` mark instead, not the wash — the amendment is soft-deleted, so the ghost is the only thing on screen for it, and it renders through the *available*-cell path, not `CellChip`'s booking branch. |
+
+A **published** booking returns null — `🔒` is already the stronger statement, and under
+`docs/TMS_WRITE_BACK.md` §5 the amendment retires entirely once TMS accepts it. An **untouched
+TMS booking** returns null because there is nothing to send.
+
+`origin` exists because `tms_booking_id` can't answer this: it's set on untouched TMS rows
+*and* on amendments of them. Ghosts are always `origin: "tms"` — a ghost renders TMS's own
+truth, however much the planner disagrees with it; the disagreement is carried by
+`ghostReason`.
+
+**Applies to every status, not just Confirmed** — deliberately (`docs/DECISIONS.md` #31). Sync
+state is one axis across all eight statuses (#29's whole argument), so a `Likely` booking
+created here gets the same wash as a `Confirmed` one. The blend ratio is small specifically so
+each status keeps its own colour identity rather than all eight converging on one "changed"
+colour once tinted.
+
+### The changes view
+
+The toolbar's **Changes (n)** pill dims every cell TMS already agrees with to 22% — the same
+mechanism the status filter uses — leaving only the pending changes lit, in place. It fades
+rather than filters because the client asked to see how changes *affect the schedule*, and a
+filtered list of changed bookings loses the empty slot a move left behind.
+
+Moved ghosts stay lit: `GhostChip` takes no `dimmed` prop at all, so the origin of a move is
+visible alongside its destination. That's deliberate, not an oversight.
+
+**The count is over the whole loaded date range, not the visible cells** — search and status
+filters don't shrink it. It answers "what have we changed", not "what can I see". The bar
+alongside breaks it down by kind and hands off to the normal publish pre-flight; it does not
+report publish eligibility itself, because a cleared booking has no live row for the publish
+sweep to find and the two counts would disagree (`docs/DECISIONS.md` #29).
 
 ---
 
@@ -128,8 +190,15 @@ on a ghost even by accident.
 
 ## Publish eligibility
 
-A booked cell still won't publish if any of these apply (`lib/publish-eligibility.ts`, shared
-by the pre-flight preview and the server gate so they can't disagree):
+**Before any of this runs, both pre-flight sweeps scope to planner changes only** —
+`origin !== "tms"` (see [Sync state](#sync-state-the-second-axis) above). An untouched TMS
+booking was never something the planner is proposing to send, so the range sweep drops it
+before classification rather than running it through the checks below at all
+(`docs/DECISIONS.md` #30) — a wide date range mostly reflects TMS's own ordinary schedule, and
+none of that is this dialog's business.
+
+A remaining candidate still won't publish if any of these apply (`lib/publish-eligibility.ts`,
+shared by the pre-flight preview and the server gate so they can't disagree):
 
 1. **Already published** — routine, not reported as an exception.
 2. **Unresolved TMS conflict** (`⇄`) — legacy.
@@ -140,6 +209,11 @@ by the pre-flight preview and the server gate so they can't disagree):
 Checked in that order, so a booking failing more than one test reports the most actionable
 reason. A Confirmed booking that TMS has since changed is a *supersede* problem, not a status
 problem, and saying otherwise would send someone to fix the wrong field.
+
+One more reason exists (`not-a-planner-change`) but only ever surfaces from an explicit
+multi-select of an untouched TMS booking — the range sweep never reaches it, having already
+filtered the booking out. It's deliberately calmer than the four above: nothing is wrong,
+there's just nothing here for the planner to send.
 
 ---
 

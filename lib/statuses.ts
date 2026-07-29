@@ -135,3 +135,21 @@ export function tintBorder(hex: string, alpha = 0.5): string {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
 }
+
+// Blends `hex` toward `into` by `ratio` (0..1) and returns a solid hex colour — unlike
+// tintBorder's rgba, this needs to be opaque because it's used as a chip's own fill, not an
+// overlay on top of one. Used for the "not yet in TMS" background wash
+// (docs/DECISIONS.md #31): every status keeps its own colour family, just visibly shifted,
+// rather than a single flat colour stamped over all eight.
+export function mixHex(hex: string, into: string, ratio: number): string {
+  const a = parseInt(hex.slice(1), 16);
+  const b = parseInt(into.slice(1), 16);
+  const mix = (shift: number) => {
+    const av = (a >> shift) & 255;
+    const bv = (b >> shift) & 255;
+    return Math.round(av * (1 - ratio) + bv * ratio)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${mix(16)}${mix(8)}${mix(0)}`;
+}

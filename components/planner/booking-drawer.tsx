@@ -18,6 +18,7 @@ import { fmtDateLong } from "@/lib/dates";
 import { DEFAULT_STATUS_KEY } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
+import { CHANGE_KIND_LABEL, changeKindFor } from "@/lib/planner-changes";
 import type { OverlayBooking } from "@/lib/db/tms/overlay";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
 import { resolveTmsSupersede } from "@/lib/actions/tms-resolve";
@@ -176,6 +177,10 @@ function BookingDrawerBody({
   }
 
   const locked = !!booking?.publishedAt;
+  // Says in words what the dot on the chip says as a mark — "Confirmed" on its own doesn't
+  // tell you whether TMS has it (docs/DECISIONS.md #29). Only for an existing booking: the
+  // moved/cleared cases have their own banner below, which explains far more than a line.
+  const changeKind = booking ? changeKindFor(booking) : null;
   const specs = unitSpecs[target.unitId] ?? {};
   const showMatches = !!padPrompt || (siteFieldOpen && selectedSite?.name !== siteQuery && matches.length > 0);
 
@@ -286,6 +291,12 @@ function BookingDrawerBody({
         </SheetDescription>
         <SheetTitle className="text-lg font-bold text-[#333333]">{target.unitRegistration}</SheetTitle>
         <p className="text-[13px] text-[#757575]">{fmtDateLong(target.date)}</p>
+        {changeKind && (
+          <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-[#1a3d69]">
+            <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[#1a3d69]" aria-hidden />
+            {CHANGE_KIND_LABEL[changeKind]}
+          </p>
+        )}
       </SheetHeader>
 
       {locked ? (

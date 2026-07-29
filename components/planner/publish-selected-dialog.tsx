@@ -3,6 +3,7 @@
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { PublishBreakdown, type PublishExclusion } from "./publish-breakdown";
+import type { ChangeSummary } from "@/lib/planner-changes";
 
 // Stage D1 companion to PublishRangeDialog, for the "Publish selected" path. Only ever
 // opened when the current selection has at least one exclusion — if every selected booking
@@ -10,17 +11,18 @@ import { PublishBreakdown, type PublishExclusion } from "./publish-breakdown";
 // (preserving the low-friction case; this dialog exists for the surprising one).
 export function PublishSelectedDialog({
   open,
-  eligibleCount,
+  eligibleSummary,
   excluded,
   onConfirm,
   onClose,
 }: {
   open: boolean;
-  eligibleCount: number;
+  eligibleSummary: ChangeSummary;
   excluded: PublishExclusion[];
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const eligibleCount = eligibleSummary.total;
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent showCloseButton={false} className="max-w-[440px] gap-0 p-0">
@@ -33,7 +35,7 @@ export function PublishSelectedDialog({
         </div>
 
         <div className="pt-4.5">
-          <PublishBreakdown eligibleCount={eligibleCount} excluded={excluded} />
+          <PublishBreakdown eligibleSummary={eligibleSummary} excluded={excluded} />
         </div>
 
         <div className="flex gap-2.5 px-6 pt-3.5 pb-5">

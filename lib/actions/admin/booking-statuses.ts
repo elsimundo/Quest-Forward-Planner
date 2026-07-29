@@ -43,7 +43,12 @@ export async function createBookingStatus(input: {
   const label = input.label.trim();
   if (!KEY.test(key)) return { ok: false, error: "Key must be lowercase letters, numbers, - or _ (e.g. on-hold)." };
   if (!label) return { ok: false, error: "Label is required." };
-  const colourErr = validateColours(input);
+  const colourErr = validateColours({
+    colorBg: input.colorBg,
+    colorBar: input.colorBar,
+    colorText: input.colorText,
+    colorBorder: input.colorBorder,
+  });
   if (colourErr) return { ok: false, error: colourErr };
 
   // Reuse a soft-deleted row with the same key rather than colliding on the unique index.
@@ -100,7 +105,12 @@ export async function updateBookingStatus(input: {
 
   const label = input.label.trim();
   if (!label) return { ok: false, error: "Label is required." };
-  const colourErr = validateColours(input);
+  const colourErr = validateColours({
+    colorBg: input.colorBg,
+    colorBar: input.colorBar,
+    colorText: input.colorText,
+    colorBorder: input.colorBorder,
+  });
   if (colourErr) return { ok: false, error: colourErr };
 
   const [row] = await db

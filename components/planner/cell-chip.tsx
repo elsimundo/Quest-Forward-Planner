@@ -1,8 +1,20 @@
 "use client";
 
-import { tintBorder } from "@/lib/statuses";
+import { mixHex, tintBorder } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
+import { CHANGE_KIND_LABEL, changeKindFor } from "@/lib/planner-changes";
 import type { OverlayBooking } from "@/lib/db/tms/overlay";
+
+// The "TMS doesn't have this yet" colour. Deep navy — the same colour as the Publish button,
+// because that's exactly what it means: this is what publishing would send. Used two ways:
+// as a background wash mixed into the status colour (docs/DECISIONS.md #31 — the client was
+// "adamant" a small dot alone wasn't enough, a plain-white Confirmed chip needed to actually
+// look different from one TMS already has), and as the corner dot that still names which
+// kind of change it is once you look closer. The wash is deliberately a small mix (14%) so
+// every status keeps its own colour family rather than eight statuses converging on one
+// "changed" colour — the grid has to stay readable as a *schedule* first.
+const CHANGE_COLOR = "#1a3d69";
+const CHANGE_WASH_RATIO = 0.14;
 
 // The faded original left behind when a scheduler moves a TMS booking — the client's own
 // ask: "I'd like for that original TMS booking to stay where it is, but be made slightly
@@ -166,6 +178,13 @@ export function CellChip({
   // Both badges anchor the same corner; hasTmsConflict (retiring) takes priority in the rare
   // case both are ever true at once, so they never render stacked.
   const supersedes = booking.tmsSupersedes && !hasTmsConflict;
+  // What publishing this cell would change in TMS, if anything. Null once published (🔒 is
+  // already the stronger statement) and for untouched TMS bookings. See lib/planner-changes.ts.
+  const changeKind = changeKindFor(booking);
+  // The background itself, not just a corner mark — see CHANGE_COLOR above. Skipped once
+  // locked: a published chip is already visually distinct (desaturated, padlocked), and by
+  // definition nothing published still has a changeKind anyway.
+  const fill = changeKind ? mixHex(st.bg, CHANGE_COLOR, CHANGE_WASH_RATIO) : st.bg;
 
   return (
     <button
@@ -174,7 +193,7 @@ export function CellChip({
       draggable={draggable && !locked}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${supersedes ? " · ↻ TMS has updated this booking since — open it to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
+      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${changeKind ? ` · ${CHANGE_KIND_LABEL[changeKind]}` : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${supersedes ? " · ↻ TMS has updated this booking since — open it to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
       className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         cursor: locked ? "pointer" : "grab",
@@ -186,7 +205,7 @@ export function CellChip({
             : isOpen
               ? "0 0 0 2px #f0f7ff"
               : "none",
-        background: st.bg,
+        background: fill,
         opacity: dimmed && !preview ? 0.22 : locked ? 0.72 : 1,
         filter: locked ? "saturate(0.55)" : "none",
         ...(previewStyle ?? {}),
@@ -222,6 +241,14 @@ export function CellChip({
         >
           ↻
         </span>
+      )}
+      {changeKind && (
+        <span
+          className="absolute right-[4px] bottom-[4px] h-[6px] w-[6px] rounded-full"
+          style={{ background: CHANGE_COLOR }}
+          aria-hidden
+          title={CHANGE_KIND_LABEL[changeKind]}
+        />
       )}
       {checked && (
         <span

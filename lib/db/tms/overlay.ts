@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { bookings, companies, sites, units, unitModalities } from "@/lib/db/schema";
 import { getTmsBookings } from "./booking-cache";
 import { localStatusKeyForTmsStatus } from "./status-map";
+import type { BookingOrigin } from "@/lib/planner-changes";
 
 // The overlay read — Stage B2 of docs/OVERLAY_BUILD_PLAN.md.
 //
@@ -36,6 +37,13 @@ export type OverlayBooking = {
   tmsConflictAt: Date | null;
   /** TMS's own booking id, when this row corresponds to one. Null for a local-only booking. */
   tmsBookingId: number | null;
+  /**
+   * Whether TMS already has this cell as shown, and if not, how it differs. `tmsBookingId`
+   * can't answer that on its own — it's set on untouched TMS rows *and* on amendments of
+   * them. Drives the "not yet in TMS" marker and the changes view
+   * (lib/planner-changes.ts, docs/DECISIONS.md #29).
+   */
+  origin: BookingOrigin;
   /**
    * True for the faded original showing where TMS still has a booking the planner has changed.
    * A ghost is NOT editable and NOT selectable — it's a rendering of TMS's current truth, not
@@ -187,6 +195,9 @@ export async function getOverlayBookings(
           updatedAt: tb.updatedAt,
           tmsConflictAt: null,
           tmsBookingId: tb.id,
+          // A ghost renders TMS's own truth, so its origin is `tms` however much the planner
+          // disagrees with it. The disagreement is carried by `ghostReason`, not by origin.
+          origin: "tms",
           isGhost: true,
           ghostReason: "cleared",
           movedTo: null,
@@ -216,6 +227,7 @@ export async function getOverlayBookings(
         updatedAt: tb.updatedAt,
         tmsConflictAt: null,
         tmsBookingId: tb.id,
+        origin: "tms",
         isGhost: false,
         ghostReason: null,
         movedTo: null,
@@ -241,6 +253,7 @@ export async function getOverlayBookings(
         updatedAt: tb.updatedAt,
         tmsConflictAt: null,
         tmsBookingId: tb.id,
+        origin: "tms",
         isGhost: true,
         ghostReason: "moved",
         movedTo: { unitId: amendment.unitId, date: amendment.date },
@@ -502,6 +515,10 @@ function toOverlay(
     updatedAt: a.updatedAt,
     tmsConflictAt: a.tmsConflictAt,
     tmsBookingId,
+    // Derived from the id we're actually emitting, not from `a.tmsBookingId`, so `origin`
+    // and `tmsBookingId` can never contradict each other in the object the grid receives.
+    // They differ in the no-TMS-company branch above, which passes null deliberately.
+    origin: tmsBookingId === null ? "local" : "amended",
     isGhost: false,
     ghostReason: null,
     movedTo: null,

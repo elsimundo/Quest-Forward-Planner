@@ -270,6 +270,10 @@ Rules:
   booking a Sat/Sun. Revisit post-launch.
 - User-selectable statuses in the edit drawer: `confirmed, likely, tbc, bidding, service,
   cancelled` (not `weekend`/`bankholiday`).
+- A status says **what kind of work a booking is**, never **where it's confirmed**. "TMS has
+  this" vs "only the planner has this" is a separate, derived axis — see §4's sync marker and
+  `docs/DECISIONS.md` #29. Don't add statuses that encode sync state; they'd have to be
+  cross-multiplied against every status here and would have nothing to map to in TMS.
 - The workbook contains extra fills not in the client's legend (salmon `F8CBAD`, light
   blue `B4C6E7`, light green `E2EFDA`, `E08B8B`). **Ask the client what these mean before
   finalising the migration mapping** (§13.4). The mock-up maps `E08B8B` → `bidding` and
@@ -300,11 +304,27 @@ Mimics the spreadsheet. See mock-up for exact styling.
   status-coloured border (no left bar — team decision), site name clamped to 2 lines,
   tooltip with full site + status label. Empty → dashed outline, tooltip "Available —
   click to assign".
-- **Legend** ("Key" toggle in toolbar) showing all 8 statuses + "Available day".
+- **Sync marker**: on any cell TMS doesn't have as shown — new, amended, or moved-here, and
+  not yet published — the chip's own background is the status colour blended toward navy
+  (not a flat overlay colour, so each status keeps its identity), plus a small navy dot,
+  bottom-right, naming which kind of change it is on hover. Derived from the booking's
+  origin, never stored, and applies uniformly to all eight statuses. A cleared slot carries
+  the existing `⌫` mark instead. This is a *second axis*, independent of status: "does TMS
+  have this?" is not the same question as "what kind of work is this", which is why it is not
+  a ninth status (`docs/DECISIONS.md` #29, #31, `docs/CELL_STATES.md`).
+- **Legend** ("Key" toggle in toolbar), in two rows: **Status** — all 8 statuses +
+  "Available day" — and **In TMS?** — has it / changed here / published & locked / moved
+  away / cleared.
 - **Toolbar**: modality switcher; search box (matches unit id, unit spec, or site name →
   filters visible unit columns); status filter pills (dim non-matching cells to ~20%
-  opacity rather than hiding, so the grid shape stays stable); Undo/Redo; Select mode;
-  Key.
+  opacity rather than hiding, so the grid shape stays stable); **Changes (n)** view toggle;
+  Undo/Redo; Select mode; Key.
+- **Changes view**: dims every cell TMS already agrees with to ~20%, leaving only pending
+  changes lit *in place* — fades rather than filters, so a scheduler can see how the changes
+  affect the surrounding schedule (e.g. the slot a move freed up). A bar above the grid
+  breaks the total down by kind (new / amended / moved / cleared) and offers the normal
+  publish pre-flight. The count covers the whole loaded date range and is unaffected by the
+  search and status filters — it answers "what have we changed", not "what can I see".
 - v1 must add (not in mock-up — the reference mock-up predates the multi-modality
   decision and shows CT only, with no switcher control): **month/date-range navigation**,
   a **"Today" jump**, and the **modality switcher** above. The mock-up shows a fixed

@@ -10,15 +10,18 @@ function Pill({
   onClick,
   children,
   dot,
+  title,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
   dot?: string;
+  title?: string;
 }) {
   return (
     <button
       onClick={onClick}
+      title={title}
       className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         borderColor: active ? "#2b7bb9" : "#e6e6e6",
@@ -46,6 +49,9 @@ export function PlannerToolbar({
   onSearchChange,
   statusFilter,
   onStatusFilterChange,
+  changesOnly,
+  changeCount,
+  onToggleChangesOnly,
   showLegend,
   onToggleLegend,
   onJumpToday,
@@ -66,6 +72,10 @@ export function PlannerToolbar({
   onSearchChange: (v: string) => void;
   statusFilter: string | null;
   onStatusFilterChange: (s: string | null) => void;
+  changesOnly: boolean;
+  /** Unpublished changes in the loaded date range — the pill carries the count at rest. */
+  changeCount: number;
+  onToggleChangesOnly: () => void;
   showLegend: boolean;
   onToggleLegend: () => void;
   onJumpToday: () => void;
@@ -111,6 +121,22 @@ export function PlannerToolbar({
           {s.label.split(" — ")[0].split(" / ")[0]}
         </Pill>
       ))}
+      <span className="h-6 w-px bg-[#e6e6e6]" />
+      {/* Sits with the filters because it behaves like one, but it filters on a different
+          axis: not "what kind of work is this" but "does TMS have this yet". The dot matches
+          the marker on the chips themselves (docs/DECISIONS.md #29). */}
+      <Pill
+        active={changesOnly}
+        onClick={onToggleChangesOnly}
+        dot="#1a3d69"
+        title={
+          changeCount === 0
+            ? "Nothing in this date range differs from TMS"
+            : `Show only what TMS doesn't have yet — ${changeCount} change${changeCount > 1 ? "s" : ""}`
+        }
+      >
+        Changes{changeCount > 0 ? ` (${changeCount})` : ""}
+      </Pill>
       <span className="flex-1" />
       <div className="inline-flex">
         <button

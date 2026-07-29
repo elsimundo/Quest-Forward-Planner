@@ -14,12 +14,14 @@ import { moveBookings, type MoveMode, type MoveSpec } from "@/lib/actions/bookin
 import { undoBatch } from "@/lib/actions/undo";
 import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
 import { classifyForPublish } from "@/lib/publish-eligibility";
+import { changeKindFor, summariseChanges, type ChangeSummary } from "@/lib/planner-changes";
 import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip, GhostChip } from "./cell-chip";
 import { PlannerToolbar } from "./toolbar";
 import { StatusLegend } from "./status-legend";
 import { SelectionBar } from "./selection-bar";
+import { ChangesBar } from "./changes-bar";
 import { ClashDialog, type Clash } from "./clash-dialog";
 import { PublishRangeDialog } from "./publish-range-dialog";
 import { PublishSelectedDialog } from "./publish-selected-dialog";
@@ -86,6 +88,11 @@ export function PlannerGrid({
   const canUnlock = UNLOCK_ROLES.includes(role);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  // The changes view (docs/DECISIONS.md #29) — fades back everything TMS already has, leaving
+  // only what publishing would send. A view mode, not a data filter: nothing is removed from
+  // the grid, so the changes stay in the context of the schedule around them, which is the
+  // half of "how it affects the schedule" a filtered list would lose.
+  const [changesOnly, setChangesOnly] = useState(false);
   const [showLegend, setShowLegend] = useState(false);
   const [drawerTarget, setDrawerTarget] = useState<DrawerTarget | null>(null);
 
@@ -106,7 +113,11 @@ export function PlannerGrid({
   const [drag, setDrag] = useState<DragPreview | null>(null);
   const [conflict, setConflict] = useState<{ moves: MoveSpec[]; clashes: Clash[] } | null>(null);
   const [publishRange, setPublishRange] = useState<{ from: string; to: string } | null>(null);
-  const [selectedPreflight, setSelectedPreflight] = useState<{ eligible: PublishTarget[]; excluded: PublishExclusion[] } | null>(null);
+  const [selectedPreflight, setSelectedPreflight] = useState<{
+    eligible: PublishTarget[];
+    eligibleSummary: ChangeSummary;
+    excluded: PublishExclusion[];
+  } | null>(null);
   const [pending, setPending] = useState(false);
   const dragRef = useRef<{ origin: { date: string; unitId: number }; keys: string[] } | null>(null);
   const [undoStack, setUndoStack] = useState<string[]>([]);
@@ -130,6 +141,12 @@ export function PlannerGrid({
   }, [bookings]);
 
   const unitById = useMemo(() => new Map(units.map((u) => [u.id, u])), [units]);
+
+  // Every unpublished difference between the planner and TMS in the loaded range. Counted
+  // over `bookings` — ghosts included, since a cleared booking exists only as one — rather
+  // than over the visible/filtered set, so the number doesn't silently shrink when someone
+  // types in the search box. It answers "what have we changed", not "what can I see".
+  const changeSummary = useMemo(() => summariseChanges(bookings), [bookings]);
 
   // Transient highlight on the cell we just jumped to from a ghost, so the eye lands on it
   // rather than on "some row scrolled past". Cleared on a timer, and on unmount.
@@ -449,37 +466,59 @@ export function PlannerGrid({
     [publishableKeys],
   );
 
-  // Live, unpublished bookings within [from, to], split into what will publish and what
-  // won't — and why. Already-published bookings in range are excluded from BOTH lists
+  // Live, unpublished PLANNER CHANGES within [from, to], split into what will publish and
+  // what won't — and why. Already-published bookings in range are excluded from BOTH lists
   // entirely (re-sweeping a range that includes locked bookings is routine, not an exception
   // worth naming — SPEC.md §2b).
+  //
+  // An untouched TMS booking (`origin: "tms"`) is filtered out here before classification —
+  // not reported as eligible OR excluded. It was never a change the planner is proposing, so
+  // it isn't this dialog's business (docs/DECISIONS.md #29). Before this filter the range
+  // sweep reported on TMS's entire underlying schedule: a booking nobody had touched, sitting
+  // in `likely`/`tbc`/etc. because that's what it normally is, showed up as "Not yet
+  // Confirmed — needs attention" alongside genuine planner exceptions.
   const preflightForRange = useCallback(
     (from: string, to: string) => {
-      const eligible: PublishTarget[] = [];
+      const eligibleBookings: OverlayBooking[] = [];
       const excluded: PublishExclusion[] = [];
       for (const b of bookings) {
-        if (b.isGhost || b.date < from || b.date > to || b.publishedAt) continue;
+        if (b.isGhost || b.date < from || b.date > to || b.publishedAt || b.origin === "tms") continue;
         const result = classify(b);
-        if (result.eligible) eligible.push({ unitId: b.unitId, date: b.date });
+        if (result.eligible) eligibleBookings.push(b);
         else excluded.push({ key: cellKey(b.date, b.unitId), label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
       }
-      return { eligible, excluded };
+      return {
+        eligible: eligibleBookings.map((b) => ({ unitId: b.unitId, date: b.date })),
+        eligibleSummary: summariseChanges(eligibleBookings),
+        excluded,
+      };
     },
     [bookings, classify, unitById],
   );
 
-  // Same split, but over the current multi-select rather than a date range.
+  // Same split, but over the current multi-select rather than a date range. Unlike the range
+  // sweep, an untouched TMS booking reached this way was chosen deliberately — a scheduler
+  // ctrl-clicked it — so it's reported rather than silently dropped, just with a calm reason
+  // ("already matches TMS") rather than the alarming "needs attention" ones.
   const preflightForSelection = useCallback(() => {
-    const eligible: PublishTarget[] = [];
+    const eligibleBookings: OverlayBooking[] = [];
     const excluded: PublishExclusion[] = [];
     for (const k of checked) {
       const b = bookingLookup.get(k);
       if (!b || b.publishedAt) continue;
+      if (b.origin === "tms") {
+        excluded.push({ key: k, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: "not-a-planner-change" });
+        continue;
+      }
       const result = classify(b);
-      if (result.eligible) eligible.push({ unitId: b.unitId, date: b.date });
+      if (result.eligible) eligibleBookings.push(b);
       else excluded.push({ key: k, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
     }
-    return { eligible, excluded };
+    return {
+      eligible: eligibleBookings.map((b) => ({ unitId: b.unitId, date: b.date })),
+      eligibleSummary: summariseChanges(eligibleBookings),
+      excluded,
+    };
   }, [checked, bookingLookup, classify, unitById]);
 
   // Just the count, for the selection bar's button label/disabled state — recomputed from
@@ -509,12 +548,12 @@ export function PlannerGrid({
   // Only open the pre-flight when the selection actually contains an exception, which is
   // exactly the situation the old silent-skip behaviour used to hide.
   function publishSelected() {
-    const { eligible, excluded } = preflightForSelection();
+    const { eligible, eligibleSummary, excluded } = preflightForSelection();
     if (excluded.length === 0) {
       void applyPublish(eligible).then(clearSelection);
       return;
     }
-    setSelectedPreflight({ eligible, excluded });
+    setSelectedPreflight({ eligible, eligibleSummary, excluded });
   }
 
   async function confirmPublishSelected() {
@@ -625,6 +664,9 @@ export function PlannerGrid({
         onSearchChange={setSearch}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
+        changesOnly={changesOnly}
+        changeCount={changeSummary.total}
+        onToggleChangesOnly={() => setChangesOnly((v) => !v)}
         showLegend={showLegend}
         onToggleLegend={() => setShowLegend((v) => !v)}
         onJumpToday={jumpToday}
@@ -642,6 +684,18 @@ export function PlannerGrid({
           setPublishRange({ from: days[0]?.date ?? "", to: days[days.length - 1]?.date ?? "" })
         }
       />
+      {changesOnly && (
+        <ChangesBar
+          summary={changeSummary}
+          canPublish={canPublish}
+          // Same dialog as "Publish upcoming…", over the same range — the changes view is a
+          // way of *reading* the range before publishing it, not a second publish path.
+          onReviewPublish={() =>
+            setPublishRange({ from: days[0]?.date ?? "", to: days[days.length - 1]?.date ?? "" })
+          }
+          onExit={() => setChangesOnly(false)}
+        />
+      )}
       <SelectionBar
         count={checked.size}
         publishableCount={publishableSelected}
@@ -735,7 +789,15 @@ export function PlannerGrid({
                     // docs/CELL_STATES.md.
                     const movedGhost = ghost?.ghostReason === "moved" ? ghost : null;
                     const pendingRemoval = ghost?.ghostReason === "cleared" ? ghost : null;
-                    const dimmed = !!statusFilter && booking?.status !== statusFilter;
+                    // Does publishing change anything here? A cleared slot counts — the ghost
+                    // is the only thing on screen for it — which is why this consults the
+                    // ghost when there's no booking. A MOVED ghost renders through GhostChip,
+                    // which takes no `dimmed` prop at all, so it stays lit either way: the
+                    // slot a move freed up is part of what the changes view is showing.
+                    const changeCell = booking ?? ghost;
+                    const isChange = changeCell ? changeKindFor(changeCell) !== null : false;
+                    const dimmed =
+                      (!!statusFilter && booking?.status !== statusFilter) || (changesOnly && !isChange);
                     const warning = booking
                       ? computeCapabilityWarnings(
                           siteCapabilityRequirements[booking.siteId] ?? [],
@@ -820,7 +882,7 @@ export function PlannerGrid({
 
       <PublishSelectedDialog
         open={!!selectedPreflight}
-        eligibleCount={selectedPreflight?.eligible.length ?? 0}
+        eligibleSummary={selectedPreflight?.eligibleSummary ?? { total: 0, breakdown: [] }}
         excluded={selectedPreflight?.excluded ?? []}
         onConfirm={() => void confirmPublishSelected()}
         onClose={() => setSelectedPreflight(null)}
