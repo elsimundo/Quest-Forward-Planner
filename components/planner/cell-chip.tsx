@@ -13,6 +13,9 @@ import type { OverlayBooking } from "@/lib/db/tms/overlay";
 // would change data: not draggable, not selectable, never opens the drawer, never counted for
 // publishing. The ONE thing it does is navigate — clicking jumps to where the booking now
 // sits. That's why it's a button rather than a div: it's a link, not an editable cell.
+//
+// MOVED ghosts only. A cleared booking's slot is genuinely free and renders through CellChip
+// as an available cell with a small mark — see docs/CELL_STATES.md for why.
 export function GhostChip({
   booking,
   toLabel,
@@ -26,12 +29,9 @@ export function GhostChip({
   const catalog = useStatusCatalog();
   const st = catalog.get(booking.status);
 
-  const cleared = booking.ghostReason === "cleared";
-  const title = cleared
-    ? `${booking.siteName} — cleared in the planner, but TMS still has it here until this is published.`
-    : toLabel
-      ? `${booking.siteName} — still here in TMS. Moved to ${toLabel} in the planner, not yet published. Click to jump there.`
-      : `${booking.siteName} — still here in TMS, moved elsewhere in the planner and not yet published.`;
+  const title = toLabel
+    ? `${booking.siteName} — still here in TMS. Moved to ${toLabel} in the planner, not yet published. Click to jump there.`
+    : `${booking.siteName} — still here in TMS, moved elsewhere in the planner and not yet published.`;
 
   return (
     <button
@@ -47,10 +47,7 @@ export function GhostChip({
         opacity: 0.45,
       }}
     >
-      <span
-        className={`line-clamp-2 flex-1 px-2 text-xs leading-[14px] italic ${cleared ? "line-through" : ""}`}
-        style={{ color: st.text }}
-      >
+      <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px] italic" style={{ color: st.text }}>
         {booking.siteName}
       </span>
       {onGoTo && (
@@ -74,6 +71,7 @@ export function CellChip({
   draggable,
   preview,
   flash,
+  pendingRemoval,
   onClick,
   onDragStart,
   onDragEnd,
@@ -87,6 +85,12 @@ export function CellChip({
   preview?: "ok" | "bad" | null;
   /** Transient highlight after jumping here from a ghost's "moved to" link (Stage C1). */
   flash?: boolean;
+  /**
+   * Site name of a TMS booking this cell is CLEARING on publish. The slot is free and
+   * bookable — this is only a marker that the planner and TMS currently disagree here.
+   * See docs/CELL_STATES.md.
+   */
+  pendingRemoval?: string | null;
   onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
@@ -110,16 +114,30 @@ export function CellChip({
       <button
         type="button"
         onClick={onClick}
-        title="Available — click to assign"
-        className="flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+        title={
+          pendingRemoval
+            ? `Free — you've cleared "${pendingRemoval}" here. TMS still shows it until that's published. Click to book something else.`
+            : "Available — click to assign"
+        }
+        className="relative flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
         style={{
-          borderColor: isOpen ? "#2b7bb9" : "#e6e6e6",
+          borderColor: isOpen ? "#2b7bb9" : pendingRemoval ? "#d8c5b4" : "#e6e6e6",
           background: isOpen ? "#f0f7ff" : "transparent",
           opacity: dimmed && !preview ? 0.22 : 1,
           ...(previewStyle ?? {}),
         }}
       >
         {isOpen ? "+" : ""}
+        {pendingRemoval && !isOpen && (
+          // Small enough to read as "free with a note", not as an occupied cell — the whole
+          // reason this isn't rendered as a struck-through booking chip.
+          <span
+            className="absolute bottom-[3px] left-[4px] text-[9px] leading-none text-[#b8865c]"
+            aria-hidden
+          >
+            ⌫
+          </span>
+        )}
       </button>
     );
   }

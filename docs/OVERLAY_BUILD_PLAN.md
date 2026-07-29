@@ -182,11 +182,14 @@ ever, live or suppressed. Re-booking a cleared slot therefore has to **revive** 
 rather than insert a second one, which would violate the constraint — handled in
 `saveBooking`.
 
-**⚠️ Open question for the client:** should a *cleared* TMS booking show a ghost at all? A
-moved one clearly should — the client asked for it. Cleared is our inference from the same
-principle (nothing silently disappears; the planner must never disagree with TMS invisibly).
-The counter-argument is that "clear" ought to leave the cell looking clear. Confirm with Dave
-before this reaches users.
+**Resolved (was an open question for the client).** A cleared TMS booking originally rendered
+as a struck-through ghost chip. It now renders as an **available cell with a small `⌫` mark**
+— free, bookable, still visibly at odds with TMS. The old rendering broke the rule that a
+cell's appearance must match what you can do with it: a chip-shaped thing reads as "occupied"
+when scanning for free units (while the availability bar counted the same cell free, so the
+grid contradicted itself), and it blocked the click that would book a slot the database would
+have accepted. Full reasoning in `docs/CELL_STATES.md`. No longer needs putting to Dave; the
+move ghost he did ask for is unchanged.
 
 **Still to do:** the move path below, and the uniqueness check.
 

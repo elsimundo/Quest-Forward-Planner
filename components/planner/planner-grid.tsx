@@ -712,10 +712,20 @@ export function PlannerGrid({
                   {visibleUnits.map((u) => {
                     const booking = bookingLookup.get(cellKey(day.date, u.id)) ?? null;
                     const k = cellKey(day.date, u.id);
-                    // Where TMS still has a booking the scheduler moved elsewhere. Only ever
-                    // shown in an otherwise-empty cell — the overlay guarantees a ghost and a
-                    // real booking never share a slot.
+                    // Where TMS still has a booking we've changed. Only ever in an otherwise
+                    // empty cell — the overlay guarantees a ghost and a real booking never
+                    // share a slot.
                     const ghost = booking ? null : (ghostLookup.get(k) ?? null);
+                    // A MOVED ghost renders as Dave's faded original with the jump link. A
+                    // CLEARED one does not: that slot is genuinely free now (the availability
+                    // bar counts it free, and the database will accept a booking there), so
+                    // rendering it as an occupied-looking chip both misreports capacity at a
+                    // glance and blocks the click that would book it. It renders as an
+                    // available cell carrying a small "pending removal" mark instead — free
+                    // and bookable, but still visibly disagreeing with TMS. See
+                    // docs/CELL_STATES.md.
+                    const movedGhost = ghost?.ghostReason === "moved" ? ghost : null;
+                    const pendingRemoval = ghost?.ghostReason === "cleared" ? ghost : null;
                     const dimmed = !!statusFilter && booking?.status !== statusFilter;
                     const warning = booking
                       ? computeCapabilityWarnings(
@@ -732,15 +742,15 @@ export function PlannerGrid({
                         onDragOver={(e) => onCellDragOver(e, day, u)}
                         onDrop={(e) => onCellDrop(e, day, u)}
                       >
-                        {ghost ? (
+                        {movedGhost ? (
                           <GhostChip
-                            booking={ghost}
+                            booking={movedGhost}
                             toLabel={
-                              ghost.movedTo
-                                ? `${unitById.get(ghost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(ghost.movedTo.date)}`
+                              movedGhost.movedTo
+                                ? `${unitById.get(movedGhost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(movedGhost.movedTo.date)}`
                                 : null
                             }
-                            onGoTo={ghost.movedTo ? () => goToMoved(ghost.movedTo!) : undefined}
+                            onGoTo={movedGhost.movedTo ? () => goToMoved(movedGhost.movedTo!) : undefined}
                           />
                         ) : (
                         <CellChip
@@ -752,6 +762,7 @@ export function PlannerGrid({
                           draggable={!!booking}
                           preview={drag?.preview.get(k) ?? null}
                           flash={flashKey === k}
+                          pendingRemoval={pendingRemoval?.siteName ?? null}
                           onClick={(e) => handleCellClick(e, day, u, booking)}
                           onDragStart={(e) => startDrag(e, day, u)}
                           onDragEnd={endDrag}
