@@ -141,7 +141,7 @@ Replaces the frozen-row `⇄` mechanism, which depended on the import.
 
 ## Stage C — interaction
 
-### C1. Ghosts — ✅ DONE
+### C1. Ghosts — ✅ DONE (interaction revised — see `docs/CELL_STATES.md`)
 
 Superseded TMS bookings render semi-transparent, dashed and italic at their original slot,
 with a `↷` affordance. Clicking jumps to where the booking now sits. New bookings with no TMS

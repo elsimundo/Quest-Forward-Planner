@@ -41,6 +41,9 @@ export function BookingDrawer({
   companyId,
   target,
   booking,
+  ghost,
+  ghostMovedToLabel,
+  onGoToGhost,
   unitSpecs,
   siteCapabilityRequirements,
   canUnlock,
@@ -50,6 +53,9 @@ export function BookingDrawer({
   companyId: number;
   target: DrawerTarget | null;
   booking: OverlayBooking | null;
+  ghost: OverlayBooking | null;
+  ghostMovedToLabel: string | null;
+  onGoToGhost?: () => void;
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;
@@ -67,6 +73,9 @@ export function BookingDrawer({
             companyId={companyId}
             target={target}
             booking={booking}
+            ghost={ghost}
+            ghostMovedToLabel={ghostMovedToLabel}
+            onGoToGhost={onGoToGhost}
             unitSpecs={unitSpecs}
             siteCapabilityRequirements={siteCapabilityRequirements}
             canUnlock={canUnlock}
@@ -83,6 +92,9 @@ function BookingDrawerBody({
   companyId,
   target,
   booking,
+  ghost,
+  ghostMovedToLabel,
+  onGoToGhost,
   unitSpecs,
   siteCapabilityRequirements,
   canUnlock,
@@ -92,6 +104,9 @@ function BookingDrawerBody({
   companyId: number;
   target: DrawerTarget;
   booking: OverlayBooking | null;
+  ghost: OverlayBooking | null;
+  ghostMovedToLabel: string | null;
+  onGoToGhost?: () => void;
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;
@@ -289,6 +304,34 @@ function BookingDrawerBody({
           {target.unitDescription && (
             <div className="mx-5.5 mt-3.5 rounded-lg bg-[#f7f9fc] p-3 text-xs leading-[17px] text-[#757575]">
               {target.unitDescription}
+            </div>
+          )}
+
+          {/* Opened on a cell whose TMS booking we've moved or cleared away. The slot is free
+              — that's why the drawer is showing a booking form at all — but TMS still has
+              something here until publish, and the form alone wouldn't say so. */}
+          {!booking && ghost && (
+            <div className="mx-5.5 mt-3.5 rounded-lg border border-[#e4dcd2] bg-[#faf6f2] p-3 text-xs leading-[17px] text-[#7a5c3e]">
+              <p>
+                TMS still shows <span className="font-medium">{ghost.siteName}</span> here.
+                {ghost.ghostReason === "cleared"
+                  ? " You've cleared it — that takes effect in TMS when you publish."
+                  : ghostMovedToLabel
+                    ? ` You've moved it to ${ghostMovedToLabel}.`
+                    : " You've moved it elsewhere."}
+              </p>
+              <p className="mt-1 text-[#a58a6f]">
+                This slot is free — anything you book here is in addition to that change.
+              </p>
+              {onGoToGhost && (
+                <button
+                  type="button"
+                  onClick={onGoToGhost}
+                  className="mt-1.5 cursor-pointer text-[#8a6642] underline underline-offset-2 hover:text-[#6b4e33]"
+                >
+                  Jump to where it went ↷
+                </button>
+              )}
             </div>
           )}
 

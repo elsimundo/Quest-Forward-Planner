@@ -19,46 +19,59 @@ import type { OverlayBooking } from "@/lib/db/tms/overlay";
 export function GhostChip({
   booking,
   toLabel,
+  onOpen,
   onGoTo,
 }: {
   booking: OverlayBooking;
   /** Human-readable destination, e.g. "RCT22 · 3 Mar" — for the tooltip. */
   toLabel: string | null;
+  /** Open this cell, as clicking any other cell would. The slot is free — see below. */
+  onOpen: () => void;
   onGoTo?: () => void;
 }) {
   const catalog = useStatusCatalog();
   const st = catalog.get(booking.status);
 
-  const title = toLabel
-    ? `${booking.siteName} — still here in TMS. Moved to ${toLabel} in the planner, not yet published. Click to jump there.`
-    : `${booking.siteName} — still here in TMS, moved elsewhere in the planner and not yet published.`;
+  const where = toLabel ? `Moved to ${toLabel}` : "Moved elsewhere";
+  const bodyTitle = `${booking.siteName} — still here in TMS. ${where} in the planner, not yet published. This slot is free: click to book something else.`;
 
+  // TWO targets, not one. The body opens the cell like every other cell in the grid, because
+  // the slot genuinely IS free — the booking that was here now lives somewhere else, the
+  // availability bar counts this unit free, and a drag already drops onto it. Making the
+  // whole chip a jump link meant a click aimed at booking the slot silently scrolled you to a
+  // different part of the grid instead, which is a worse failure than simply not supporting
+  // it. The ↷ keeps the one-click jump the client asked for. See docs/CELL_STATES.md.
+  //
+  // Siblings rather than nesting: a button inside a button is invalid HTML and browsers
+  // recover from it unpredictably.
   return (
-    <button
-      type="button"
-      onClick={onGoTo}
-      disabled={!onGoTo}
-      title={title}
-      aria-label={title}
-      className="group flex h-10 w-full items-center overflow-hidden rounded-md border border-dashed text-left transition-opacity duration-150 select-none enabled:cursor-pointer enabled:hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
-      style={{
-        borderColor: tintBorder(st.bar, 0.45),
-        background: st.bg,
-        opacity: 0.45,
-      }}
+    <div
+      className="relative flex h-10 w-full items-center overflow-hidden rounded-md border border-dashed select-none"
+      style={{ borderColor: tintBorder(st.bar, 0.45), background: st.bg }}
     >
-      <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px] italic" style={{ color: st.text }}>
-        {booking.siteName}
-      </span>
+      <button
+        type="button"
+        onClick={onOpen}
+        title={bodyTitle}
+        aria-label={bodyTitle}
+        className="h-full min-w-0 flex-1 cursor-pointer px-2 text-left opacity-45 transition-opacity duration-150 hover:opacity-70 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+      >
+        <span className="line-clamp-2 text-xs leading-[14px] italic" style={{ color: st.text }}>
+          {booking.siteName}
+        </span>
+      </button>
       {onGoTo && (
-        <span
-          className="shrink-0 pr-1.5 text-[11px] leading-none text-[#5a6472] transition-transform duration-150 group-hover:translate-x-0.5"
-          aria-hidden
+        <button
+          type="button"
+          onClick={onGoTo}
+          title={`Jump to where this booking now sits${toLabel ? ` — ${toLabel}` : ""}`}
+          aria-label={`Jump to where this booking now sits${toLabel ? `, ${toLabel}` : ""}`}
+          className="flex h-full shrink-0 cursor-pointer items-center px-1.5 text-[11px] leading-none text-[#5a6472] opacity-55 transition-opacity duration-150 hover:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
         >
           ↷
-        </span>
+        </button>
       )}
-    </button>
+    </div>
   );
 }
 

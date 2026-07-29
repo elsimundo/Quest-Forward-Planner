@@ -53,11 +53,18 @@ the client's own request, in their words: *"I'd like for that original TMS booki
 where it is, but be made slightly transparent. A link would also be added to that faded out
 TMS booking that would scroll the user to where that new booking is now located."*
 
-Clicking jumps to wherever the booking now sits and flashes it amber for two seconds. That is
-the *only* thing it does — it can't be dragged, selected, edited, or published, because it
-isn't one of our rows. It's a rendering of TMS's current truth.
+**Two click targets.** The chip body opens the cell, exactly as clicking any other cell does —
+because the slot genuinely is free, and you may well want to put different work on that unit
+that day. The `↷` on the right jumps to wherever the booking now sits and flashes it amber for
+two seconds.
 
-It disappears once the move is published and TMS agrees with us.
+Opening it shows the normal booking form plus a banner naming the TMS booking still sitting
+here and where it went, with a link to jump. Anything you book is *in addition to* the move,
+not instead of it.
+
+It still can't be dragged, selected, edited, or published — it isn't one of our rows, it's a
+rendering of TMS's current truth. And it disappears once the move is published and TMS agrees
+with us.
 
 ### 4. Pending removal
 
@@ -108,7 +115,7 @@ both exist in the codebase.
 | Available | ✅ | — | — | — | — |
 | Pending removal | ✅ | — | — | — | — |
 | Booked | — | ✅ | ✅ | ✅ | ✅ |
-| Moved-away ghost | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Moved-away ghost | ✅ (body) | ❌ | ❌ | ❌ | ❌ |
 | Published / locked | — | admin unlock | ❌ | ✅ | already |
 
 Ghosts are excluded from `bookingLookup` in `planner-grid.tsx` rather than being checked at
@@ -161,11 +168,22 @@ specifically, and because it's genuinely different: it points somewhere.
 
 ---
 
-## Open
+## Correction: the moved ghost swallowed the click
 
-**A moved-away ghost's cell can't be booked either**, and by the argument above it probably
-should be — the slot is free in our model, and shuffling work off a unit then putting
-something else there is normal. It's left alone for now because that ghost is the client's
-explicit design, verified with them, and changing how it behaves is a conversation rather than
-a fix. If it does change, the likely shape is a small `+` affordance on hover rather than
-taking the click away from the jump link.
+Recorded for the same reason as the one above — it's the same rule, broken the same way.
+
+The whole ghost chip was originally a single jump link, so its cell couldn't be booked. Worse
+than "couldn't": a click aimed at booking the slot silently scrolled you to a *different part
+of the grid*. Doing something surprising and unrelated is a worse failure than doing nothing.
+
+The slot was already free by every other measure — the availability bar counted the unit free,
+and a drag would happily drop onto it. Only the click disagreed.
+
+It's now two sibling buttons: the body opens the cell, the `↷` jumps. That keeps the one-click
+jump the client asked for while making the cell behave like every other cell in the grid.
+(Siblings, not nesting — a `<button>` inside a `<button>` is invalid HTML and browsers recover
+from it unpredictably.)
+
+The faded chip itself is unchanged: the client asked for the original to stay visible, and
+unlike the cleared case it carries information worth the space — *which* booking, and a way to
+follow it.

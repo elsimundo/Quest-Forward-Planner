@@ -200,6 +200,13 @@ export function PlannerGrid({
 
   const gridTemplateColumns = `${DATE_COL_WIDTH}px repeat(${visibleUnits.length}, ${UNIT_COL_WIDTH}px)`;
 
+  // The TMS booking still sitting at the open cell, when we've moved or cleared it away.
+  // Without this the drawer would show a bare "New booking" form and lose the fact that TMS
+  // still has something here until publish — see docs/CELL_STATES.md.
+  const drawerGhost = drawerTarget
+    ? (ghostLookup.get(cellKey(drawerTarget.date, drawerTarget.unitId)) ?? null)
+    : null;
+
   const drawerBooking = drawerTarget
     ? (bookingLookup.get(cellKey(drawerTarget.date, drawerTarget.unitId)) ?? null)
     : null;
@@ -240,28 +247,25 @@ export function PlannerGrid({
     setAnchor(null);
   }, []);
 
-  const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: OverlayBooking | null) => {
-    if (booking?.publishedAt) {
+  const openCell = useCallback(
+    (day: DayInfo, unit: Unit) =>
       setDrawerTarget({
         unitId: unit.id,
         unitRegistration: unit.registration,
         date: day.date,
         unitDescription: unit.description,
         modalityId: activeModalityId,
-      });
-      return;
-    }
+      }),
+    [activeModalityId],
+  );
+
+  const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: OverlayBooking | null) => {
+    if (booking?.publishedAt) return openCell(day, unit);
     const k = cellKey(day.date, unit.id);
     if (booking && checked.has(k)) return toggleCheck(day.date, unit.id);
     if (e.shiftKey && booking) return rangeCheck(day.date, unit.id);
     if ((e.ctrlKey || e.metaKey || selectMode) && booking) return toggleCheck(day.date, unit.id);
-    setDrawerTarget({
-      unitId: unit.id,
-      unitRegistration: unit.registration,
-      date: day.date,
-      unitDescription: unit.description,
-      modalityId: activeModalityId,
-    });
+    openCell(day, unit);
   };
 
   // ── drag and drop ──
@@ -745,6 +749,7 @@ export function PlannerGrid({
                         {movedGhost ? (
                           <GhostChip
                             booking={movedGhost}
+                            onOpen={() => openCell(day, u)}
                             toLabel={
                               movedGhost.movedTo
                                 ? `${unitById.get(movedGhost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(movedGhost.movedTo.date)}`
@@ -782,6 +787,13 @@ export function PlannerGrid({
         companyId={companyId}
         target={drawerTarget}
         booking={drawerBooking}
+        ghost={drawerGhost}
+        ghostMovedToLabel={
+          drawerGhost?.movedTo
+            ? `${unitById.get(drawerGhost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(drawerGhost.movedTo.date)}`
+            : null
+        }
+        onGoToGhost={drawerGhost?.movedTo ? () => { const to = drawerGhost.movedTo!; setDrawerTarget(null); goToMoved(to); } : undefined}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         canUnlock={canUnlock}
