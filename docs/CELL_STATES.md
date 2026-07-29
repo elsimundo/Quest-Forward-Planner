@@ -9,8 +9,9 @@ a normal booking grid — a cell can now show something that lives in TMS rather
 
 **The governing rule:** a cell's appearance must match what you can actually do with it. If a
 cell is free, it must look free and accept a booking; if it's occupied, it must look occupied.
-Every decision below falls out of that, and the one place we got it wrong is recorded at the
-bottom.
+Every decision below falls out of that. It got broken twice, both times by reusing the ghost
+treatment for a cell that was actually free — both are recorded at the bottom, because the
+mistake is an easy one to make again.
 
 ---
 
@@ -144,8 +145,8 @@ problem, and saying otherwise would send someone to fix the wrong field.
 
 ## Correction: cleared cells used to lie
 
-Worth recording, because it's the one place the governing rule at the top got broken and it
-took building the state table to see it.
+Worth recording, because building this state table is what made it visible — the contradiction
+had been sitting in the UI unnoticed.
 
 A cleared TMS booking originally rendered as a **struck-through faded chip** — reusing the
 ghost treatment on the reasoning that the planner and TMS disagree, so the disagreement should
