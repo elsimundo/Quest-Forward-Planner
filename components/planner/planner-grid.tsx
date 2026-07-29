@@ -60,6 +60,7 @@ export function PlannerGrid({
   units,
   days,
   bookings,
+  tmsFetchedAtIso,
   statuses,
   unitSpecs,
   siteCapabilityRequirements,
@@ -71,6 +72,8 @@ export function PlannerGrid({
   units: Unit[];
   days: DayInfo[];
   bookings: OverlayBooking[];
+  /** When the TMS half of the overlay was last read — surfaced in the toolbar (Stage E1). */
+  tmsFetchedAtIso: string;
   statuses: StatusView[];
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, CapabilityRequirement[]>;
@@ -610,6 +613,7 @@ export function PlannerGrid({
     <StatusCatalogProvider statuses={statuses}>
     <div className="flex h-full flex-col">
       <PlannerToolbar
+        tmsFetchedAtIso={tmsFetchedAtIso}
         modalities={modalities}
         activeModalityId={activeModalityId}
         onModalityChange={changeModality}

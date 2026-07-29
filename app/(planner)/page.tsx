@@ -8,8 +8,10 @@ import {
   listCompaniesForPicker,
 } from "@/lib/db/queries";
 import { getOverlayBookings, getOverlayDateRange } from "@/lib/db/tms/overlay";
+import { TmsUnavailableError } from "@/lib/db/tms/booking-cache";
 import { enumerateDays } from "@/lib/dates";
 import { PlannerGrid } from "@/components/planner/planner-grid";
+import { TmsUnavailable } from "@/components/planner/tms-unavailable";
 import { requireRole } from "@/lib/auth/require-role";
 import { ROLES } from "@/lib/db/schema";
 import { UserMenu } from "@/components/user-menu";
@@ -110,17 +112,31 @@ async function PlannerBody({
   role: (typeof ROLES)[number];
 }) {
   const units = await getActiveUnits(companyId, modalityId);
-  // Both the range and the bookings now come from the overlay — live TMS bookings merged with
-  // our amendments (lib/db/tms/overlay.ts). This throws if TMS is unreachable, which is the
-  // agreed behaviour: a connection error rather than a stale grid (docs/TMS_WRITE_BACK.md §8).
-  const range = (await getOverlayDateRange(companyId, modalityId)) ?? fallbackRange();
-  const [overlay, statuses, unitSpecs, siteCapabilityRequirements] = await Promise.all([
-    getOverlayBookings(companyId, modalityId, range.from, range.to),
+
+  // Both the range and the bookings come from the overlay — live TMS bookings merged with our
+  // amendments (lib/db/tms/overlay.ts). If TMS is unreachable this throws, and the agreed
+  // behaviour is a connection error rather than a stale grid (docs/TMS_WRITE_BACK.md §8).
+  //
+  // ONLY TmsUnavailableError is caught. Catching everything would turn a bug in our own merge
+  // into a "TMS is down" screen — sending people to check the wrong system while the real
+  // defect stays hidden. Anything else propagates to error.tsx, as it should.
+  let range: { from: string; to: string };
+  let overlay: Awaited<ReturnType<typeof getOverlayBookings>>;
+  try {
+    range = (await getOverlayDateRange(companyId, modalityId)) ?? fallbackRange();
+    overlay = await getOverlayBookings(companyId, modalityId, range.from, range.to);
+  } catch (err) {
+    if (err instanceof TmsUnavailableError) {
+      return <TmsUnavailable detail={err.message} />;
+    }
+    throw err;
+  }
+
+  const [statuses, unitSpecs, siteCapabilityRequirements] = await Promise.all([
     getBookingStatuses(),
     getAllUnitSpecs(companyId),
     getAllSiteCapabilityRequirements(companyId),
   ]);
-  const bookings = overlay.bookings;
   const days = enumerateDays(range.from, range.to);
 
   return (
@@ -131,7 +147,8 @@ async function PlannerBody({
         activeModalityId={modalityId}
         units={units}
         days={days}
-        bookings={bookings}
+        bookings={overlay.bookings}
+        tmsFetchedAtIso={overlay.fetchedAt.toISOString()}
         statuses={statuses}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}

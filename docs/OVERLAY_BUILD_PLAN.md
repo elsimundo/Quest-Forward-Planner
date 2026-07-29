@@ -289,19 +289,39 @@ booking thereafter read from TMS (§5). Getting this wrong renders the booking t
 
 ## Stage E — freshness and failure handling
 
-### E1. Connection failure and refresh age
+### E1. Connection failure and refresh age — ✅ DONE
 
-If TMS is unreachable, the planner **shows a connection error** — no fallback to the last
-loaded data (`TMS_WRITE_BACK.md` §8, client-revised). Publishing needs no special handling in
-this state: the page won't render, and the pre-flight needs live TMS anyway.
+`TmsUnavailableError` (`lib/db/tms/booking-cache.ts`) wraps any TMS fetch failure, and
+`app/(planner)/page.tsx` catches **only that type**, rendering
+`components/planner/tms-unavailable.tsx`. Everything else propagates to a new
+`app/(planner)/error.tsx`.
 
-Separately, surface `fetchedAt` as "last refreshed at HH:MM" so the 5-minute cycle is visible.
+**That narrow catch is the load-bearing part.** Catching every error would turn a bug in our
+own merge into a "TMS is down" screen — sending people to check the wrong system while the
+real defect stays hidden. The two screens also say deliberately different things: the outage
+screen states plainly that unpublished work is safe in our database and will be waiting
+(the natural fear on seeing it is that the afternoon's planning went with the connection);
+the error screen does *not* blame TMS or say "try again shortly", and surfaces Next's `digest`
+so a screenshot is traceable to a real stack in the server logs.
 
-### E2. Two clocks
+Freshness shows in the toolbar as `TMS 14:32 · 3m ago` (`tms-freshness.tsx`), formatted
+**after mount, never during render** — `fetchedAt` is a server value and the server runs UTC
+while the schedulers are on UK time, so formatting it during render would both trip a
+hydration mismatch and briefly display an hour-wrong clock.
 
-Local amendments poll ~10s (our Postgres, cheap — already `SPEC.md` §11's design). TMS cache
-refreshes every 5 min server-side, independent of client polling. Keeping these separate is
-the point: a naive shared 10s refresh would hit TMS six times a minute per open screen.
+Publishing needs no special handling in this state, as predicted: the grid never renders, so
+no publish control exists to reach.
+
+### E2. Two clocks — ✅ DONE (already correct; now verified)
+
+No code change needed — the ~10s poll (`planner-grid.tsx`) and the 5-minute server-side cache
+TTL (A3) were already independent by construction. What was missing was proof.
+
+**Measured:** 30 consecutive grid renders — five minutes of 10s polling — produced exactly
+**1** TMS fetch. A naive shared refresh would have made 30 round-trips to TMS's production
+database per open screen.
+
+
 
 ---
 

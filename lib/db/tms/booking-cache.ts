@@ -30,6 +30,23 @@ const DEFAULT_TTL_MS = 5 * 60 * 1000;
 // ("a reload of the TMS bookings data every 5 minutes", docs/TMS_WRITE_BACK.md §7).
 const TTL_MS = parseInt(process.env.TMS_BOOKING_CACHE_TTL_MS ?? String(DEFAULT_TTL_MS), 10);
 
+/**
+ * TMS could not be reached (or its query failed). Thrown instead of the raw driver error so
+ * callers can tell "the external database is down" apart from "our own code threw".
+ *
+ * That distinction is the whole point, and it is worth guarding: the planner renders nothing
+ * without TMS (docs/TMS_WRITE_BACK.md §8), so the page has to catch *something* and show a
+ * connection error. If it caught every error, a genuine bug in the merge would render as
+ * "TMS is unavailable" — a misleading message that sends people to check the wrong system,
+ * and hides the defect. Only this type means "not our fault"; everything else propagates.
+ */
+export class TmsUnavailableError extends Error {
+  constructor(public readonly cause: unknown) {
+    super(cause instanceof Error ? `TMS unavailable: ${cause.message}` : "TMS unavailable");
+    this.name = "TmsUnavailableError";
+  }
+}
+
 export type CachedTmsBookings = {
   bookings: TmsBooking[];
   /**
@@ -99,7 +116,9 @@ export async function getTmsBookings(tmsCompanyId: number): Promise<CachedTmsBoo
       // keeping it invites a later "just serve the old one" change that would reintroduce the
       // stale-grid behaviour the client rejected.
       entry.value = null;
-      throw err;
+      // Re-thrown as a typed error so the page can show a connection error for THIS case
+      // without also swallowing genuine bugs — see TmsUnavailableError above.
+      throw err instanceof TmsUnavailableError ? err : new TmsUnavailableError(err);
     } finally {
       entry.inFlight = null;
     }

@@ -3,6 +3,7 @@
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useStatusCatalog } from "./status-context";
+import { TmsFreshness } from "./tms-freshness";
 
 function Pill({
   active,
@@ -37,6 +38,7 @@ function Pill({
 }
 
 export function PlannerToolbar({
+  tmsFetchedAtIso,
   modalities,
   activeModalityId,
   onModalityChange,
@@ -56,6 +58,7 @@ export function PlannerToolbar({
   canPublish,
   onPublishUpcoming,
 }: {
+  tmsFetchedAtIso: string;
   modalities: { id: number; name: string }[];
   activeModalityId: number;
   onModalityChange: (id: number) => void;
@@ -157,6 +160,7 @@ export function PlannerToolbar({
       <Pill active={showLegend} onClick={onToggleLegend}>
         Key
       </Pill>
+      <TmsFreshness fetchedAtIso={tmsFetchedAtIso} />
     </div>
   );
 }
