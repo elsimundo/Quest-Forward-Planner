@@ -1102,6 +1102,48 @@ key can't drift from what the grid renders.
 architecture supports and inconsistent with #29 without a reason to be. *A flat single colour
 for every "changed" cell* — rejected above, for erasing status identity.
 
+### 32. The "not yet in TMS" colour changed from navy to the app's own blue
+
+**Asked for:** Dave, after #31 shipped: *"confirmed in Forward Planner"* to be **blue**.
+
+**Root cause:** #31's wash blended white toward `#1a3d69` — a very dark, near-black navy —
+at a light 14% ratio. Mixing white with a colour that dark mostly desaturates it rather than
+tinting it: the result (`#dfe4ea`) is a pale grey, and reads as "slightly off-white," not as
+blue. The mechanism from #31 was right; the specific colour it mixed toward wasn't.
+
+**Decided:** swapped the wash/dot colour from `#1a3d69` to `#2b7bb9` — the app's existing blue
+accent, already used for focus rings, links, and the open-cell highlight
+(`components/planner/cell-chip.tsx`, `status-legend.tsx`, the toolbar's Changes pill, and the
+drawer's change label). Confirmed-in-planner now mixes to `#e1edf5`, a clean pale blue in the
+same family as the app's other pastel status colours, rather than a grey. Nothing else about
+#31's design changed — same `mixHex` mechanism, same 14% ratio, still applied uniformly across
+all eight statuses, dot still layered on top for the specific reason on hover.
+
+**Not touched:** the navy on the Publish button, the selection bar, the changes bar, and the
+publish dialogs' "PUBLISH TO TMS" headers. Those are action-button chrome, not the booking
+marker Dave was describing, and swapping their colour too was never asked for.
+
+### 33. The drawer's sync-state line was silent on the common case
+
+**Found:** the client, looking at the edit drawer for an ordinary Confirmed booking: it just
+says "Confirmed," with no answer to "is this in TMS or Forward Planner?" — because
+`BookingDrawer`'s change-kind line (#29) only ever rendered when there *was* a pending
+change. An untouched TMS booking has no `changeKind` (`lib/planner-changes.ts` returns null
+for `origin: "tms"`), so the line was omitted entirely rather than saying anything — silence
+that read as "no answer" rather than "TMS already has this."
+
+**Decided:** the drawer now always states which side has the booking, for anything that isn't
+locked: the existing blue change-kind line when there's a pending change, or a new neutral
+grey line — *"Already matches TMS — nothing to send"* — when there isn't. Reused verbatim from
+`PUBLISH_EXCLUSION_LABEL["not-a-planner-change"]` (`lib/publish-eligibility.ts`, #30) rather
+than a new string, so the drawer and the publish dialog can't end up saying this two different
+ways. Skipped once locked — "🔒 Published & locked" right above it already answers the
+question.
+
+**Same shape as #29's original gap:** a marker that only appears on the exceptional case reads
+as absent, not reassuring, on the common one. #29 fixed this on the chip with the wash; this
+is the same fix applied to the one other place a scheduler reads a single booking's status.
+
 <!--
 Template for new entries:
 

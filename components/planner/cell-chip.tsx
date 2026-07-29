@@ -5,15 +5,16 @@ import { useStatusCatalog } from "./status-context";
 import { CHANGE_KIND_LABEL, changeKindFor } from "@/lib/planner-changes";
 import type { OverlayBooking } from "@/lib/db/tms/overlay";
 
-// The "TMS doesn't have this yet" colour. Deep navy — the same colour as the Publish button,
-// because that's exactly what it means: this is what publishing would send. Used two ways:
-// as a background wash mixed into the status colour (docs/DECISIONS.md #31 — the client was
-// "adamant" a small dot alone wasn't enough, a plain-white Confirmed chip needed to actually
-// look different from one TMS already has), and as the corner dot that still names which
-// kind of change it is once you look closer. The wash is deliberately a small mix (14%) so
-// every status keeps its own colour family rather than eight statuses converging on one
-// "changed" colour — the grid has to stay readable as a *schedule* first.
-const CHANGE_COLOR = "#1a3d69";
+// The "TMS doesn't have this yet" colour. The app's own blue accent (#2b7bb9 — focus rings,
+// links, the open-cell highlight) rather than the very dark navy this used to be: mixing
+// white toward near-black navy at a light ratio reads as grey, not blue, and Dave was
+// explicit that Confirmed-in-planner needed to actually look blue, not just "not quite
+// white" (docs/DECISIONS.md #32). Used two ways: as a background wash mixed into the status
+// colour (#31 — a small dot alone wasn't enough either), and as the corner dot that still
+// names which kind of change it is once you look closer. The wash is deliberately a small
+// mix (14%) so every status keeps its own colour family rather than eight statuses
+// converging on one "changed" colour — the grid has to stay readable as a *schedule* first.
+const CHANGE_COLOR = "#2b7bb9";
 const CHANGE_WASH_RATIO = 0.14;
 
 // The faded original left behind when a scheduler moves a TMS booking — the client's own

@@ -93,7 +93,7 @@ These layer on top of a base state rather than replacing it. More than one can a
 
 | Mark | Where | Meaning |
 |---|---|---|
-| Navy-tinted fill + navy dot | whole chip / bottom-right | **TMS doesn't have this cell as shown yet** — publishing would change something here. See [Sync state](#sync-state-the-second-axis) below. |
+| Blue-tinted fill + blue dot | whole chip / bottom-right | **TMS doesn't have this cell as shown yet** — publishing would change something here. See [Sync state](#sync-state-the-second-axis) below. |
 | `⚠` | top-right | Capability mismatch — the unit doesn't meet a requirement of the site (`SPEC.md` §2a). Informational, never blocks. |
 | `⇄` orange | bottom-left | **Legacy.** TMS and a local edit both changed since the last import. Belongs to the booking import being retired in Stage F and won't fire under the overlay. |
 | `↻` purple | bottom-left | **TMS has changed this booking since you amended it.** Open the drawer to resolve — keep your version, or take TMS's. Blocks publishing until resolved. |
@@ -121,13 +121,15 @@ the sync marker and the changes view are for (`docs/DECISIONS.md` #29). It's der
 stored: `lib/planner-changes.ts` reads `origin` and `publishedAt` off the `OverlayBooking` and
 returns one of four kinds, or null when TMS already agrees.
 
-The marker is two layers, both driven by the same value (`docs/DECISIONS.md` #31):
+The marker is two layers, both driven by the same value (`docs/DECISIONS.md` #31, #32):
 
-- **The fill itself** is the status colour blended 14% toward navy (`mixHex`,
-  `lib/statuses.ts`) instead of the flat colour — a Confirmed chip that only exists in the
-  planner is visibly *not* the same white as one TMS already has. A small dot alone wasn't
-  enough for the client to trust at a glance; the client's own words were that they were
-  "adamant" about needing a different background, not just a mark.
+- **The fill itself** is the status colour blended 14% toward the app's blue accent
+  (`#2b7bb9`, via `mixHex` in `lib/statuses.ts`) instead of the flat colour — a Confirmed
+  chip that only exists in the planner is visibly *not* the same white as one TMS already
+  has. A small dot alone wasn't enough for the client to trust at a glance ("adamant" about
+  needing a different background), and the first version of the wash mixed toward a very
+  dark navy, which reads as grey rather than blue at a light ratio — swapped to the actual
+  blue accent once Dave asked for it explicitly.
 - **The corner dot** stays on top of the wash, because the wash alone can't say *which* kind of
   change this is — that's still in the tooltip.
 
@@ -152,6 +154,13 @@ state is one axis across all eight statuses (#29's whole argument), so a `Likely
 created here gets the same wash as a `Confirmed` one. The blend ratio is small specifically so
 each status keeps its own colour identity rather than all eight converging on one "changed"
 colour once tinted.
+
+**The drawer states it too, both ways** (`docs/DECISIONS.md` #33) — not just when there's a
+change. A booking that already matches TMS gets a neutral grey line saying so
+(`PUBLISH_EXCLUSION_LABEL["not-a-planner-change"]`, shared with the publish dialog rather than
+reworded); a pending change gets the same blue line the chip's tooltip uses. Silence on the
+common case used to read as "no answer" rather than "TMS already has this" — the same failure
+mode #29 fixed on the grid, just showing up one level deeper.
 
 ### The changes view
 

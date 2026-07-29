@@ -124,11 +124,11 @@ export function PlannerToolbar({
       <span className="h-6 w-px bg-[#e6e6e6]" />
       {/* Sits with the filters because it behaves like one, but it filters on a different
           axis: not "what kind of work is this" but "does TMS have this yet". The dot matches
-          the marker on the chips themselves (docs/DECISIONS.md #29). */}
+          the marker on the chips themselves (docs/DECISIONS.md #29, #32). */}
       <Pill
         active={changesOnly}
         onClick={onToggleChangesOnly}
-        dot="#1a3d69"
+        dot="#2b7bb9"
         title={
           changeCount === 0
             ? "Nothing in this date range differs from TMS"

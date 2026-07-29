@@ -305,13 +305,14 @@ Mimics the spreadsheet. See mock-up for exact styling.
   tooltip with full site + status label. Empty → dashed outline, tooltip "Available —
   click to assign".
 - **Sync marker**: on any cell TMS doesn't have as shown — new, amended, or moved-here, and
-  not yet published — the chip's own background is the status colour blended toward navy
-  (not a flat overlay colour, so each status keeps its identity), plus a small navy dot,
-  bottom-right, naming which kind of change it is on hover. Derived from the booking's
-  origin, never stored, and applies uniformly to all eight statuses. A cleared slot carries
-  the existing `⌫` mark instead. This is a *second axis*, independent of status: "does TMS
-  have this?" is not the same question as "what kind of work is this", which is why it is not
-  a ninth status (`docs/DECISIONS.md` #29, #31, `docs/CELL_STATES.md`).
+  not yet published — the chip's own background is the status colour blended toward the
+  app's blue accent (`#2b7bb9`, not a flat overlay colour, so each status keeps its
+  identity), plus a small matching dot, bottom-right, naming which kind of change it is on
+  hover. Derived from the booking's origin, never stored, and applies uniformly to all eight
+  statuses. A cleared slot carries the existing `⌫` mark instead. This is a *second axis*,
+  independent of status: "does TMS have this?" is not the same question as "what kind of
+  work is this", which is why it is not a ninth status
+  (`docs/DECISIONS.md` #29, #31, #32, `docs/CELL_STATES.md`).
 - **Legend** ("Key" toggle in toolbar), in two rows: **Status** — all 8 statuses +
   "Available day" — and **In TMS?** — has it / changed here / published & locked / moved
   away / cleared.

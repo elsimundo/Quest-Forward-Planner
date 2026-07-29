@@ -3,10 +3,10 @@
 import { mixHex, tintBorder } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
 
-// Same wash ratio as the grid's chips (components/planner/cell-chip.tsx) — kept alongside
-// mixHex rather than re-derived, so the legend swatch can't drift from what the cells
-// actually look like.
-const CHANGE_COLOR = "#1a3d69";
+// Same colour and ratio as the grid's chips (components/planner/cell-chip.tsx) — kept
+// alongside mixHex rather than re-derived, so the legend swatch can't drift from what the
+// cells actually look like.
+const CHANGE_COLOR = "#2b7bb9";
 const CHANGE_WASH_RATIO = 0.14;
 
 // Two rows, because a cell says two independent things and the legend used to cover only one.
@@ -70,7 +70,10 @@ export function StatusLegend() {
               className="relative h-3.5 w-3.5 rounded border-[1.5px] border-[#e6e6e6]"
               style={{ background: mixHex("#ffffff", CHANGE_COLOR, CHANGE_WASH_RATIO) }}
             >
-              <span className="absolute right-[1px] bottom-[1px] h-[5px] w-[5px] rounded-full bg-[#1a3d69]" />
+              <span
+                className="absolute right-[1px] bottom-[1px] h-[5px] w-[5px] rounded-full"
+                style={{ background: CHANGE_COLOR }}
+              />
             </span>
           }
         >

@@ -19,6 +19,7 @@ import { DEFAULT_STATUS_KEY } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { CHANGE_KIND_LABEL, changeKindFor } from "@/lib/planner-changes";
+import { PUBLISH_EXCLUSION_LABEL } from "@/lib/publish-eligibility";
 import type { OverlayBooking } from "@/lib/db/tms/overlay";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
 import { resolveTmsSupersede } from "@/lib/actions/tms-resolve";
@@ -291,11 +292,22 @@ function BookingDrawerBody({
         </SheetDescription>
         <SheetTitle className="text-lg font-bold text-[#333333]">{target.unitRegistration}</SheetTitle>
         <p className="text-[13px] text-[#757575]">{fmtDateLong(target.date)}</p>
-        {changeKind && (
-          <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-[#1a3d69]">
-            <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[#1a3d69]" aria-hidden />
-            {CHANGE_KIND_LABEL[changeKind]}
-          </p>
+        {/* Always says which side has this, not just when they disagree — a silent drawer on
+            an untouched TMS booking read as "no answer" (docs/DECISIONS.md #33), the same
+            gap #29/#31 already closed on the chip itself. Skipped once locked: the
+            "Published & locked" line above already says it. */}
+        {booking && !locked && (
+          changeKind ? (
+            <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-[#2b7bb9]">
+              <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[#2b7bb9]" aria-hidden />
+              {CHANGE_KIND_LABEL[changeKind]}
+            </p>
+          ) : (
+            <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-[#757575]">
+              <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[#9a9a9a]" aria-hidden />
+              {PUBLISH_EXCLUSION_LABEL["not-a-planner-change"]}
+            </p>
+          )
         )}
       </SheetHeader>
 
