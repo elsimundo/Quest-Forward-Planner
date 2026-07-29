@@ -20,6 +20,7 @@ import { useStatusCatalog } from "./status-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import type { OverlayBooking } from "@/lib/db/tms/overlay";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
+import { resolveTmsSupersede } from "@/lib/actions/tms-resolve";
 import { unpublishBooking } from "@/lib/actions/publish";
 import { searchSites, getSiteChildren } from "@/lib/actions/sites";
 import type { SiteMatch } from "@/lib/db/queries";
@@ -215,6 +216,29 @@ function BookingDrawerBody({
     onClose();
   }
 
+  // Stage C3: TMS changed this booking since it was amended (booking.tmsSupersedes, computed
+  // in lib/db/tms/overlay.ts). Neither side should win silently, so the scheduler chooses.
+  const [resolving, setResolving] = useState<"keep" | "accept-tms" | null>(null);
+  async function handleResolveSupersede(resolution: "keep" | "accept-tms") {
+    if (!initialUpdatedAt) return;
+    setResolving(resolution);
+    const result = await resolveTmsSupersede({
+      unitId: target.unitId,
+      date: target.date,
+      resolution,
+      expectedUpdatedAt: initialUpdatedAt.toISOString(),
+    });
+    setResolving(null);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success(result.message);
+    onMutated(result.batchId);
+    router.refresh();
+    onClose();
+  }
+
   async function handleUnlock() {
     // Two-step confirm (SPEC.md §2b: unlocking is destructive and must be confirmed) —
     // the first click arms it, the second actually unlocks.
@@ -265,6 +289,34 @@ function BookingDrawerBody({
           {target.unitDescription && (
             <div className="mx-5.5 mt-3.5 rounded-lg bg-[#f7f9fc] p-3 text-xs leading-[17px] text-[#757575]">
               {target.unitDescription}
+            </div>
+          )}
+
+          {booking?.tmsSupersedes && (
+            <div className="mx-5.5 mt-3.5 rounded-lg border border-[#dccbf7] bg-[#f4edfd] p-3 text-xs leading-[17px] text-[#5a2d9c]">
+              <p className="font-medium">↻ TMS has updated this booking since it was last changed here.</p>
+              <p className="mt-1 text-[#7c5aa8]">
+                Someone needs to decide which version to keep — TMS won&apos;t be overridden
+                silently.
+              </p>
+              <div className="mt-2.5 flex gap-1.5">
+                <Button
+                  variant="outline"
+                  className="h-7 flex-1 border-[#c9adf0] px-2 text-[11px] text-[#5a2d9c] hover:bg-[#ece0fa]"
+                  disabled={resolving !== null}
+                  onClick={() => void handleResolveSupersede("keep")}
+                >
+                  {resolving === "keep" ? "Keeping…" : "Keep my version"}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-7 flex-1 border-[#c9adf0] px-2 text-[11px] text-[#5a2d9c] hover:bg-[#ece0fa]"
+                  disabled={resolving !== null}
+                  onClick={() => void handleResolveSupersede("accept-tms")}
+                >
+                  {resolving === "accept-tms" ? "Updating…" : "Use TMS's version"}
+                </Button>
+              </div>
             </div>
           )}
 

@@ -128,6 +128,13 @@ export function CellChip({
   const borderColour = tintBorder(st.bar, booking.status === "confirmed" ? 0.28 : 0.5);
   const locked = !!booking.publishedAt;
   const hasTmsConflict = !!booking.tmsConflictAt;
+  // Stage C3: TMS has changed this booking since it was amended — distinct from
+  // hasTmsConflict above, which belongs to the retiring booking-import mechanism
+  // (docs/OVERLAY_BUILD_PLAN.md Stage F) and won't fire under the overlay model. Different
+  // badge, different colour, so the two are never mistaken for one another while both exist.
+  // Both badges anchor the same corner; hasTmsConflict (retiring) takes priority in the rare
+  // case both are ever true at once, so they never render stacked.
+  const supersedes = booking.tmsSupersedes && !hasTmsConflict;
 
   return (
     <button
@@ -136,7 +143,7 @@ export function CellChip({
       draggable={draggable && !locked}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
+      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${supersedes ? " · ↻ TMS has updated this booking since — open it to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
       className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         cursor: locked ? "pointer" : "grab",
@@ -174,6 +181,15 @@ export function CellChip({
           title="TMS also changed this booking — edit and save to resolve"
         >
           ⇄
+        </span>
+      )}
+      {supersedes && (
+        <span
+          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#8a3ffc] text-[9px] leading-none font-bold text-white"
+          aria-hidden
+          title="TMS has updated this booking since — open it to resolve"
+        >
+          ↻
         </span>
       )}
       {checked && (

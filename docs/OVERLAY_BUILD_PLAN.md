@@ -207,10 +207,35 @@ a rejected move.
 The existing sentinel (rigid offset + swap/overwrite) continues to handle amendment-vs-amendment
 collisions. TMS collisions are visible to clash detection because both sides are now rows.
 
-### C3. Supersede flagging in the UI — ⏳ NEXT
+### C3. Supersede flagging in the UI — ✅ DONE
 
-Surface B4's second case: a badge plus a way to accept TMS's version (discard the amendment)
-or re-apply the change from TMS's new position.
+`OverlayBooking.tmsSupersedes` (lib/db/tms/overlay.ts) — true when TMS's `updated_at` for a
+booking has moved past the value recorded on the amendment (`bookings.tms_updated_at`),
+computed for every live amendment on every read, not just ghosts. A `↻` badge (purple,
+distinct from the retiring import's `⇄`) appears on the cell; opening the drawer shows a
+banner with two actions, resolved by `lib/actions/tms-resolve.ts`:
+
+- **Keep my version** — the scheduler's edit stands. Only the watermark (`tms_updated_at`)
+  advances, silencing the flag until TMS changes again. Content untouched.
+- **Use TMS's version** — the amendment's site/status/notes/position are overwritten with
+  TMS's current values. If TMS moved the booking to a slot another local row now occupies,
+  this is rejected with a CONFLICT rather than silently overwriting that row.
+
+Both are audited `update` events with proper before/after snapshots, gated by the same
+optimistic lock (`expectedUpdatedAt`) as every other write, and company-scoped.
+
+**A bug this stage caught, in code that had already shipped and been marked done:** an
+earlier automated edit to B2 had silently deleted the line that pushes non-ghost amendments
+into the merge's output — every real (non-ghost) booking would have vanished from the grid,
+while ghosts and untouched TMS bookings kept rendering fine, which is exactly the kind of
+failure that looks like nothing's wrong until you check the count. `real: 1368` collapsing to
+near-zero is what verification is FOR; caught before it reached the grid, not after.
+
+Verified against live TMS with the real inline transaction logic (requireRole needs a Next
+request scope a script doesn't have, so the DB operations were run directly, unchanged from
+the action): induced a genuinely stale amendment, confirmed the flag set, confirmed "keep"
+preserves content and clears the flag, confirmed "accept-tms" reverts content to TMS's and
+clears the flag, confirmed cleanup restores baseline. Typecheck, lint, build clean.
 
 ---
 

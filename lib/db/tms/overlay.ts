@@ -261,7 +261,13 @@ export async function getOverlayBookings(
     if (a.date < from || a.date > to) continue;
     const tmsSlot = a.tmsBookingId !== null ? tmsSlotByBookingId.get(a.tmsBookingId) ?? null : null;
     const moved = tmsSlot !== null && (tmsSlot.unitId !== a.unitId || tmsSlot.date !== a.date);
-    // Compute whether TMS has changed this booking since we amended it.
+
+    // Stage C3: has TMS changed this booking since we amended it? Compared by TMS's own
+    // updated_at, not content — a status/site/notes edit and a TMS-side move both bump it.
+    const tmsBooking = a.tmsBookingId !== null ? tmsBookings.find((b) => b.id === a.tmsBookingId) : undefined;
+    const tmsSupersedes = !!(tmsBooking && a.tmsUpdatedAt && tmsBooking.updatedAt.getTime() !== a.tmsUpdatedAt.getTime());
+
+    out.push(toOverlay(a, a.tmsBookingId, moved ? tmsSlot : null, tmsSupersedes));
   }
 
   // A ghost and a real booking can't legitimately share a slot — a ghost only exists where the
@@ -436,6 +442,7 @@ type AmendmentRow = {
   updatedAt: Date;
   tmsConflictAt: Date | null;
   tmsBookingId: number | null;
+  tmsUpdatedAt: Date | null;
 };
 
 // tms_booking_id is UNIQUE on `bookings`, so a TMS booking has at most one amendment row
@@ -469,6 +476,7 @@ async function loadAmendments(companyId: number, modalityId: number): Promise<Am
       updatedAt: bookings.updatedAt,
       tmsConflictAt: bookings.tmsConflictAt,
       tmsBookingId: bookings.tmsBookingId,
+      tmsUpdatedAt: bookings.tmsUpdatedAt,
     })
     .from(bookings)
     .innerJoin(sites, eq(sites.id, bookings.siteId))
