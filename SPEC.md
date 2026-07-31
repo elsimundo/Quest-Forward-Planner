@@ -304,6 +304,9 @@ Mimics the spreadsheet. See mock-up for exact styling.
   status-coloured border (no left bar — team decision), site name clamped to 2 lines,
   tooltip with full site + status label. Empty → dashed outline, tooltip "Available —
   click to assign".
+  **The background is the status indicator; the site name is a fixed neutral `#333333`** at
+  every status, so status is read from the fill and never from the label
+  (`docs/DECISIONS.md` #38).
 - **Sync marker**: on any cell TMS doesn't have as shown — new, amended, or moved-here, and
   not yet published — the chip's own background is the status colour blended toward the
   app's blue accent (`#2b7bb9`, not a flat overlay colour, so each status keeps its
@@ -317,9 +320,26 @@ Mimics the spreadsheet. See mock-up for exact styling.
   "Available day" — and **In TMS?** — has it / changed here / published & locked / moved
   away / cleared.
 - **Toolbar**: modality switcher; search box (matches unit id, unit spec, or site name →
-  filters visible unit columns); status filter pills (dim non-matching cells to ~20%
-  opacity rather than hiding, so the grid shape stays stable); **Changes (n)** view toggle;
-  Undo/Redo; Select mode; Key.
+  filters visible unit columns); **Available units** toggle (hides unit columns with no
+  free capacity — scoped to the current multi-select's dates when one exists, otherwise the
+  loaded range; never hides a unit currently holding part of the selection); status filter
+  pills (dim non-matching cells to ~20% opacity rather than hiding, so the grid shape stays
+  stable); **Changes (n)** view toggle; Undo/Redo; Select mode; Key.
+- **Right-click a booked, unpublished cell** → "Move to unit" → a submenu listing other
+  units (candidates drawn from the same filtered/visible set as above), each annotated when
+  moving there would collide. Selecting one runs the exact same clash-detection/move
+  pipeline a drag would. See the v1 carve-out in §14 and `docs/DECISIONS.md` #34.
+- **Right-click with exactly two cells selected** also offers "Swap these two bookings" —
+  a one-click shortcut for what the redistribute dialog below can already do in two picks
+  (each row choosing the other's unit). `docs/DECISIONS.md` #37.
+- **Redistributing a multi-select** (`docs/DECISIONS.md` #35) — a block drag applies one
+  uniform offset and is all-or-nothing, so two ways to place bookings individually:
+  **holding Shift part-way through a drag** places only the booking that was grabbed, leaving
+  the rest of the selection put (the drag starts as a normal whole-block move; Shift is read
+  from the live drag events, not from the mousedown); and **right-clicking a multi-select**
+  opens a dialog with one row per booking — each keeping its date, picking its own destination
+  unit, occupied units flagged, rows defaulting to "keep". Both feed the same move/clash
+  pipeline as a drag.
 - **Changes view**: dims every cell TMS already agrees with to ~20%, leaving only pending
   changes lit *in place* — fades rather than filters, so a scheduler can see how the changes
   affect the surrounding schedule (e.g. the slot a move freed up). A bar above the grid
@@ -569,9 +589,20 @@ Open questions to resolve with the client:
 
 ## 14. Out of scope for v1 (phase-2 candidates)
 
-Copy/paste of bookings; right-click context menu; recurring bookings ("every Sat at X");
-utilisation dashboards; conflict "bump"; per-unit row view / single-unit timeline;
-notifications; CSV/Excel export; client-facing read-only share links; **the actual TMS
-write-integration** (§13.1) — v1 implements the publish/lock *state machine* (§2b) and
-stops there; wiring it to push into TMS's downstream scheduling system is explicitly
-deferred until the client defines the mechanism.
+Copy/paste of bookings; a general right-click context menu (multiple actions — delete,
+duplicate, etc.); recurring bookings ("every Sat at X"); utilisation dashboards; conflict
+"bump"; per-unit row view / single-unit timeline; notifications; CSV/Excel export;
+client-facing read-only share links; **the actual TMS write-integration** (§13.1) — v1
+implements the publish/lock *state machine* (§2b) and stops there; wiring it to push into
+TMS's downstream scheduling system is explicitly deferred until the client defines the
+mechanism.
+
+**Two narrow exceptions shipped in v1**, both reusing the same move/clash pipeline drag
+already uses, neither a reopening of the general context-menu item above:
+
+1. Right-click a booked, unpublished cell → "Move to unit" → a submenu of other units.
+   Added because redistributing a block off a unit (e.g. it's gone down) means dragging
+   through however many columns the fleet has. `docs/DECISIONS.md` #34.
+2. Right-click with exactly two cells selected → "Swap these two bookings" — a one-click
+   version of what the redistribute dialog (#35) already lets you do in two picks.
+   `docs/DECISIONS.md` #37.

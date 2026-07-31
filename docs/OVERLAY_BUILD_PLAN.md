@@ -130,10 +130,21 @@ row actually says anything TMS doesn't, rather than whether someone once opened 
 
 Two kinds, both computed on read, no background job:
 
-1. **Collision** — an amendment and a *different* TMS booking on the same unit and date.
-2. **Superseded** — TMS has changed a booking we've amended (compare cache `tms_updated_at`
-   against the value the amendment was made from). **TMS wins**; the amendment is flagged for
-   review, never silently kept or dropped (`TMS_WRITE_BACK.md` §5).
+1. **Collision — ✅ DONE.** An amendment and a *different* TMS booking on the same unit and
+   date. `OverlayBooking.tmsCollision` (`lib/db/tms/overlay.ts`), a `⨯` badge in the shared
+   `⇄`/`↻` corner, a drawer banner, and a `tms-collision` publish exclusion re-derived fresh
+   at commit time (`lib/actions/publish.ts`) — same pattern as C3/D1's `tmsSupersedes`. Full
+   writeup in `docs/DECISIONS.md` #36, including the bug this closed: without it, two real
+   rows could land in one slot and the client-side merge silently kept only one, with nothing
+   on screen to say so.
+
+   **Built reactively, not proactively.** This surfaces the next time anyone opens or
+   refreshes the grid for that date — bounded by the 5-minute TMS cache TTL plus however long
+   until someone looks. It does not push an alert the moment the colliding row appears in TMS.
+   That's a separate, larger feature, planned but not built: `docs/COLLISION_ALERTS_PLAN.md`.
+2. **Superseded — ✅ DONE (Stage C3 above).** TMS has changed a booking we've amended (compare
+   cache `tms_updated_at` against the value the amendment was made from). **TMS wins**; the
+   amendment is flagged for review, never silently kept or dropped (`TMS_WRITE_BACK.md` §5).
 
 Replaces the frozen-row `⇄` mechanism, which depended on the import.
 

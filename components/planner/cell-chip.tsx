@@ -1,5 +1,6 @@
 "use client";
 
+import { forwardRef } from "react";
 import { mixHex, tintBorder } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
 import { CHANGE_KIND_LABEL, changeKindFor } from "@/lib/planner-changes";
@@ -69,7 +70,7 @@ export function GhostChip({
         aria-label={bodyTitle}
         className="h-full min-w-0 flex-1 cursor-pointer px-2 text-left opacity-45 transition-opacity duration-150 hover:opacity-70 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
       >
-        <span className="line-clamp-2 text-xs leading-[14px] italic" style={{ color: st.text }}>
+        <span className="line-clamp-2 text-xs leading-[14px] italic" style={{ color: "#333333" }}>
           {booking.siteName}
         </span>
       </button>
@@ -88,20 +89,7 @@ export function GhostChip({
   );
 }
 
-export function CellChip({
-  booking,
-  dimmed,
-  warning,
-  checked,
-  isOpen,
-  draggable,
-  preview,
-  flash,
-  pendingRemoval,
-  onClick,
-  onDragStart,
-  onDragEnd,
-}: {
+type CellChipProps = {
   booking: OverlayBooking | null;
   dimmed: boolean;
   warning?: boolean;
@@ -120,7 +108,31 @@ export function CellChip({
   onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
-}) {
+} & Omit<React.ComponentPropsWithoutRef<"button">, "onClick" | "onDragStart" | "onDragEnd" | "draggable" | "type">;
+
+// Forwards its ref to the root <button> so a booked, unlocked cell can sit inside a Radix
+// `ContextMenuTrigger asChild` (the right-click "move to unit" menu) without Slot wrapping
+// it in an extra element — which would break the grid cell's flex layout. `...rest` matters
+// just as much as the ref: Slot clones its own onContextMenu/pointer handlers onto whatever
+// element it wraps, and without forwarding them here they'd land on props this component
+// never reads, silently dropped — the menu trigger would never fire and the browser's own
+// context menu would show instead.
+export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function CellChip({
+  booking,
+  dimmed,
+  warning,
+  checked,
+  isOpen,
+  draggable,
+  preview,
+  flash,
+  pendingRemoval,
+  onClick,
+  onDragStart,
+  onDragEnd,
+  style: injectedStyle,
+  ...rest
+}, ref) {
   // Read the catalogue unconditionally (before the no-booking early return) so hook order
   // stays stable across renders where the cell flips between empty and booked.
   const catalog = useStatusCatalog();
@@ -138,6 +150,7 @@ export function CellChip({
   if (!booking) {
     return (
       <button
+        ref={ref}
         type="button"
         onClick={onClick}
         title={
@@ -145,13 +158,15 @@ export function CellChip({
             ? `Free — you've cleared "${pendingRemoval}" here. TMS still shows it until that's published. Click to book something else.`
             : "Available — click to assign"
         }
-        className="relative flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+        className="relative flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background] duration-150 select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
         style={{
+          ...injectedStyle,
           borderColor: isOpen ? "#2b7bb9" : pendingRemoval ? "#d8c5b4" : "#e6e6e6",
           background: isOpen ? "#f0f7ff" : "transparent",
           opacity: dimmed && !preview ? 0.22 : 1,
           ...(previewStyle ?? {}),
         }}
+        {...rest}
       >
         {isOpen ? "+" : ""}
         {pendingRemoval && !isOpen && (
@@ -178,7 +193,14 @@ export function CellChip({
   // badge, different colour, so the two are never mistaken for one another while both exist.
   // Both badges anchor the same corner; hasTmsConflict (retiring) takes priority in the rare
   // case both are ever true at once, so they never render stacked.
-  const supersedes = booking.tmsSupersedes && !hasTmsConflict;
+  // Stage B4: TMS holds a DIFFERENT, unlinked booking on this exact unit+date — most often
+  // because it was entered straight into TMS rather than through the planner, so nothing
+  // upstream ever had a chance to catch it at write time. Same shared corner as ⇄/↻, and
+  // takes priority over both: two things wanting one slot is more urgent than either of
+  // them, and — unlike a supersede — there's no shared lineage to reconcile, only a clash to
+  // pick a side of.
+  const collision = !!booking.tmsCollision && !hasTmsConflict;
+  const supersedes = booking.tmsSupersedes && !hasTmsConflict && !collision;
   // What publishing this cell would change in TMS, if anything. Null once published (🔒 is
   // already the stronger statement) and for untouched TMS bookings. See lib/planner-changes.ts.
   const changeKind = changeKindFor(booking);
@@ -187,16 +209,31 @@ export function CellChip({
   // definition nothing published still has a changeKind anyway.
   const fill = changeKind ? mixHex(st.bg, CHANGE_COLOR, CHANGE_WASH_RATIO) : st.bg;
 
+  // `select-none` below matters for more than tidiness: this chip is draggable AND renders the
+  // site name as real text, so shift+mousedown extended the document's text selection instead of
+  // starting a drag — killing exactly the shift-drag-one-at-a-time gesture (docs/DECISIONS.md
+  // #35). A plain drag has no selection to extend, so block drags were unaffected and the
+  // breakage looked shift-specific. GhostChip already had it; this branch didn't.
   return (
     <button
+      ref={ref}
       type="button"
       onClick={onClick}
       draggable={draggable && !locked}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${changeKind ? ` · ${CHANGE_KIND_LABEL[changeKind]}` : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${supersedes ? " · ↻ TMS has updated this booking since — open it to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
-      className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${changeKind ? ` · ${CHANGE_KIND_LABEL[changeKind]}` : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${collision ? ` · ⨯ TMS also has ${booking.tmsCollision!.siteName} here — move or clear one` : ""}${supersedes ? " · ↻ TMS has updated this booking since — open it to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
+      className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 select-none focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
+        // `injectedStyle` first, lowest priority: Radix's `ContextMenuTrigger asChild`
+        // (cell-context-menu.tsx, the right-click "move to unit" menu) clones this element
+        // with its own `style={{WebkitTouchCallout:"none"}}`, which — because CellChip didn't
+        // destructure `style` — used to arrive via `...rest` and, spread after this object,
+        // silently replaced the entire computed style with just that one property. Every
+        // booked, unlocked cell rendered colourless as a result: not a palette bug, a prop-
+        // merge order bug. Spreading it here instead keeps Radix's touch behaviour on the
+        // properties below that we actually set.
+        ...injectedStyle,
         cursor: locked ? "pointer" : "grab",
         borderColor: flash ? "#f17f42" : checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : borderColour,
         boxShadow: flash
@@ -211,13 +248,14 @@ export function CellChip({
         filter: locked ? "saturate(0.55)" : "none",
         ...(previewStyle ?? {}),
       }}
+      {...rest}
     >
       {locked && (
         <span className="shrink-0 pl-1.5 text-[11px] leading-none text-[#9a9a9a]" aria-hidden>
           🔒
         </span>
       )}
-      <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px]" style={{ color: st.text }}>
+      <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px]" style={{ color: "#333333" }}>
         {booking.siteName}
       </span>
       {warning && (
@@ -232,6 +270,15 @@ export function CellChip({
           title="TMS also changed this booking — edit and save to resolve"
         >
           ⇄
+        </span>
+      )}
+      {collision && (
+        <span
+          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#c0392b] text-[9px] leading-none font-bold text-white"
+          aria-hidden
+          title={`TMS also has ${booking.tmsCollision!.siteName} here — move or clear one to publish`}
+        >
+          ⨯
         </span>
       )}
       {supersedes && (
@@ -261,4 +308,4 @@ export function CellChip({
       )}
     </button>
   );
-}
+});

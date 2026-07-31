@@ -31,6 +31,7 @@ the drawer, publish workflow) even though only CT ships first.
 | How published bookings get *back* to TMS | `docs/TMS_WRITE_BACK.md` — the model, and the API questions blocking it. **Nothing writes to TMS today; the connection is read-only.** |
 | Every visual state a grid cell can be in | `docs/CELL_STATES.md` — what each looks like, what you can do with it, and why. Read before touching `cell-chip.tsx` or the grid's cell render. |
 | The build order for the overlay model | `docs/OVERLAY_BUILD_PLAN.md` — staged plan. **Bookings are becoming an overlay on live TMS data, not a copy** — check this before touching `bookings` or the import. |
+| The plan for proactive collision alerts (email/push) | `docs/COLLISION_ALERTS_PLAN.md` — **not built.** The in-app `⨯` badge is live (Stage B4); this covers notifying someone the moment a collision appears, without waiting for the grid to be opened. |
 
 ## Ground rules
 

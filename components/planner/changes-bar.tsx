@@ -10,13 +10,24 @@ import { CHANGE_KIND_NOUN, type ChangeSummary } from "@/lib/planner-changes";
 // changed"; the button next to it opens the dialog that answers "what will actually go".
 export function ChangesBar({
   summary,
+  myTotal,
   canPublish,
+  canDiscardMine,
+  canDiscardEveryone,
   onReviewPublish,
+  onDiscardMine,
+  onDiscardEveryone,
   onExit,
 }: {
   summary: ChangeSummary;
+  /** How many of `summary.total` are currently owned by the acting user — drives "Discard my changes". */
+  myTotal: number;
   canPublish: boolean;
+  canDiscardMine: boolean;
+  canDiscardEveryone: boolean;
   onReviewPublish: () => void;
+  onDiscardMine: () => void;
+  onDiscardEveryone: () => void;
   onExit: () => void;
 }) {
   return (
@@ -38,6 +49,22 @@ export function ChangesBar({
         sit against the rest of the schedule.
       </span>
       <span className="flex-1" />
+      {canDiscardMine && myTotal > 0 && (
+        <button
+          onClick={onDiscardMine}
+          className="rounded-full border border-[#b9c8dc] px-3.5 py-1.5 text-xs text-[#1a3d69] transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+        >
+          Discard my changes ({myTotal})
+        </button>
+      )}
+      {canDiscardEveryone && summary.total > 0 && (
+        <button
+          onClick={onDiscardEveryone}
+          className="rounded-full border border-[#b9c8dc] px-3.5 py-1.5 text-xs text-[#1a3d69] transition-colors hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+        >
+          Discard everyone&apos;s changes ({summary.total})
+        </button>
+      )}
       {canPublish && summary.total > 0 && (
         <button
           onClick={onReviewPublish}

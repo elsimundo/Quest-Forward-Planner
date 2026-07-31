@@ -244,9 +244,14 @@ change in TMS takes effect on next login — no manual role admin for the common
 
 | TMS user fields | derived local `role` | can |
 | --- | --- | --- |
+| `permission_group = 'superuser'` | `super_admin` | **everything, any company — exempt from the `enable_scheduling_access` gate entirely** (`docs/DECISIONS.md` #39) |
 | `enable_scheduling_access = 0` | — | **no planner access** (sign-in rejected) |
 | `= 1`, `scheduling_permission_group = 'read_only'` | `viewer` | view sheets only |
 | `= 1`, `scheduling_permission_group = 'admin'` | `scheduler` (+status mgmt) | edit bookings, publish, **manage `booking_statuses`** |
+
+The superuser row is checked **first** — it's the one tier where the flag is not required,
+because a superuser has no TMS `company_id` either and `super_admin` is the only local role
+that expresses "full access, no company affiliation".
 
 **`super_admin` stays local-only** — it is *app* administration (managing app users, seeing
 the audit log, the reconciliation/pad tools), which TMS has no concept of. It's granted

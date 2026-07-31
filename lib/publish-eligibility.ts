@@ -10,6 +10,7 @@ export type PublishExclusionReason =
   | "not-a-planner-change"
   | "not-publishable-status"
   | "tms-conflict"
+  | "tms-collision"
   | "tms-supersedes";
 
 export const PUBLISH_EXCLUSION_LABEL: Record<PublishExclusionReason, string> = {
@@ -21,6 +22,7 @@ export const PUBLISH_EXCLUSION_LABEL: Record<PublishExclusionReason, string> = {
   "not-a-planner-change": "Already matches TMS — nothing to send",
   "not-publishable-status": "Not yet Confirmed",
   "tms-conflict": "Unresolved TMS conflict — edit and save to resolve",
+  "tms-collision": "TMS has a different booking here — move or clear one first",
   "tms-supersedes": "TMS has updated this since — open it to resolve",
 };
 
@@ -29,6 +31,9 @@ export type PublishClassifiable = {
   publishedAt: Date | null;
   tmsConflictAt: Date | null;
   tmsSupersedes: boolean;
+  // Only truthiness matters here — the label/detail live on OverlayBooking.tmsCollision,
+  // this file stays decoupled from that type (see the note above).
+  tmsCollision: boolean;
 };
 
 export type PublishClassification =
@@ -36,12 +41,15 @@ export type PublishClassification =
   | { eligible: false; reason: PublishExclusionReason };
 
 // Order matters for a booking that's excluded for more than one reason at once — the FIRST
-// reason found is the one shown. tmsSupersedes is checked ahead of status: a booking sitting
-// in Confirmed that TMS has since changed is a supersede problem, not a status problem, and
-// telling the scheduler the wrong thing sends them to fix the wrong field.
+// reason found is the one shown. tmsCollision is checked ahead of tmsSupersedes: a collision
+// means two DIFFERENT bookings want this slot (no shared lineage to reconcile), which is a
+// more fundamental problem than "TMS updated a booking we already amended" — and ahead of
+// status, for the same reason tmsSupersedes already was: telling the scheduler the wrong
+// thing sends them to fix the wrong field.
 export function classifyForPublish(b: PublishClassifiable, publishableKeys: Set<string>): PublishClassification {
   if (b.publishedAt) return { eligible: false, reason: "already-published" };
   if (b.tmsConflictAt) return { eligible: false, reason: "tms-conflict" };
+  if (b.tmsCollision) return { eligible: false, reason: "tms-collision" };
   if (b.tmsSupersedes) return { eligible: false, reason: "tms-supersedes" };
   if (!publishableKeys.has(b.status)) return { eligible: false, reason: "not-publishable-status" };
   return { eligible: true };

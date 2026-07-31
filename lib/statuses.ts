@@ -48,16 +48,39 @@ type SeedStatus = {
 };
 
 // Ordered seed catalogue — the single source the migration seeds from and the code falls
-// back to. Keep in sync with the reference mock-up's STATUSES object if that changes.
+// back to.
+//
+// `bg` is the status indicator, and it is the ONLY status indicator on a grid chip
+// (docs/DECISIONS.md #38). Each one is its own `bar` colour mixed 28% over white — a single
+// derivation rather than eight hand-picked tints, so the palette stays internally consistent
+// and a status added later can follow the same rule. The original values were the same bars at
+// roughly 7%, which is where the problem was: at that strength `cancelled`'s pale pink and
+// `confirmed`'s plain white are indistinguishable in a wall of cells, so the saturated `text`
+// colour had quietly become the real indicator instead of the fill.
+//
+// 28% is a ceiling as much as a target. It has to stay light enough for the chip's fixed
+// #333333 label (every value below clears 8:1, i.e. AAA) and light enough that the sync wash
+// — 14% of the blue accent mixed *into* this bg, docs/DECISIONS.md #31/#32 — is still a
+// visible shift rather than a change to an already-saturated colour. Raising it much past 28%
+// starts eating the wash. Retune the ratio here and in migration 0014 together.
+//
+// `confirmed` deliberately stays pure white: it's the overwhelming majority of the grid, so
+// tinting it would make everything loud and leave nothing to read the exceptions against — and
+// the blue sync wash needs a white base to read against most of all, since "Confirmed here but
+// not yet in TMS" is the single most common thing that wash has to say.
+//
+// NOTE: `bg` is admin-editable data at runtime (`booking_statuses.color_bg`); this map is the
+// SEED plus the render fallback. Changing a value here does NOT change an existing database —
+// that needs a migration, and migration 0014 is the one that moved the live rows to these.
 export const SEED_STATUSES: Record<Status, SeedStatus> = {
   confirmed: { label: "Confirmed", bg: "#ffffff", bar: "#214b7f", text: "#333333", border: "#e6e6e6", editable: true, calendarDerived: false, billable: true, publishable: true },
-  likely: { label: "Likely — awaiting confirmation", bg: "#e9f4ec", bar: "#3d7f53", text: "#28563a", border: "#cfe6d6", editable: true, calendarDerived: false, billable: false, publishable: false },
-  tbc: { label: "Site to be confirmed", bg: "#fdf1e7", bar: "#f17f42", text: "#9a4d1e", border: "#f6ddc8", editable: true, calendarDerived: false, billable: false, publishable: false },
-  bidding: { label: "Bidding for contract", bg: "#f9ebeb", bar: "#b13a3a", text: "#7c2a2a", border: "#efd3d3", editable: true, calendarDerived: false, billable: false, publishable: false },
-  service: { label: "Corrective works / service", bg: "#e8f4fb", bar: "#2b7bb9", text: "#1f5a87", border: "#cfe6f5", editable: true, calendarDerived: false, billable: false, publishable: false },
-  cancelled: { label: "Cancelled by customer — chargeable", bg: "#f9ebf6", bar: "#c355ac", text: "#7d2f6c", border: "#eed2e8", editable: true, calendarDerived: false, billable: true, publishable: false },
-  weekend: { label: "Weekend confirmed", bg: "#eef0f4", bar: "#8b94a3", text: "#4a5261", border: "#dde1e8", editable: false, calendarDerived: true, billable: true, publishable: true },
-  bankholiday: { label: "Bank holiday", bg: "#fbf4e2", bar: "#e0a826", text: "#7a5c10", border: "#f1e3bb", editable: false, calendarDerived: true, billable: true, publishable: true },
+  likely: { label: "Likely — awaiting confirmation", bg: "#c9dbcf", bar: "#3d7f53", text: "#28563a", border: "#cfe6d6", editable: true, calendarDerived: false, billable: false, publishable: false },
+  tbc: { label: "Site to be confirmed", bg: "#fbdbca", bar: "#f17f42", text: "#9a4d1e", border: "#f6ddc8", editable: true, calendarDerived: false, billable: false, publishable: false },
+  bidding: { label: "Bidding for contract", bg: "#e9c8c8", bar: "#b13a3a", text: "#7c2a2a", border: "#efd3d3", editable: true, calendarDerived: false, billable: false, publishable: false },
+  service: { label: "Corrective works / service", bg: "#c5e4f4", bar: "#2f9fd6", text: "#0a5273", border: "#def0f8", editable: true, calendarDerived: false, billable: false, publishable: false },
+  cancelled: { label: "Cancelled by customer — chargeable", bg: "#eecfe8", bar: "#c355ac", text: "#7d2f6c", border: "#eed2e8", editable: true, calendarDerived: false, billable: true, publishable: false },
+  weekend: { label: "Weekend confirmed", bg: "#dfe1e5", bar: "#8b94a3", text: "#4a5261", border: "#dde1e8", editable: false, calendarDerived: true, billable: true, publishable: true },
+  bankholiday: { label: "Bank holiday", bg: "#f6e7c2", bar: "#e0a826", text: "#7a5c10", border: "#f1e3bb", editable: false, calendarDerived: true, billable: true, publishable: true },
 };
 
 // Seed order: editable statuses first in their intended picker order, then the two

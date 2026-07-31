@@ -104,8 +104,11 @@ See `SPEC.md` §2c. Architecturally, this means:
   `lib/db/mysql-auth.ts`) instead of a local password. Everything else — Auth.js itself,
   session handling, route protection, and role storage — is unchanged, exactly as #4
   originally planned for this swap.
-- Login also requires TMS's `enable_scheduling_access = 1`. On a first successful login
-  with no matching local `users` row, one is auto-provisioned — `admin` if TMS's
+- Login also requires TMS's `enable_scheduling_access = 1`, **except for a TMS
+  `permission_group = 'superuser'`, which is exempt** — the flag is a per-account grant, and
+  nobody grants it to a tier that already holds full access, so in practice none of the 15
+  TMS superusers has it (`docs/DECISIONS.md` #39). On a first successful login
+  with no matching local `users` row, one is auto-provisioned — `super_admin` if TMS's
   `permission_group` is `superuser`, otherwise `viewer` — as a one-time default, not an
   ongoing sync. A super_admin
   can pre-authorize a higher role for an email ahead of time via the admin "Add staff"

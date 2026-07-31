@@ -11,15 +11,27 @@ export function SelectionBar({
   onPublish: () => void;
   onClear: () => void;
 }) {
-  if (!count) return null;
+  // The bar keeps its slot in the layout even with nothing selected. Mounting and unmounting it
+  // shoved the whole grid down and back up every time a selection started or cleared, which read
+  // as the grid jumping under the pointer mid-select. `invisible` (visibility: hidden) keeps the
+  // reserved height exactly the bar's own height — no magic number to drift — while hiding it
+  // from paint, hit-testing, the tab order and the accessibility tree.
+  const active = count > 0;
   return (
-    <div className="flex shrink-0 items-center gap-3.5 bg-[#1a3d69] px-6 py-2.5 text-[13px] text-white">
+    <div
+      aria-hidden={!active}
+      className={`flex shrink-0 items-center gap-3.5 bg-[#1a3d69] px-6 py-2.5 text-[13px] text-white${
+        active ? "" : " invisible"
+      }`}
+    >
       <span className="font-bold">
-        {count} booking{count > 1 ? "s" : ""} selected
+        {count} booking{count === 1 ? "" : "s"} selected
       </span>
       <span className="font-light text-white/75">
         Drag to move the whole set — green means free; red means a clash and you&apos;ll be
-        asked to swap or overwrite. Click a selected booking to unselect it.
+        asked to swap or overwrite.{" "}
+        {count > 1 && <>Hold Shift mid-drag to place just the one you grabbed. </>}
+        Click a selected booking to unselect it.
       </span>
       <span className="flex-1" />
       {canPublish && (

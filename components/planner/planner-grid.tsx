@@ -13,11 +13,14 @@ import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { moveBookings, type MoveMode, type MoveSpec } from "@/lib/actions/booking-moves";
 import { undoBatch } from "@/lib/actions/undo";
 import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
+import { discardUnpublishedChanges } from "@/lib/actions/discard-changes";
 import { classifyForPublish } from "@/lib/publish-eligibility";
 import { changeKindFor, summariseChanges, type ChangeSummary } from "@/lib/planner-changes";
 import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip, GhostChip } from "./cell-chip";
+import { CellMoveMenu } from "./cell-context-menu";
+import { MoveSelectedDialog, type MoveRow } from "./move-selected-dialog";
 import { PlannerToolbar } from "./toolbar";
 import { StatusLegend } from "./status-legend";
 import { SelectionBar } from "./selection-bar";
@@ -25,6 +28,7 @@ import { ChangesBar } from "./changes-bar";
 import { ClashDialog, type Clash } from "./clash-dialog";
 import { PublishRangeDialog } from "./publish-range-dialog";
 import { PublishSelectedDialog } from "./publish-selected-dialog";
+import { DiscardChangesDialog } from "./discard-changes-dialog";
 import type { PublishExclusion } from "./publish-breakdown";
 import { BookingDrawer, type DrawerTarget } from "./booking-drawer";
 
@@ -75,6 +79,8 @@ type DragPreview = {
   origin: { date: string; unitId: number };
   keys: string[];
   target?: string;
+  /** Shift is down: only the grabbed cell is being placed, not the whole block. */
+  single: boolean;
   preview: Map<string, "ok" | "bad">;
   valid: boolean;
   moves: MoveSpec[];
@@ -96,6 +102,7 @@ export function PlannerGrid({
   unitSpecs,
   siteCapabilityRequirements,
   role,
+  actorId,
 }: {
   companyId: number;
   modalities: { id: number; name: string }[];
@@ -109,12 +116,19 @@ export function PlannerGrid({
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, CapabilityRequirement[]>;
   role: Role;
+  /** The logged-in user's id — who "discard my changes" acts on (bookings.updatedBy). */
+  actorId: number;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const canPublish = PUBLISH_ROLES.includes(role);
   const canUnlock = UNLOCK_ROLES.includes(role);
+  // Discarding your own changes is exactly as safe as Undo — same roles. Discarding
+  // everyone's can wipe out a colleague's in-progress edits regardless of ownership, so
+  // it's gated like unlocking a publish, not like Undo (docs/DECISIONS.md).
+  const canDiscardMine = PUBLISH_ROLES.includes(role);
+  const canDiscardEveryone = UNLOCK_ROLES.includes(role);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   // The changes view (docs/DECISIONS.md #29) — fades back everything TMS already has, leaving
@@ -141,7 +155,9 @@ export function PlannerGrid({
   const [anchor, setAnchor] = useState<{ date: string; unitId: number } | null>(null);
   const [drag, setDrag] = useState<DragPreview | null>(null);
   const [conflict, setConflict] = useState<{ moves: MoveSpec[]; clashes: Clash[] } | null>(null);
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [publishRange, setPublishRange] = useState<{ from: string; to: string } | null>(null);
+  const [discardMode, setDiscardMode] = useState<"mine" | "everyone" | null>(null);
   const [selectedPreflight, setSelectedPreflight] = useState<{
     eligible: PublishTarget[];
     eligibleSummary: ChangeSummary;
@@ -149,11 +165,31 @@ export function PlannerGrid({
   } | null>(null);
   const [pending, setPending] = useState(false);
   const dragRef = useRef<{ origin: { date: string; unitId: number }; keys: string[] } | null>(null);
-  const [undoStack, setUndoStack] = useState<string[]>(() => readStack(UNDO_STACK_KEY));
-  const [redoStack, setRedoStack] = useState<string[]>(() => readStack(REDO_STACK_KEY));
+  // Both stacks START EMPTY and are restored in the effect below — deliberately NOT read in a
+  // useState initialiser. That initialiser runs during render, where the server has no
+  // sessionStorage and returns []: with batches stored, the server sends "Undo disabled" and
+  // the client's first render says "Undo enabled", which is a hydration mismatch React refuses
+  // to patch up. One render with the buttons disabled is the price of reading browser-only
+  // state under SSR.
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const [redoStack, setRedoStack] = useState<string[]>([]);
+  const [stacksRestored, setStacksRestored] = useState(false);
 
-  useEffect(() => writeStack(UNDO_STACK_KEY, undoStack), [undoStack]);
-  useEffect(() => writeStack(REDO_STACK_KEY, redoStack), [redoStack]);
+  useEffect(() => {
+    setUndoStack(readStack(UNDO_STACK_KEY));
+    setRedoStack(readStack(REDO_STACK_KEY));
+    setStacksRestored(true);
+  }, []);
+
+  // Gated on `stacksRestored` so the write-back can't run during the mount pass and persist the
+  // initial [] over the batches still sitting in sessionStorage — which would defeat the whole
+  // point of storing them.
+  useEffect(() => {
+    if (stacksRestored) writeStack(UNDO_STACK_KEY, undoStack);
+  }, [undoStack, stacksRestored]);
+  useEffect(() => {
+    if (stacksRestored) writeStack(REDO_STACK_KEY, redoStack);
+  }, [redoStack, stacksRestored]);
 
   // Only REAL bookings — ghosts are excluded deliberately. A ghost is a rendering of where
   // TMS still has a booking a scheduler has moved (lib/db/tms/overlay.ts); it isn't one of
@@ -180,6 +216,14 @@ export function PlannerGrid({
   // types in the search box. It answers "what have we changed", not "what can I see".
   const changeSummary = useMemo(() => summariseChanges(bookings), [bookings]);
 
+  // Same computation, scoped to what the acting user currently owns — drives "discard my
+  // changes". "Owns" means current updatedBy, not original authorship: if someone else has
+  // since edited a booking you touched, it's no longer yours to discard (docs/DECISIONS.md).
+  const myChangeSummary = useMemo(
+    () => summariseChanges(bookings.filter((b) => b.updatedBy === actorId)),
+    [bookings, actorId],
+  );
+
   // Transient highlight on the cell we just jumped to from a ghost, so the eye lands on it
   // rather than on "some row scrolled past". Cleared on a timer, and on unmount.
   const [flashKey, setFlashKey] = useState<string | null>(null);
@@ -197,18 +241,65 @@ export function PlannerGrid({
     return map;
   }, [bookings]);
 
+  // Dates to check for the "available units only" filter below. Scoped to the current
+  // multi-select when one exists — a scheduler clearing a downed unit's block selects
+  // those bookings first, and wants units with room on THOSE dates, not just any gap
+  // somewhere in the loaded range. Falls back to every loaded day when nothing's selected.
+  const selectedDates = useMemo(() => {
+    if (checked.size === 0) return null;
+    const set = new Set<string>();
+    for (const k of checked) set.add(k.split("|")[0]);
+    return set;
+  }, [checked]);
+
+  // A unit "has room" if it has at least one cell, across the relevant dates, that isn't
+  // booked — matching the availability bar's own definition of free (bidding counts as
+  // free capacity, SPEC.md §13).
+  const unitsWithAvailability = useMemo(() => {
+    const relevantDays = selectedDates ? days.filter((d) => selectedDates.has(d.date)) : days;
+    const set = new Set<number>();
+    for (const u of units) {
+      for (const day of relevantDays) {
+        const b = bookingLookup.get(cellKey(day.date, u.id));
+        if (!b || b.status === "bidding") {
+          set.add(u.id);
+          break;
+        }
+      }
+    }
+    return set;
+  }, [units, days, bookingLookup, selectedDates]);
+
+  // Units holding the current selection. The filter below must never hide these — they're
+  // the source column(s) the scheduler is dragging FROM, and by definition they're full on
+  // the very dates selected (that's why the block is being moved off them at all). Hiding
+  // your own selection out from under you would make the checked chips undraggable.
+  const checkedUnitIds = useMemo(() => {
+    const set = new Set<number>();
+    for (const k of checked) set.add(Number(k.split("|")[1]));
+    return set;
+  }, [checked]);
+
+  const [availableOnly, setAvailableOnly] = useState(false);
+
   const visibleUnits = useMemo(() => {
-    if (!search.trim()) return units;
-    const q = search.toLowerCase();
-    return units.filter((u) => {
-      if (u.registration.toLowerCase().includes(q)) return true;
-      if ((u.description ?? "").toLowerCase().includes(q)) return true;
-      const unitSites = sitesByUnit.get(u.id);
-      if (!unitSites) return false;
-      for (const s of unitSites) if (s.includes(q)) return true;
-      return false;
-    });
-  }, [search, units, sitesByUnit]);
+    let list = units;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((u) => {
+        if (u.registration.toLowerCase().includes(q)) return true;
+        if ((u.description ?? "").toLowerCase().includes(q)) return true;
+        const unitSites = sitesByUnit.get(u.id);
+        if (!unitSites) return false;
+        for (const s of unitSites) if (s.includes(q)) return true;
+        return false;
+      });
+    }
+    if (availableOnly) {
+      list = list.filter((u) => unitsWithAvailability.has(u.id) || checkedUnitIds.has(u.id));
+    }
+    return list;
+  }, [search, units, sitesByUnit, availableOnly, unitsWithAvailability, checkedUnitIds]);
 
   const availabilityByDate = useMemo(() => {
     const map = new Map<string, number>();
@@ -327,7 +418,7 @@ export function PlannerGrid({
     }
     const origin = { date: day.date, unitId: unit.id };
     dragRef.current = { origin, keys: [...set] };
-    setDrag({ origin, keys: [...set], preview: new Map(), valid: false, moves: [], clashes: [], oob: false, dDelta: 0, uDelta: 0 });
+    setDrag({ origin, keys: [...set], single: false, preview: new Map(), valid: false, moves: [], clashes: [], oob: false, dDelta: 0, uDelta: 0 });
     e.dataTransfer.effectAllowed = "move";
     try {
       e.dataTransfer.setData("text/plain", "quest-move");
@@ -337,9 +428,7 @@ export function PlannerGrid({
   };
 
   const computePreview = useCallback(
-    (targetDate: string, targetUnitId: number) => {
-      const st = dragRef.current;
-      if (!st) return null;
+    (st: { origin: { date: string; unitId: number }; keys: string[] }, targetDate: string, targetUnitId: number) => {
       const dDelta = dateIdx.get(targetDate)! - dateIdx.get(st.origin.date)!;
       const uDelta = unitIdx.get(targetUnitId)! - unitIdx.get(st.origin.unitId)!;
       const moving = new Set(st.keys);
@@ -373,20 +462,39 @@ export function PlannerGrid({
     [dateIdx, unitIdx, days, units, bookingLookup],
   );
 
+  // What this drag would place right now. Shift narrows an IN-FLIGHT block drag down to just
+  // the cell that was grabbed, leaving the rest of the selection where it is — the escape hatch
+  // for a block that can't land contiguously anywhere (docs/DECISIONS.md #35).
+  //
+  // Read per-event during the drag rather than once at dragstart, and that matters: shift held
+  // at mousedown makes the browser extend the document's text selection instead of starting a
+  // drag, so the gesture fired only intermittently. Once a drag is in flight there's no
+  // selection to extend, and dragover/drop carry `shiftKey` just as well.
+  function narrowForShift(
+    st: { origin: { date: string; unitId: number }; keys: string[] },
+    shiftKey: boolean,
+  ) {
+    const single = shiftKey && st.keys.length > 1;
+    if (!single) return { st, single };
+    return { st: { origin: st.origin, keys: [cellKey(st.origin.date, st.origin.unitId)] }, single };
+  }
+
   const onCellDragOver = (e: React.DragEvent, day: DayInfo, unit: Unit) => {
     const active = dragRef.current;
     if (!active) return;
     e.preventDefault();
-    const res = computePreview(day.date, unit.id);
-    if (!res) return;
+    const { st, single } = narrowForShift(active, e.shiftKey);
+    const res = computePreview(st, day.date, unit.id);
     e.dataTransfer.dropEffect = res.valid ? "move" : "none";
     const tKey = cellKey(day.date, unit.id);
-    // Capture the ref's value now, synchronously — the updater below can run after a
-    // later event (e.g. drop) has already nulled dragRef.current via endDrag().
-    const { origin, keys } = active;
+    // Capture values now, synchronously — the updater below can run after a later event
+    // (e.g. drop) has already nulled dragRef.current via endDrag().
+    const { origin, keys } = st;
     setDrag((prev) => {
-      if (prev && prev.target === tKey) return prev;
-      return { origin, keys, target: tKey, ...res };
+      // `single` is part of the equality check, not just the target: tapping shift without
+      // moving the mouse still has to repaint the preview from "whole block" to "one cell".
+      if (prev && prev.target === tKey && prev.single === single) return prev;
+      return { origin, keys, target: tKey, single, ...res };
     });
   };
 
@@ -411,14 +519,30 @@ export function PlannerGrid({
     toast.success(result.message);
     pushUndo(result.batchId);
     router.refresh();
-    clearSelection();
+    // The selection FOLLOWS the bookings to their new cells rather than being cleared: a tick
+    // stays on until the scheduler takes it off (clicking the booking, or Clear selection).
+    // That's what makes placing a block one-at-a-time work — after each shift-drag the moved
+    // booking is still ticked at its destination and the unplaced ones are still ticked where
+    // they are, so the set you're working through stays visible and intact throughout.
+    const remap = new Map(moves.map((m) => [cellKey(m.fromDate, m.fromUnitId), cellKey(m.toDate, m.toUnitId)]));
+    setChecked((prev) => {
+      const next = new Set<string>();
+      for (const k of prev) next.add(remap.get(k) ?? k);
+      return next;
+    });
+    // Keep the shift-click range anchor pointing at the same booking, wherever it landed.
+    setAnchor((prev) => {
+      if (!prev) return prev;
+      const moved = moves.find((m) => m.fromDate === prev.date && m.fromUnitId === prev.unitId);
+      return moved ? { date: moved.toDate, unitId: moved.toUnitId } : prev;
+    });
   }
 
-  const onCellDrop = (e: React.DragEvent, day: DayInfo, unit: Unit) => {
-    e.preventDefault();
-    const res = computePreview(day.date, unit.id);
-    endDrag();
-    if (!res || (res.dDelta === 0 && res.uDelta === 0)) return;
+  // Shared by drag-drop and the right-click "move to unit" menu — one move pipeline, two
+  // triggers, so clash handling (swap/overwrite dialog) and undo behave identically either way.
+  function attemptMove(st: { origin: { date: string; unitId: number }; keys: string[] }, targetDate: string, targetUnitId: number) {
+    const res = computePreview(st, targetDate, targetUnitId);
+    if (res.dDelta === 0 && res.uDelta === 0) return;
     if (res.oob) {
       toast.error("Can't move there — part of the selection would fall outside the planner range");
       return;
@@ -428,7 +552,105 @@ export function PlannerGrid({
       return;
     }
     void applyMove(res.moves, "move");
+  }
+
+  const onCellDrop = (e: React.DragEvent, day: DayInfo, unit: Unit) => {
+    e.preventDefault();
+    const active = dragRef.current;
+    endDrag();
+    if (!active) return;
+    // Shift state is taken from the drop itself, so releasing over the target with shift held
+    // places only the grabbed booking — whatever the drag started as.
+    const { st } = narrowForShift(active, e.shiftKey);
+    attemptMove(st, day.date, unit.id);
   };
+
+  // Right-click "move to unit" (docs/DECISIONS.md #34): moves the whole current selection if
+  // the right-clicked cell is part of it, otherwise just that one cell — same rule `handleCellClick`
+  // already uses for what a plain click targets.
+  function moveCellToUnit(day: DayInfo, unit: Unit, targetUnitId: number) {
+    const k = cellKey(day.date, unit.id);
+    const keys = checked.has(k) ? [...checked] : [k];
+    attemptMove({ origin: { date: day.date, unitId: unit.id }, keys }, day.date, targetUnitId);
+  }
+
+  // The current selection, as dialog rows. Ghosts and published bookings can't be selected in
+  // the first place (bookingLookup excludes ghosts; handleCellClick opens rather than checks a
+  // locked cell), so anything in `checked` with a booking behind it is movable.
+  const moveRows: MoveRow[] = useMemo(() => {
+    const rows: MoveRow[] = [];
+    for (const k of checked) {
+      const b = bookingLookup.get(k);
+      if (!b) continue;
+      rows.push({
+        key: k,
+        date: b.date,
+        unitId: b.unitId,
+        unitLabel: unitById.get(b.unitId)?.registration ?? "?",
+        siteName: b.siteName,
+      });
+    }
+    return rows.sort((a, b) => a.date.localeCompare(b.date) || a.unitLabel.localeCompare(b.unitLabel));
+  }, [checked, bookingLookup, unitById]);
+
+  // Per-row destinations from the "Move selected bookings" dialog. Unlike a drag (one uniform
+  // date/unit delta applied to the whole block) each row here names its own target unit, on its
+  // own existing date — which is the point: a block coming off a downed unit rarely fits in one
+  // contiguous run anywhere else. Clash rules are the drag's: a target is only occupied if
+  // something is there that isn't itself moving away in this same batch.
+  function attemptExplicitMoves(assignments: { fromDate: string; fromUnitId: number; toUnitId: number }[]) {
+    const vacating = new Set(assignments.map((a) => cellKey(a.fromDate, a.fromUnitId)));
+    const moves: MoveSpec[] = [];
+    const clashes: Clash[] = [];
+    for (const a of assignments) {
+      const tKey = cellKey(a.fromDate, a.toUnitId);
+      const occupant = bookingLookup.get(tKey);
+      if (occupant && !vacating.has(tKey)) {
+        clashes.push({
+          unitLabel: unitById.get(a.toUnitId)?.registration ?? "?",
+          date: a.fromDate,
+          siteName: occupant.siteName,
+          status: occupant.status,
+        });
+      }
+      moves.push({ fromUnitId: a.fromUnitId, fromDate: a.fromDate, toUnitId: a.toUnitId, toDate: a.fromDate });
+    }
+    if (moves.length === 0) return;
+    if (clashes.length > 0) {
+      setConflict({ moves, clashes });
+      return;
+    }
+    void applyMove(moves, "move");
+  }
+
+  // Right-click shortcut for exactly two selected cells: swap them directly, reusing the same
+  // swap pipeline a drag onto an occupied cell already resolves to (moveBookings' "swap"
+  // mode computes the reciprocal reposition itself from a single MoveSpec). No clash dialog —
+  // picking "Swap" on a two-cell selection IS the confirmation.
+  async function handleSwapSelected() {
+    if (checked.size !== 2) return;
+    const [keyA, keyB] = [...checked];
+    const a = bookingLookup.get(keyA);
+    const b = bookingLookup.get(keyB);
+    if (!a || !b) return;
+    setPending(true);
+    const result = await moveBookings(
+      [{ fromUnitId: a.unitId, fromDate: a.date, toUnitId: b.unitId, toDate: b.date }],
+      "swap",
+    );
+    setPending(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success(result.message);
+    pushUndo(result.batchId);
+    router.refresh();
+    // Unlike applyMove's general remap (built for one-directional moves, where `moves` names
+    // every departing cell), a straight two-way swap doesn't change WHICH cells are selected
+    // — both slots stay occupied, just by each other's booking — so `checked`/`anchor` need
+    // no remap here.
+  }
 
   async function resolveConflict(choice: "swap" | "overwrite" | "cancel") {
     if (!conflict) return;
@@ -446,10 +668,14 @@ export function PlannerGrid({
   // mounted), and unit columns scroll horizontally behind a sticky date column.
   const goToMoved = useCallback(
     (to: { unitId: number; date: string }) => {
-      // If a search filter is hiding the destination column, clear it first — jumping to a
-      // column that isn't rendered would silently do nothing, which reads as a broken link.
+      // If a search or "available units only" filter is hiding the destination column,
+      // clear it first — jumping to a column that isn't rendered would silently do
+      // nothing, which reads as a broken link.
       const hidden = !visibleUnits.some((u) => u.id === to.unitId);
-      if (hidden) setSearch("");
+      if (hidden) {
+        setSearch("");
+        setAvailableOnly(false);
+      }
       const columns = hidden ? units : visibleUnits;
 
       const run = () => {
@@ -494,7 +720,7 @@ export function PlannerGrid({
   // actually does. Ghosts are never candidates — bookingLookup already excludes them, and
   // the range sweep below reads from `bookings` directly so it must skip them explicitly.
   const classify = useCallback(
-    (b: OverlayBooking) => classifyForPublish(b, publishableKeys),
+    (b: OverlayBooking) => classifyForPublish({ ...b, tmsCollision: !!b.tmsCollision }, publishableKeys),
     [publishableKeys],
   );
 
@@ -601,6 +827,35 @@ export function PlannerGrid({
     await applyPublish(preflightForRange(from, to).eligible);
   }
 
+  // Reverts to TMS's current version rather than undoing step by step — see
+  // lib/actions/discard-changes.ts for why this reuses undoBatch's snapshot restore
+  // instead of soft-deleting. Deliberately NOT pushed onto the undo stack (docs/DECISIONS.md):
+  // every event it produces is itself a normal, already-undoable booking_events row, but
+  // grouping several batches into one Ctrl/Cmd+Z step is a follow-up, not part of this pass —
+  // the confirmation dialog is the safety net here.
+  async function applyDiscard(mode: "mine" | "everyone") {
+    setPending(true);
+    const result = await discardUnpublishedChanges({
+      from: days[0]?.date ?? "",
+      to: days[days.length - 1]?.date ?? "",
+      companyId,
+      modalityId: activeModalityId,
+      mode,
+    });
+    setPending(false);
+    setDiscardMode(null);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    if (result.rowCount === 0 && result.skipped === 0) {
+      toast.info(result.message);
+      return;
+    }
+    toast.success(result.message);
+    router.refresh();
+  }
+
   // ── undo / redo — both call the same server action; redo is just "undo the undo" ──
   async function handleUndo() {
     if (!undoStack.length) {
@@ -646,6 +901,13 @@ export function PlannerGrid({
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       const typing = tag === "input" || tag === "textarea";
       if (e.key === "Escape") {
+        // The move dialog is *about* the selection, so backing out of it keeps the selection
+        // intact — otherwise dismissing it would silently undo the multi-select the scheduler
+        // just built, which is the expensive part to redo. Radix closes the dialog itself.
+        if (moveDialogOpen) {
+          setMoveDialogOpen(false);
+          return;
+        }
         clearSelection();
         setDrawerTarget(null);
         endDrag();
@@ -666,7 +928,7 @@ export function PlannerGrid({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearSelection, endDrag, undoStack, redoStack, pending]);
+  }, [clearSelection, endDrag, undoStack, redoStack, pending, moveDialogOpen]);
 
   // ── live updates (SPEC.md §1/§11: ~10s polling) ──
   // Skipped while a mutation is in flight or a drag is live, so a background refresh can't
@@ -694,6 +956,9 @@ export function PlannerGrid({
         onModalityChange={changeModality}
         search={search}
         onSearchChange={setSearch}
+        availableOnly={availableOnly}
+        onToggleAvailableOnly={() => setAvailableOnly((v) => !v)}
+        availableOnlyScoped={!!selectedDates}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
         changesOnly={changesOnly}
@@ -719,12 +984,17 @@ export function PlannerGrid({
       {changesOnly && (
         <ChangesBar
           summary={changeSummary}
+          myTotal={myChangeSummary.total}
           canPublish={canPublish}
+          canDiscardMine={canDiscardMine}
+          canDiscardEveryone={canDiscardEveryone}
           // Same dialog as "Publish upcoming…", over the same range — the changes view is a
           // way of *reading* the range before publishing it, not a second publish path.
           onReviewPublish={() =>
             setPublishRange({ from: days[0]?.date ?? "", to: days[days.length - 1]?.date ?? "" })
           }
+          onDiscardMine={() => setDiscardMode("mine")}
+          onDiscardEveryone={() => setDiscardMode("everyone")}
           onExit={() => setChangesOnly(false)}
         />
       )}
@@ -857,20 +1127,43 @@ export function PlannerGrid({
                             onGoTo={movedGhost.movedTo ? () => goToMoved(movedGhost.movedTo!) : undefined}
                           />
                         ) : (
-                        <CellChip
-                          booking={booking}
-                          dimmed={dimmed}
-                          warning={warning}
-                          checked={booking ? checked.has(k) : false}
-                          isOpen={drawerTarget?.unitId === u.id && drawerTarget?.date === day.date}
-                          draggable={!!booking}
-                          preview={drag?.preview.get(k) ?? null}
-                          flash={flashKey === k}
-                          pendingRemoval={pendingRemoval?.siteName ?? null}
-                          onClick={(e) => handleCellClick(e, day, u, booking)}
-                          onDragStart={(e) => startDrag(e, day, u)}
-                          onDragEnd={endDrag}
-                        />
+                        (() => {
+                          const chip = (
+                            <CellChip
+                              booking={booking}
+                              dimmed={dimmed}
+                              warning={warning}
+                              checked={booking ? checked.has(k) : false}
+                              isOpen={drawerTarget?.unitId === u.id && drawerTarget?.date === day.date}
+                              draggable={!!booking}
+                              preview={drag?.preview.get(k) ?? null}
+                              flash={flashKey === k}
+                              pendingRemoval={pendingRemoval?.siteName ?? null}
+                              onClick={(e) => handleCellClick(e, day, u, booking)}
+                              onDragStart={(e) => startDrag(e, day, u)}
+                              onDragEnd={endDrag}
+                            />
+                          );
+                          // Only booked, unpublished cells get the menu — same rule that
+                          // already gates dragging (published bookings are locked until an
+                          // admin unlocks them).
+                          if (!booking || booking.publishedAt) return chip;
+                          return (
+                            <CellMoveMenu
+                              day={day}
+                              unit={u}
+                              cellKey={k}
+                              checked={checked}
+                              visibleUnits={visibleUnits}
+                              computePreview={computePreview}
+                              onMove={(targetUnitId) => moveCellToUnit(day, u, targetUnitId)}
+                              onOpenMoveDialog={() => setMoveDialogOpen(true)}
+                              onSwapSelected={() => void handleSwapSelected()}
+                            >
+                              {chip}
+                            </CellMoveMenu>
+                          );
+                        })()
                         )}
                       </div>
                     );
@@ -902,6 +1195,18 @@ export function PlannerGrid({
 
       <ClashDialog clashes={conflict?.clashes ?? null} onResolve={(c) => void resolveConflict(c)} />
 
+      <MoveSelectedDialog
+        open={moveDialogOpen}
+        rows={moveRows}
+        units={units}
+        isOccupied={(date, unitId) => bookingLookup.has(cellKey(date, unitId))}
+        onConfirm={(assignments) => {
+          setMoveDialogOpen(false);
+          attemptExplicitMoves(assignments);
+        }}
+        onClose={() => setMoveDialogOpen(false)}
+      />
+
       <PublishRangeDialog
         open={!!publishRange}
         days={days}
@@ -918,6 +1223,15 @@ export function PlannerGrid({
         excluded={selectedPreflight?.excluded ?? []}
         onConfirm={() => void confirmPublishSelected()}
         onClose={() => setSelectedPreflight(null)}
+      />
+
+      <DiscardChangesDialog
+        open={discardMode !== null}
+        mode={discardMode ?? "mine"}
+        summary={discardMode === "everyone" ? changeSummary : myChangeSummary}
+        pending={pending}
+        onConfirm={() => void applyDiscard(discardMode ?? "mine")}
+        onClose={() => setDiscardMode(null)}
       />
     </div>
     </StatusCatalogProvider>

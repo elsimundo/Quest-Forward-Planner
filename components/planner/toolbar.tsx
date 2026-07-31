@@ -47,6 +47,9 @@ export function PlannerToolbar({
   onModalityChange,
   search,
   onSearchChange,
+  availableOnly,
+  onToggleAvailableOnly,
+  availableOnlyScoped,
   statusFilter,
   onStatusFilterChange,
   changesOnly,
@@ -70,6 +73,10 @@ export function PlannerToolbar({
   onModalityChange: (id: number) => void;
   search: string;
   onSearchChange: (v: string) => void;
+  availableOnly: boolean;
+  onToggleAvailableOnly: () => void;
+  /** True when the filter is scoped to the current multi-select rather than the whole loaded range. */
+  availableOnlyScoped: boolean;
   statusFilter: string | null;
   onStatusFilterChange: (s: string | null) => void;
   changesOnly: boolean;
@@ -107,6 +114,21 @@ export function PlannerToolbar({
         placeholder="Search units or sites…"
         className="h-8 w-[200px]"
       />
+      {/* Hides fully-booked unit columns, same mechanism as the search box above (shrinks
+          the grid's columns) rather than the status pills below (which dim in place) —
+          useful when redistributing a block off a unit that's gone down, so the client
+          isn't scrolling past columns with no room left. */}
+      <Pill
+        active={availableOnly}
+        onClick={onToggleAvailableOnly}
+        title={
+          availableOnlyScoped
+            ? "Hide unit columns with no room on any of the selected dates"
+            : "Hide unit columns that are fully booked across the loaded date range"
+        }
+      >
+        Available units
+      </Pill>
       <span className="h-6 w-px bg-[#e6e6e6]" />
       <Pill active={!statusFilter} onClick={() => onStatusFilterChange(null)}>
         All statuses

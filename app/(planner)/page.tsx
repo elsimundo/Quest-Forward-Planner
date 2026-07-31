@@ -44,9 +44,12 @@ export default async function PlannerPage({
 
   const { company: companyParam, modality: modalityParam } = await searchParams;
 
-  // Hard company scoping: a non-super_admin's companyId is fixed server-side and the
-  // `?company=` param is never consulted for them — only super_admin's picker reads it,
-  // and even then only to select among companies that actually exist.
+  // Hard company scoping: a company-locked user's companyId is fixed server-side and the
+  // `?company=` param is never consulted for them. It's read only for `{kind:"any"}` — a
+  // super_admin, or Quest's own staff (TMS `company_id IS NULL`, docs/DECISIONS.md #40) — and
+  // even then only to select among companies that actually exist. Gated on the access kind
+  // rather than the role specifically so that both groups get the picker without a second
+  // rule here to keep in sync.
   let companyId: number;
   let pickableCompanies: { id: number; name: string }[] = [];
   if (actor.companyAccess.kind === "any") {
@@ -94,6 +97,7 @@ export default async function PlannerPage({
           modalityId={activeModality.id}
           modalities={modalities}
           role={actor.role}
+          actorId={actor.id}
         />
       )}
     </div>
@@ -105,11 +109,13 @@ async function PlannerBody({
   modalityId,
   modalities,
   role,
+  actorId,
 }: {
   companyId: number;
   modalityId: number;
   modalities: { id: number; name: string }[];
   role: (typeof ROLES)[number];
+  actorId: number;
 }) {
   const units = await getActiveUnits(companyId, modalityId);
 
@@ -153,6 +159,7 @@ async function PlannerBody({
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         role={role}
+        actorId={actorId}
       />
     </div>
   );

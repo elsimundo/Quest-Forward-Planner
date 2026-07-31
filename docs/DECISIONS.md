@@ -1144,6 +1144,415 @@ question.
 as absent, not reassuring, on the common one. #29 fixed this on the chip with the wash; this
 is the same fix applied to the one other place a scheduler reads a single booking's status.
 
+### 34. Right-click "Move to unit" — a narrow, client-approved exception to the context-menu deferral
+
+**Asked for:** a way to redistribute a block of bookings off a unit (e.g. it's gone down)
+without dragging through however many unit columns the fleet has to find one with room.
+
+**Decided:** two additions, built together. First, an **"Available units" toggle** in the
+toolbar (`components/planner/planner-grid.tsx`) that hides unit columns with no free
+capacity — scoped to the current multi-select's dates when one exists (the actual dates
+being redistributed), otherwise the whole loaded range. It never hides a unit that
+currently holds part of the selection, even if that unit is (by definition) full on those
+exact dates — the first version of this shipped without that guard and made the very
+column a scheduler was dragging from disappear out from under them.
+
+Second, **right-click a booked, unpublished cell → "Move to unit"** → a submenu of the
+same filtered/visible unit list, each entry showing a clash count if landing there would
+collide with an existing booking. Picking one calls the exact same
+`computePreview`/clash-detection/`applyMove` pipeline a drag already uses (refactored to
+take an explicit `{origin, keys}` argument instead of always reading the drag ref, so both
+triggers share one code path) — the swap/overwrite dialog, undo, and publish-eligibility
+all behave identically regardless of which one was used.
+
+**Why right-click, specifically:** this app replaces an Excel workbook — right-click-to-act
+on a cell is the client's existing trained reflex, not a new pattern being introduced. And
+because it's implemented as a second front door onto the same move pipeline rather than a
+parallel reimplementation, it doesn't create the "two mental models for one action" risk a
+bolted-on menu usually would.
+
+**SPEC.md §14 lists "right-click context menu" as a deferred, phase-2 item** — that entry
+is about a general-purpose menu (copy/paste, delete, etc.). This ships one specific action
+ahead of that, deliberately, at the client's request; §14 now calls out the exception by
+name rather than silently drifting from what's built.
+
+**Not chosen:** *Hiding unavailable units in the submenu* (matching the toolbar toggle's
+column-hiding) — rejected once the toolbar toggle's own hide-the-source-column bug surfaced
+the same failure mode. A dropdown is short enough that listing every candidate with its
+clash count costs nothing, and never makes a unit seem to vanish. *A general context menu
+built now, ahead of the client asking for the rest of it* — rejected; scope creep back
+into the phase-2 item this was meant to carve a single exception out of, not replace.
+
+### 35. Redistributing a block: shift-drag one at a time, or a per-row dialog
+
+**Found:** #34 made it easy to *find* a free unit, but not to actually place a block into one.
+A drag applies a single uniform date/unit offset to the whole selection, and
+`attemptMove` is all-or-nothing: if any one cell in the block would land on an occupied slot,
+the entire move stops at the clash dialog. A run of bookings coming off a downed unit almost
+never fits contiguously anywhere else, so in practice nothing got placed — the client's words:
+*"if they flash no of them get placed."*
+
+**Decided:** two ways to place a selection one booking at a time, both feeding the existing
+move pipeline.
+
+1. **Shift *mid-drag* places only the grabbed cell.** Start the drag normally — the whole block
+   moves, as before — then hold shift and only the booking actually grabbed is placed, leaving
+   the rest of the selection where it is.
+
+   **A move no longer clears the selection; the selection follows the bookings.** `applyMove`
+   used to call `clearSelection()`, which made one-at-a-time placement useless — the first
+   shift-drag threw away the very set being worked through. It now remaps each moved cell's key
+   from its old position to its new one, so a tick stays on until the scheduler takes it off
+   (clicking the booking, or Clear selection). After each shift-drag the placed booking is still
+   ticked at its destination and the unplaced ones are still ticked where they are. The
+   shift-click range anchor is remapped the same way so it keeps pointing at the same booking.
+
+   **Shift is read per-event during the drag, not once at dragstart** — the first attempt did
+   the latter and worked only intermittently. Shift held at *mousedown* makes the browser
+   extend the document's text selection instead of initiating a drag, so the drag frequently
+   never started. (A contributing bug: `CellChip`'s draggable branch was missing `select-none`,
+   which `GhostChip` already had — fixed, and commented, since removing it would silently
+   resurrect this.) Once a drag is in flight there is no selection to extend, and
+   `dragover`/`drop` carry `shiftKey` just as well. `single` is part of the drag-preview state
+   and its equality check, so tapping shift without moving the mouse still repaints the preview
+   from "whole block" to "one cell".
+
+   **Not a different modifier:** Alt/Option and Ctrl mean *copy* in HTML5 drag-and-drop. With
+   `effectAllowed = "move"` the browser resolves a requested copy to `dropEffect = "none"` and
+   rejects the drop outright, so switching keys would break the gesture rather than fix it.
+   Shift means *move*, which is the semantics actually wanted here.
+2. **Right-clicking a multi-select opens a per-row dialog** (`move-selected-dialog.tsx`)
+   instead of #34's submenu: one row per selected booking, each keeping its own date and
+   picking its own destination unit from a dropdown, with occupied units flagged inline.
+   Rows default to "Keep where it is" so confirming an accidentally-opened dialog is a no-op.
+   A single-cell right-click still gets the simple submenu — a modal for one row is friction,
+   not help.
+
+**Why the dialog doesn't send the whole block to one unit:** that's what a horizontal drag
+already does, and it re-creates the exact clash the block is usually being moved to escape.
+The per-row form is the thing neither drag nor #34's submenu could express.
+
+**Clash handling is unchanged and shared.** `attemptExplicitMoves` applies the drag's own rule
+— a target counts as occupied only if something is there that isn't itself vacating in the same
+batch — and hands any real conflict to the existing swap/overwrite `ClashDialog`. The one new
+check is *self*-collision (two rows sent to the same unit on the same date), caught in the
+dialog and blocking confirm, because `ClashDialog` explains a conflict with an existing booking
+and has no meaningful swap/overwrite answer for two of your own rows fighting each other.
+
+**Escape keeps the selection while the dialog is open**, unlike everywhere else in the grid.
+The dialog is *about* the selection; dismissing it and silently discarding the multi-select
+would throw away the expensive part to rebuild.
+
+**Not chosen:** *Making block drags partial — place what fits, report the rest* — rejected as
+a silent partial success on the primary interaction, where "some of these moved and some
+didn't" is exactly the ambiguity the clash dialog exists to prevent. Shift-drag makes the
+one-at-a-time case explicit instead. *A bulk conflict-resolution UI inside the dialog* —
+rejected as a second clash model to keep in sync with the first.
+
+### 36. Stage B4 — collision detection, and why it didn't fire on a booking added directly in TMS
+
+**Reported:** a scheduler booked CT40 on 6 March in the planner (Unconfirmed, no linked TMS
+booking), then added a *different* location for CT40/6 March directly into TMS's own
+database. No warning appeared anywhere in the planner.
+
+**Root cause:** Stage B4 of `docs/OVERLAY_BUILD_PLAN.md` — "an amendment and a *different* TMS
+booking on the same unit and date" — was scoped but never built. Without it, the merge in
+`lib/db/tms/overlay.ts` had no rule for two REAL (non-ghost) rows landing in the same slot: the
+untouched-TMS-booking branch pushed the new TMS row unconditionally, the amendment loop pushed
+the local booking unconditionally, and `bookingLookup` in `planner-grid.tsx` — a plain `Map`
+keyed by unit+date — silently kept whichever one was inserted last. One booking simply didn't
+render, with nothing to say so.
+
+**Decided:** built B4 as scoped — computed on read, no background job, reusing the existing
+5-minute TMS cache. `OverlayBooking.tmsCollision` (`lib/db/tms/overlay.ts`) is set whenever an
+amendment's slot also holds a live TMS booking it isn't linked to. New `⨯` badge (red, bottom-
+left, same corner as `⇄`/`↻`) — priority `⇄` (legacy) > `⨯` (collision) > `↻` (supersede),
+same rule as the existing two: different colours and symbols so none is ever mistaken for
+another while all exist in the codebase at once. Drawer shows a banner naming what TMS has
+there. `classifyForPublish` (`lib/publish-eligibility.ts`) gained a `tms-collision` exclusion,
+checked ahead of `tms-supersedes` — a collision has no shared lineage to reconcile (two
+different bookings wanting one slot), which is more fundamental than "TMS changed a booking we
+already amended." `publishBookings` (`lib/actions/publish.ts`) re-derives it fresh at commit
+time against live TMS, the same pattern C3/D1 already established for `tmsSupersedes`, rather
+than trusting a client-sent flag.
+
+**No new resolution action.** Unlike `resolveTmsSupersede` (C3), a collision doesn't have two
+versions of the same thing to pick between — the existing Clear and drag-to-move already cover
+every real resolution (defer to TMS, or move the local booking elsewhere). Adding a bespoke
+resolve flow here would be a second mechanism doing what the drawer's footer already does.
+
+**Known gap, not fixed here:** detection is on-read only, per B4's own scope — it surfaces the
+next time anyone opens or refreshes the grid for that date, bounded by the 5-minute cache TTL
+plus however long until someone looks. It does not proactively notify anyone the moment the
+TMS row is added. A proactive alert (background polling tighter than the 5-minute display
+cache, plus a delivery channel) is a separate, larger feature — planned in
+`docs/COLLISION_ALERTS_PLAN.md`, not built, and Email was already deferred by the client
+(`docs/TMS_INTEGRATION_PLAN.md` §12: "we can wire up brevo later").
+
+### 37. Right-click "Swap" for exactly two selected cells
+
+**Asked:** with two cells selected, a one-click right-click "switch them" action.
+
+**Scope tension, flagged before building:** SPEC.md §14 scopes the v1 right-click menu to
+one narrow, client-approved action ("Move to unit") and explicitly says it is "not a
+reopening of the general context-menu item" — a general multi-action context menu is listed
+out of scope. A second distinct menu item is a small step past that literal wording, even
+though it adds no new underlying capability: the existing "Move N selected bookings…" dialog
+(#35) can already produce the identical outcome today, in two picks (each row choosing the
+other's unit as its destination). Put to the user rather than decided unilaterally; confirmed
+— add it.
+
+**Decided:** `CellMoveMenu` (`components/planner/cell-context-menu.tsx`) shows "⇄ Swap these
+two bookings" above the usual "Move N selected…" item whenever exactly two cells are
+selected and the right-clicked cell is one of them. `handleSwapSelected`
+(`planner-grid.tsx`) calls `moveBookings` (`lib/actions/booking-moves.ts`) directly with a
+**single** `MoveSpec` (A→B) and `mode: "swap"` — no clash dialog, because picking "Swap" on a
+two-cell selection already is the confirmation. `moveBookings`'s swap mode already computes
+the reciprocal reposition itself (whatever occupies the target slot moves into the vacated
+origin) — this is the exact mechanism a drag-onto-an-occupied-cell already resolves to via
+`ClashDialog`'s "Swap bookings" button, just invoked directly instead of via a drag+clash.
+
+**Not routed through `applyMove`.** That helper's checked-set remap assumes `moves` names
+every departing cell (built for one-directional block moves), and would incorrectly drop one
+of the two keys from `checked` here — a swap's reciprocal half never appears in `moves` at
+all, it's inferred from the clash. A straight two-way swap doesn't actually change *which*
+cells are selected (both stay occupied, just by each other's booking), so the correct
+behaviour is no remap at all — `handleSwapSelected` does its own success handling
+(toast/undo/refresh) rather than reusing `applyMove`.
+
+### 38. The cell fill is the status indicator, and the label went neutral to make it so
+
+**Asked for:** *"the cell bgs should be the indicator of status not the text colour"* — and, on
+the follow-up, the reason: *"its easy to see at a glance over the text colour being the
+indicator."*
+
+**The actual problem.** Nominally the fill was already the indicator — `CellChip` has always
+painted `st.bg`. But the eight seeded `bg` values were each status's `bar` colour at roughly
+**7%** over white, which is close enough to white that `cancelled`'s `#f9ebf6` and
+`confirmed`'s `#ffffff` are the same colour in a wall of forty cells. What actually
+distinguished them was the *label*, drawn in the status's saturated `text` (`cancelled`'s
+`#7d2f6c`). So the indicator had migrated from the fill to the text without anyone deciding
+that — which is exactly backwards for glanceability: a 12px two-line site name is a far worse
+carrier of "which status is this" than a 40px block of colour.
+
+Worth recording that **fixing only the text made it strictly worse before it got better.** The
+first pass neutralised the label and stopped there, on the assumption the fills were already
+doing their job. They weren't, and with the text neutral there was no indicator left at all —
+the grid went uniformly white. The two halves are one change, not two.
+
+**Decided:** two things together.
+
+1. **The label is a fixed `#333333`** in `CellChip` and `GhostChip`
+   (`components/planner/cell-chip.tsx`) instead of `st.text` — the same neutral the mock-up
+   already used for `confirmed`. `st.text` is untouched in the catalogue and still used where a
+   status *names itself* (the drawer's status picker) rather than where it colours a booking.
+2. **Every non-`confirmed` `bg` moved to its own `bar` colour at 28% over white** — one
+   derivation instead of eight hand-picked tints, so the palette is internally consistent and a
+   future admin-added status can follow the rule. `lib/statuses.ts` for the seed and the render
+   fallback; migration `0014_status_bg_saturation.sql` for the live rows.
+
+**Why 28%, and why it's a ceiling.** Two things bound it from above. The fixed `#333333` label
+has to stay legible (all eight clear 8:1, comfortably AAA), and — the tighter constraint — the
+sync wash of #31/#32 works by mixing 14% of the blue accent *into* this same `bg`, so the more
+saturated the base, the less that wash reads. Measured, the wash's RGB delta drops from ~33 on
+the old tints to ~29 at 28%, which still reads; past that it degrades fast. The ratio is stated
+in both places with a note to retune them together.
+
+**Why `confirmed` stays pure white.** It's the overwhelming majority of the grid, so tinting it
+would make everything loud and leave nothing to read the exceptions against. More concretely,
+"Confirmed in the planner but not yet in TMS" is the single most common thing the blue wash has
+to say, and that wash needs a white base to say it — #32 exists precisely because a wash on a
+near-white base was already marginal.
+
+**Admin colours are not clobbered.** `color_bg` is editable at runtime
+(`/admin/booking-statuses`), so each `UPDATE` in 0014 is guarded on the current value still
+being the original seed colour. Anything already recoloured by hand keeps its colour.
+
+**Known remaining weak pair:** `tbc` (`#fbdbca`) and `bankholiday` (`#f6e7c2`) are both warm
+pales and stay the closest two in the set, because their `bar` colours — orange `#f17f42` and
+amber `#e0a826` — are genuinely adjacent hues. Separating them properly means changing a brand
+`bar` colour, which is a client call, not a rendering one. Flagged rather than fixed.
+
+**Not chosen:** *keeping `st.text` and only saturating the fills* — two competing indicators is
+what made the grid hard to read in the first place, and the client asked for one. *A flat
+"status" colour per cell with no white default* — loses `confirmed`-as-neutral, which the Excel
+workbook and the mock-up both relied on.
+
+### 39. TMS `superuser` is exempt from `enable_scheduling_access`, and provisions as `super_admin`
+
+**Reported:** both Quest-internal accounts (`Simon`, `jamesw`) could not sign in despite being
+TMS superusers. **Stated rule:** *"superusers do not need scheduling access 1, only any other
+user — this is because superusers should have full access."*
+
+**The bug, and why #17 got it wrong.** #17 gated login on `enable_scheduling_access = 1`, chosen
+after inspecting the schema as the purpose-built "may use scheduling apps" column. That was the
+right column and the wrong scope: it's a **per-account grant**, and nobody grants a superuser a
+permission the tier already implies. Measured against live TMS: **all 15 superusers have
+`enable_scheduling_access = 0`**, and all 15 have `company_id IS NULL`. So the population locked
+out was exactly the people meant to administer the planner, while ordinary staff got in
+normally — the gate was inverted for the one tier that mattered.
+
+**Decided:** two changes in `verifyCredentials`, sharing one `isTmsSuperuser` predicate so the
+two tests can't drift:
+
+1. **The gate is skipped for a superuser** — `!isTmsSuperuser(tmsUser) &&
+   !tmsUser.enableSchedulingAccess`. Ordinary accounts are untouched and still need the flag.
+2. **First-login provisioning gives `super_admin`, not `admin`** — reversing #17's explicit
+   "nothing here ever auto-provisions `super_admin`".
+
+**Why (2) was not optional.** Fixing only (1) was tested and still left `jamesw` rejected. A
+superuser has no TMS `company_id`, and the company gate (#22) admits a non-`super_admin` only by
+matching their TMS company to a local one — so `admin` wasn't a *lesser* grant here, it was
+**none**: authenticate, then bounce at the next gate. `super_admin` is the only role that
+expresses "full access, no company affiliation", which is what the TMS tier means. #17's
+reasoning — that never auto-provisioning the top tier is what makes it safe to exempt
+`super_admin` from company scoping — was sound in isolation but assumed the top tier would be
+reached by promotion through the admin UI. That's unreachable when nobody can log in to do the
+promoting.
+
+**What this widens, stated plainly:** all 15 TMS superusers now get top-tier, cross-company
+planner access on first login. That was put to the user with the full list and the trade-off
+before being implemented, not assumed. It's bounded and auditable: the tier is 15 named
+Quest/Flow Media internal accounts, TMS is the client's own system of record for identity, and
+because provisioning is a **one-time default** (unchanged from #17), demoting someone in the
+planner afterwards sticks and is never re-escalated by their TMS tag on a later login.
+
+**Not chosen:** (a) *Pre-authorising named individuals with `pnpm db:create-user`* — no policy
+change and keeps #17 intact, but leaves every future superuser locked out until somebody
+remembers, which is the same failure that produced this report. (b) *Provisioning `admin` and
+exempting superusers from the company gate instead* — grants effectively the same power while
+the role label understates it, and would require threading TMS state into `getCompanyAccess`,
+which today derives everything from the local `users` row. Rejected as more moving parts for a
+less honest result.
+
+**Still open, deliberately not assumed:** this app reads `scheduling_permission_group` into
+`TmsUser` and never uses it. All 10 grant-holding TMS users are `'admin'` there; both reporting
+superusers are `'read_only'`. `docs/TMS_INTEGRATION_PLAN.md` §7 maps that column to
+`viewer`/`scheduler`, but the code doesn't implement it — local role is the only authority.
+Whether `read_only` should constrain what someone can do in the planner is a client question
+(`SPEC.md` §13), untouched here.
+
+### 40. A TMS `company_id` of NULL means Quest's own staff — and they see every company
+
+**Stated by the user (2026-07-30):** *"if a users company_id is null that means they are quest
+staff and should be able to see all companies."*
+
+**What was wrong.** #22 read a NULL `company_id` as *"no company, so nothing to show them"* and
+rejected the login. That inverted the field's meaning: TMS leaves `company_id` NULL precisely
+for **internal Quest people**, who aren't affiliated to one client company because they work
+across all of them. The check was denying access to the group with the broadest legitimate need
+for it.
+
+**Decided:** NULL `company_id` grants `{kind:"any"}`, the same company access `super_admin`
+already had. Two places, because the login gate and the enforcement point are separate:
+
+- `verifyCredentials` no longer throws `NoCompanyAccessError` for a NULL company. Anyone *with*
+  a company_id is still rejected if we hold no data for that company.
+- `getCompanyAccess` (`lib/auth/company-access.ts`) returns `{kind:"any"}` when the local row's
+  `tmsCompanyId` is NULL.
+
+The second one is load-bearing: fixing only the login gate would have admitted a Quest-staff
+`viewer` and then failed every company-scoped query, since `getCompanyAccess` returned `null`
+for them — a worse outcome than the clean rejection it replaced.
+
+**One condition had to be split.** `getCompanyAccess` tested `!user?.tmsCompanyId`, conflating
+"no such user row" with "user row whose company is NULL". Those now return **opposite** answers
+(deny vs. full access), so they're separate branches, with `=== null` rather than a falsy test —
+which also stops a `company_id` of `0` being read as "no company".
+
+**"Any" is still never a blended view.** It means *may switch between* companies via the picker,
+one at a time — the rule from #22/#23 that no grid ever mixes two companies is unchanged. The
+planner page already gated the picker on `companyAccess.kind === "any"` rather than on the role,
+so Quest staff get it with no extra rule to keep in sync; only a stale comment there needed
+correcting.
+
+**Scope of what this widens.** 220 live TMS users have a NULL `company_id` (78 engineer, 76
+manager, 16 staff, 16 transport_manager, 15 superuser, 10 finance_manager, 9 senior_manager).
+**Today this changes nothing observable:** none of the 205 non-superusers holds
+`enable_scheduling_access = 1`, so none can log in at all, and the 15 superusers already get
+`{kind:"any"}` via `super_admin` (#39). It matters the moment TMS grants scheduling access to a
+Quest-internal engineer or manager — who previously would have been rejected at login, and now
+lands as a `viewer` able to switch between companies. Role still governs what they can *do*;
+this axis only governs *which company's* rows they may touch.
+
+**Not chosen:** treating "Quest staff" as a separate `CompanyAccess` variant, or a new local
+role. Both add a third state to an axis that already had exactly the right two — the existing
+`{kind:"any"}` means "not company-locked", which is precisely what a Quest-internal account is.
+
+### 41. "Corrective works / service" recoloured off the app's own blue accent, onto sky blue
+
+**Reported by the user:** *"the corrective works and confirmed in forward planner blues are too
+similar."*
+
+**The cause.** `service`'s bar/bg (`#2b7bb9`/`#c4daeb`) and the "not yet in TMS" sync wash
+(#31/#32, the app's blue accent `#2b7bb9` mixed into whatever status a booking has) are the same
+hue by construction — `service` had simply always used the app's own interactive blue as its
+status colour, which happened not to matter until #38/#39 made status fills the primary
+signal on a cell (before that, colours were pale enough across the board that this specific
+collision wasn't the thing you'd notice first).
+
+**Decided, in two steps within the same session.** Offered a genuinely different hue (teal) or a
+hue-shifted-but-still-blue option, with the tradeoff of each stated plainly. Teal was picked
+first, shipped (migration `0015_corrective_works_teal.sql`, bar `#1a9e8f`), and seen live — at
+which point the user preferred staying in the blue family after all. Final value: bar `#2f9fd6`,
+bg `#c5e4f4`, text `#0a5273` (6.39:1 against the new bg — AAA), migration
+`0016_corrective_works_sky_blue.sql`. Both migrations are kept rather than collapsed into one:
+0015 genuinely was live (verified in the running app) before being superseded, and the project's
+own rule is new migrations over edited ones. `lib/statuses.ts` reflects only the final value.
+Both migrations guard on the specific value they expect to find (0015 on the original blue, 0016
+on 0015's teal) so a fresh database replays both in order, and an admin who hand-recoloured
+`service` in between keeps their own colour rather than being overwritten by either step.
+
+**Why sky blue over teal.** RGB distance from the wash accent `#2b7bb9` is ~46 — enough that a
+plain Corrective Works cell and a washed Confirmed cell read as different colours — while
+staying close enough in hue that an *unpublished* Corrective Works booking (which washes toward
+`#2b7bb9` same as any other status) lands near its own resting colour rather than jumping hue
+entirely the way teal would have. Teal remains the safer choice against the wash in the abstract
+(zero collision risk under any circumstance, not just reduced), but the user weighed seeing both
+live and chose to stay in the blue family.
+
+**Not touched:** the wash accent itself (`CHANGE_COLOR` in `cell-chip.tsx`, `#2b7bb9`) — it's the
+app's general interactive blue (buttons, focus rings, `SPEC.md` links), client-mandated to be
+exactly this blue (#32) and applied uniformly across all eight statuses (#31). Recolouring the
+wash instead of `service` would have meant either breaking that uniformity for Confirmed alone
+(rejected in #31 already, as narrower than the architecture) or changing the wash for every
+status, which is a much bigger, already-settled decision to reopen for a one-status collision.
+
+**Known drift:** `reference/quest-ct-forward-planner.jsx` still defines its own `service` as
+`T.blue`/`T.blueDark` — the same structural collision, unfixed there. Left alone per CLAUDE.md
+(the mock-up isn't edited unilaterally); flagged the same as #38's drift.
+
+### 42. Bulk "discard unpublished changes" reuses undo's snapshot restore, not soft-delete
+
+**Decided:** the changes bar's "Discard my changes" / "Discard everyone's changes" buttons
+revert unpublished bookings by repeatedly calling the same transaction logic as `undoBatch`
+(`lib/actions/undo.ts`, factored out as `undoBatchWithinTx`), walking each affected row's
+`booking_events` history backwards until nothing unpublished remains in the visible date
+range. "Mine" is scoped by current ownership (`bookings.updatedBy`/`deletedBy`), not
+original authorship — if someone else has since edited a row you touched, it's no longer
+yours to discard, and `undoBatch`'s existing conflict check (refusing to reach back past a
+newer edit it doesn't recognise) is the backstop if that's ever attempted anyway.
+"Discard my changes" is scheduler/admin/super_admin, same as Undo; "discard everyone's" is
+admin/super_admin only, same tier as unlocking a publish (SPEC.md §2b) — it can wipe out a
+colleague's in-progress edits regardless of ownership.
+
+**Why:** a naive "just soft-delete the live row" revert is wrong. `loadSuppressedTmsBookingIds`
+(`lib/db/tms/overlay.ts`) treats *any* soft-deleted row carrying a `tmsBookingId` as a
+permanent "cleared" ghost — it can't tell a genuine Clear apart from an undone in-place edit.
+Soft-deleting an "amended" row to revert it would turn the cell into a stuck cleared ghost
+instead of cleanly reverting to the plain TMS booking. `undoBatch` already gets this right,
+because its before/after snapshot restore knows the correct end-state for every action kind
+(create/update/delete/move/swap/overwrite) — reusing it sidesteps reinventing that logic.
+
+**Not chosen:** wiring the bulk discard into the client's one-click Ctrl/Cmd+Z undo stack.
+Discard can produce several new `booking_events` batches in one call, but the stack
+(`planner-grid.tsx`) is a flat list of single batch ids, one push per user action — grouping
+several batches into one undo step is a real change to that mechanism, left for a follow-up.
+Every event discard produces is still a normal, already-undoable row on its own; the
+confirmation dialog (`discard-changes-dialog.tsx`) is the safety net for this pass, same as
+`clearBooking` having no confirmation today and `unpublishBooking` using a two-step
+arm/confirm rather than relying on Undo.
+
 <!--
 Template for new entries:
 

@@ -35,6 +35,13 @@ export type OverlayBooking = {
   publishedAt: Date | null;
   updatedAt: Date;
   tmsConflictAt: Date | null;
+  /**
+   * Who currently owns this cell's content — `bookings.updatedBy`, or `deletedBy` for a
+   * cleared ghost, since that's who actually cleared it. Null for untouched TMS bookings
+   * and "moved" ghosts, which have no local row of their own. Drives "discard my changes"
+   * vs "discard everyone's changes" (docs/DECISIONS.md).
+   */
+  updatedBy: number | null;
   /** TMS's own booking id, when this row corresponds to one. Null for a local-only booking. */
   tmsBookingId: number | null;
   /**
@@ -62,6 +69,21 @@ export type OverlayBooking = {
    * TMS's version or re-apply their change. Null for new bookings (no `tms_booking_id`).
    */
   tmsSupersedes: boolean;
+  /**
+   * Stage B4: a DIFFERENT, unlinked TMS booking sits at this exact unit+date. Unlike
+   * `tmsSupersedes` (TMS changed a booking we amended), a collision has no shared lineage —
+   * TMS gained a booking here independently, most often because it was entered directly in
+   * TMS rather than through the planner. Null when nothing collides.
+   */
+  tmsCollision: OverlayCollision | null;
+};
+
+/** The TMS booking an amendment collides with — see `OverlayBooking.tmsCollision`. */
+export type OverlayCollision = {
+  tmsBookingId: number;
+  siteName: string;
+  status: string;
+  notes: string | null;
 };
 
 export type OverlayResult = {
@@ -151,10 +173,17 @@ export async function getOverlayBookings(
   // tms_booking_id — "we propose removing this". Those rows are invisible to loadAmendments
   // (it filters deletedAt), so they're loaded separately: without them a cleared booking
   // would keep rendering from TMS and the clear would look like it did nothing.
-  const suppressedTmsIds = await loadSuppressedTmsBookingIds(companyId, modalityId);
+  const suppressedByTmsId = await loadSuppressedTmsBookingIds(companyId, modalityId);
   const amendmentByTmsBookingId = new Map(
     amendments.filter((a) => a.tmsBookingId !== null).map((a) => [a.tmsBookingId as number, a]),
   );
+  // Stage B4. At most one LIVE amendment can occupy a given slot — the partial unique index
+  // (`bookings_unit_date_live_unique`) guarantees it — so this is safe as a plain map rather
+  // than a multimap.
+  const amendmentBySlot = new Map(amendments.map((a) => [slot(a.unitId, a.date), a]));
+  // Populated while walking `tmsBookings` below: an amendment's slot carries a TMS booking
+  // that ISN'T the one it amends. Read back in the amendments loop further down.
+  const collisionBySlot = new Map<string, OverlayCollision>();
 
   const out: OverlayBooking[] = [];
   const unplaced: Record<string, number> = {};
@@ -181,7 +210,8 @@ export async function getOverlayBookings(
     // vanishing — an empty cell would hide the fact that the planner and TMS disagree, which
     // is the whole thing ghosts exist to prevent. Unlike a moved ghost it links nowhere,
     // because there is no counterpart to link to.
-    if (suppressedTmsIds.has(tb.id)) {
+    const suppression = suppressedByTmsId.get(tb.id);
+    if (suppression) {
       if (tb.date >= from && tb.date <= to) {
         const { key } = localStatusKeyForTmsStatus(tb.statusId, statusNameById);
         out.push({
@@ -194,6 +224,9 @@ export async function getOverlayBookings(
           publishedAt: null,
           updatedAt: tb.updatedAt,
           tmsConflictAt: null,
+          // Who cleared it, not who last touched the amendment before that — deletedBy is
+          // the actor who actually proposed removing this booking.
+          updatedBy: suppression.deletedBy ?? suppression.updatedBy,
           tmsBookingId: tb.id,
           // A ghost renders TMS's own truth, so its origin is `tms` however much the planner
           // disagrees with it. The disagreement is carried by `ghostReason`, not by origin.
@@ -203,6 +236,7 @@ export async function getOverlayBookings(
           movedTo: null,
           movedFrom: null,
           tmsSupersedes: false,
+          tmsCollision: null,
         });
       }
       continue;
@@ -211,6 +245,23 @@ export async function getOverlayBookings(
     const amendment = amendmentByTmsBookingId.get(tb.id);
 
     if (!amendment) {
+      // Nothing amends THIS TMS booking specifically — but a different amendment might sit
+      // in this exact slot regardless (created locally, or moved here), independent of
+      // whatever TMS has going on. That's a collision, not an untouched cell: the amendment
+      // already renders the chip for this slot, so record what it collides with instead of
+      // also pushing this tb as a second, competing row (which the client-side merge would
+      // just silently drop — see docs/OVERLAY_BUILD_PLAN.md B4).
+      const colliding = amendmentBySlot.get(slot(unitId, tb.date));
+      if (colliding) {
+        const { key } = localStatusKeyForTmsStatus(tb.statusId, statusNameById);
+        collisionBySlot.set(slot(unitId, tb.date), {
+          tmsBookingId: tb.id,
+          siteName: siteNameById.get(siteId) ?? "?",
+          status: key,
+          notes: tb.notes,
+        });
+        continue;
+      }
       // Untouched TMS booking — render it as-is, if it's in the window.
       if (tb.date < from || tb.date > to) continue;
       const { key } = localStatusKeyForTmsStatus(tb.statusId, statusNameById);
@@ -226,6 +277,8 @@ export async function getOverlayBookings(
         // row isn't ours to lock.
         updatedAt: tb.updatedAt,
         tmsConflictAt: null,
+        // Untouched TMS booking — no local row, so no local owner.
+        updatedBy: null,
         tmsBookingId: tb.id,
         origin: "tms",
         isGhost: false,
@@ -233,6 +286,7 @@ export async function getOverlayBookings(
         movedTo: null,
         movedFrom: null,
         tmsSupersedes: false,
+        tmsCollision: null,
       });
       continue;
     }
@@ -252,6 +306,9 @@ export async function getOverlayBookings(
         publishedAt: null,
         updatedAt: tb.updatedAt,
         tmsConflictAt: null,
+        // The moved amendment (its own row, elsewhere) carries the owner — this ghost is
+        // just the TMS-side signpost pointing at it.
+        updatedBy: null,
         tmsBookingId: tb.id,
         origin: "tms",
         isGhost: true,
@@ -259,6 +316,7 @@ export async function getOverlayBookings(
         movedTo: { unitId: amendment.unitId, date: amendment.date },
         movedFrom: null,
         tmsSupersedes: false,
+        tmsCollision: null,
       });
     }
   }
@@ -280,7 +338,9 @@ export async function getOverlayBookings(
     const tmsBooking = a.tmsBookingId !== null ? tmsBookings.find((b) => b.id === a.tmsBookingId) : undefined;
     const tmsSupersedes = !!(tmsBooking && a.tmsUpdatedAt && tmsBooking.updatedAt.getTime() !== a.tmsUpdatedAt.getTime());
 
-    out.push(toOverlay(a, a.tmsBookingId, moved ? tmsSlot : null, tmsSupersedes));
+    const tmsCollision = collisionBySlot.get(slot(a.unitId, a.date)) ?? null;
+
+    out.push(toOverlay(a, a.tmsBookingId, moved ? tmsSlot : null, tmsSupersedes, tmsCollision));
   }
 
   // A ghost and a real booking can't legitimately share a slot — a ghost only exists where the
@@ -456,14 +516,18 @@ type AmendmentRow = {
   tmsConflictAt: Date | null;
   tmsBookingId: number | null;
   tmsUpdatedAt: Date | null;
+  updatedBy: number | null;
 };
+
+/** Owner info for a suppressed (cleared) TMS booking — see `OverlayBooking.updatedBy`. */
+type Suppression = { updatedBy: number | null; deletedBy: number | null };
 
 // tms_booking_id is UNIQUE on `bookings`, so a TMS booking has at most one amendment row
 // ever — live or soft-deleted. That invariant is what makes "is this one suppressed?" a
-// simple set membership rather than a per-row history question.
-async function loadSuppressedTmsBookingIds(companyId: number, modalityId: number): Promise<Set<number>> {
+// simple map lookup rather than a per-row history question.
+async function loadSuppressedTmsBookingIds(companyId: number, modalityId: number): Promise<Map<number, Suppression>> {
   const rows = await db
-    .select({ tmsBookingId: bookings.tmsBookingId })
+    .select({ tmsBookingId: bookings.tmsBookingId, updatedBy: bookings.updatedBy, deletedBy: bookings.deletedBy })
     .from(bookings)
     .where(
       and(
@@ -473,7 +537,7 @@ async function loadSuppressedTmsBookingIds(companyId: number, modalityId: number
         isNotNull(bookings.deletedAt),
       ),
     );
-  return new Set(rows.map((r) => r.tmsBookingId as number));
+  return new Map(rows.map((r) => [r.tmsBookingId as number, { updatedBy: r.updatedBy, deletedBy: r.deletedBy }]));
 }
 
 async function loadAmendments(companyId: number, modalityId: number): Promise<AmendmentRow[]> {
@@ -490,6 +554,7 @@ async function loadAmendments(companyId: number, modalityId: number): Promise<Am
       tmsConflictAt: bookings.tmsConflictAt,
       tmsBookingId: bookings.tmsBookingId,
       tmsUpdatedAt: bookings.tmsUpdatedAt,
+      updatedBy: bookings.updatedBy,
     })
     .from(bookings)
     .innerJoin(sites, eq(sites.id, bookings.siteId))
@@ -503,6 +568,7 @@ function toOverlay(
   tmsBookingId: number | null,
   movedFrom: { unitId: number; date: string } | null,
   tmsSupersedes: boolean,
+  tmsCollision: OverlayCollision | null = null,
 ): OverlayBooking {
   return {
     unitId: a.unitId,
@@ -514,6 +580,7 @@ function toOverlay(
     publishedAt: a.publishedAt,
     updatedAt: a.updatedAt,
     tmsConflictAt: a.tmsConflictAt,
+    updatedBy: a.updatedBy,
     tmsBookingId,
     // Derived from the id we're actually emitting, not from `a.tmsBookingId`, so `origin`
     // and `tmsBookingId` can never contradict each other in the object the grid receives.
@@ -524,5 +591,6 @@ function toOverlay(
     movedTo: null,
     movedFrom,
     tmsSupersedes,
+    tmsCollision,
   };
 }

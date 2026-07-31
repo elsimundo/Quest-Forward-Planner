@@ -358,6 +358,26 @@ function BookingDrawerBody({
             </div>
           )}
 
+          {/* Stage B4: TMS holds a different, unlinked booking on this exact unit+date —
+              usually because it was added straight into TMS rather than through the planner,
+              so there was never a moment for the app to catch it at write time. No shared
+              lineage with this amendment, so there's nothing to "resolve" the way a supersede
+              is — the two sides just can't both be forwarded to the same slot. Move or clear
+              this booking (both already available below); the flag clears once they no
+              longer share a slot. */}
+          {booking?.tmsCollision && (
+            <div className="mx-5.5 mt-3.5 rounded-lg border border-[#f0c4bb] bg-[#fdedea] p-3 text-xs leading-[17px] text-[#8a2f20]">
+              <p className="font-medium">
+                ⨯ TMS also has <span className="font-semibold">{booking.tmsCollision.siteName}</span> booked here
+                {booking.tmsCollision.status ? ` (${catalog.get(booking.tmsCollision.status).label})` : ""}.
+              </p>
+              <p className="mt-1 text-[#a8503d]">
+                Added independently of this booking — the two can&apos;t both be forwarded to
+                the same unit and day. Move or clear this one, or resolve it directly in TMS.
+              </p>
+            </div>
+          )}
+
           {booking?.tmsSupersedes && (
             <div className="mx-5.5 mt-3.5 rounded-lg border border-[#dccbf7] bg-[#f4edfd] p-3 text-xs leading-[17px] text-[#5a2d9c]">
               <p className="font-medium">↻ TMS has updated this booking since it was last changed here.</p>

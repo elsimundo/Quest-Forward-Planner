@@ -1,7 +1,7 @@
 "use server";
 
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { bookings, bookingEvents, bookingStatuses, companies, units } from "@/lib/db/schema";
@@ -80,17 +80,46 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
         : [],
     );
     const tmsSupersedesById = new Map<number, boolean>();
+    // Stage B4 — re-derived fresh here for the same reason tmsSupersedes is: the grid's flag
+    // is a client-sent value computed against whatever the 5-minute cache held on THAT
+    // request, and could be stale relative to what's true right now. A row is a collision
+    // when TMS holds a DIFFERENT, unlinked booking on this exact unit+date — including a
+    // booking that showed up in TMS after this row was created, which is exactly the gap the
+    // client hit: a booking added straight into TMS, bypassing the planner entirely.
+    const tmsCollisionById = new Map<number, boolean>();
     for (const companyId of companyIds) {
       const tmsCompanyId = tmsCompanyIdByLocal.get(companyId);
       if (!tmsCompanyId) continue;
-      const rowsForCompany = candidateRows.filter((r) => r.companyId === companyId && r.tmsBookingId !== null);
+      const rowsForCompany = candidateRows.filter((r) => r.companyId === companyId);
       if (!rowsForCompany.length) continue;
       const { bookings: tmsBookings } = await getTmsBookings(tmsCompanyId);
       const tmsById = new Map(tmsBookings.map((b) => [b.id, b]));
+      const unitIdByTmsUnitId = new Map(
+        (
+          await tx
+            .select({ id: units.id, tmsUnitId: units.tmsUnitId })
+            .from(units)
+            .where(and(eq(units.companyId, companyId), isNull(units.deletedAt), isNotNull(units.tmsUnitId)))
+        ).map((u) => [u.tmsUnitId as number, u.id]),
+      );
+      const tmsBookingsBySlot = new Map<string, (typeof tmsBookings)[number][]>();
+      for (const tb of tmsBookings) {
+        const localUnitId = unitIdByTmsUnitId.get(tb.unitId);
+        if (localUnitId === undefined) continue;
+        const key = `${localUnitId}|${tb.date}`;
+        const existing = tmsBookingsBySlot.get(key);
+        if (existing) existing.push(tb);
+        else tmsBookingsBySlot.set(key, [tb]);
+      }
       for (const row of rowsForCompany) {
-        const tmsBooking = tmsById.get(row.tmsBookingId as number);
-        const supersedes = !!(tmsBooking && row.tmsUpdatedAt && tmsBooking.updatedAt.getTime() !== row.tmsUpdatedAt.getTime());
-        tmsSupersedesById.set(row.id, supersedes);
+        if (row.tmsBookingId !== null) {
+          const tmsBooking = tmsById.get(row.tmsBookingId);
+          const supersedes = !!(tmsBooking && row.tmsUpdatedAt && tmsBooking.updatedAt.getTime() !== row.tmsUpdatedAt.getTime());
+          tmsSupersedesById.set(row.id, supersedes);
+        }
+        const atSlot = tmsBookingsBySlot.get(`${row.unitId}|${row.date}`) ?? [];
+        const collides = atSlot.some((tb) => tb.id !== row.tmsBookingId);
+        tmsCollisionById.set(row.id, collides);
       }
     }
 
@@ -98,7 +127,13 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
     const skippedByReason: Partial<Record<PublishExclusionReason, number>> = {};
     for (const row of candidateRows) {
       const result = classifyForPublish(
-        { status: row.status, publishedAt: row.publishedAt, tmsConflictAt: row.tmsConflictAt, tmsSupersedes: tmsSupersedesById.get(row.id) ?? false },
+        {
+          status: row.status,
+          publishedAt: row.publishedAt,
+          tmsConflictAt: row.tmsConflictAt,
+          tmsSupersedes: tmsSupersedesById.get(row.id) ?? false,
+          tmsCollision: tmsCollisionById.get(row.id) ?? false,
+        },
         publishableKeys,
       );
       if (result.eligible) {
@@ -114,6 +149,7 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
     if (!rows.length) {
       const parts: string[] = [];
       if (skippedByReason["tms-supersedes"]) parts.push(`${skippedByReason["tms-supersedes"]} need a TMS update resolved`);
+      if (skippedByReason["tms-collision"]) parts.push(`${skippedByReason["tms-collision"]} clash with a different TMS booking`);
       if (skippedByReason["tms-conflict"]) parts.push(`${skippedByReason["tms-conflict"]} have an unresolved TMS conflict`);
       if (skippedByReason["not-publishable-status"]) parts.push(`${skippedByReason["not-publishable-status"]} still need to be Confirmed`);
       const message = parts.length ? `Nothing published — ${parts.join(", ")}.` : "Nothing to publish — those bookings are already published.";

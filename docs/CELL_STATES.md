@@ -29,6 +29,13 @@ Nothing in TMS, nothing here. Click to open the drawer and book it.
 
 Solid chip, filled with the status colour, site name in the middle.
 
+**The fill is the status indicator, and the only one.** The site name is always a neutral
+`#333333` regardless of status — `st.text` is not used on a grid chip (`docs/DECISIONS.md` #38).
+If you're tempted to colour the label by status again, read that entry first: doing it is what
+made the fills too pale to matter, since a saturated label masks a fill that isn't pulling its
+weight. The fills are each status's `bar` colour at 28% over white, `confirmed` excepted — it
+stays pure white as the neutral majority case.
+
 Something is scheduled. **Four different underlying situations render identically here, on
 purpose** — a scheduler is looking at "what is this unit doing that day", and the provenance
 of the row isn't part of that question:
@@ -96,6 +103,7 @@ These layer on top of a base state rather than replacing it. More than one can a
 | Blue-tinted fill + blue dot | whole chip / bottom-right | **TMS doesn't have this cell as shown yet** — publishing would change something here. See [Sync state](#sync-state-the-second-axis) below. |
 | `⚠` | top-right | Capability mismatch — the unit doesn't meet a requirement of the site (`SPEC.md` §2a). Informational, never blocks. |
 | `⇄` orange | bottom-left | **Legacy.** TMS and a local edit both changed since the last import. Belongs to the booking import being retired in Stage F and won't fire under the overlay. |
+| `⨯` red | bottom-left | **TMS has a DIFFERENT booking on this unit+date** — no shared lineage, just two things wanting one slot (Stage B4). Usually means the TMS side was booked directly, bypassing the planner. Move or clear one side. Blocks publishing until resolved. |
 | `↻` purple | bottom-left | **TMS has changed this booking since you amended it.** Open the drawer to resolve — keep your version, or take TMS's. Blocks publishing until resolved. |
 | `✓` blue | top-right | Selected in multi-select. |
 | Blue ring | whole cell | The drawer is open on this cell. |
@@ -104,9 +112,9 @@ These layer on top of a base state rather than replacing it. More than one can a
 | Red border | whole cell | Drop here would clash — you'll be asked to swap or overwrite. |
 | 22% opacity | whole cell | Dimmed by the status filter. |
 
-`⇄` and `↻` share a corner, so `⇄` wins if both are ever true — they're different colours and
-different symbols specifically so the retiring one is never mistaken for the new one while
-both exist in the codebase.
+`⇄`, `⨯`, and `↻` share a corner. Priority when more than one is ever true at once: `⇄`
+(legacy) wins over `⨯` (collision) wins over `↻` (supersede) — different colours and different
+symbols specifically so none is ever mistaken for another while all exist in the codebase.
 
 ---
 
@@ -132,6 +140,12 @@ The marker is two layers, both driven by the same value (`docs/DECISIONS.md` #31
   blue accent once Dave asked for it explicitly.
 - **The corner dot** stays on top of the wash, because the wash alone can't say *which* kind of
   change this is — that's still in the tooltip.
+
+**This is what caps the status fills' saturation.** The wash is a 14% blend *into* `st.bg`, so
+the more saturated the base colour, the less of a shift it produces — which is why #38 settled
+the status fills at 28% over white rather than going stronger, and why `confirmed` stays pure
+white. If you're asked to make the status colours bolder again, this is the constraint to check
+first: the two features share one colour channel.
 
 | Kind | Meaning |
 |---|---|
@@ -211,13 +225,18 @@ shared by the pre-flight preview and the server gate so they can't disagree):
 
 1. **Already published** — routine, not reported as an exception.
 2. **Unresolved TMS conflict** (`⇄`) — legacy.
-3. **TMS supersedes** (`↻`) — someone must decide whose version wins first.
-4. **Status isn't publishable** — out of the box that's anything other than Confirmed,
+3. **TMS collision** (`⨯`) — a different, unlinked TMS booking sits on this unit+date. No
+   shared lineage to reconcile, just a slot both sides claim — move or clear one first
+   (Stage B4, `docs/DECISIONS.md` #36).
+4. **TMS supersedes** (`↻`) — someone must decide whose version wins first.
+5. **Status isn't publishable** — out of the box that's anything other than Confirmed,
    Weekend Confirmed, or Bank Holiday. Admin-editable at `/admin/booking-statuses`.
 
 Checked in that order, so a booking failing more than one test reports the most actionable
 reason. A Confirmed booking that TMS has since changed is a *supersede* problem, not a status
-problem, and saying otherwise would send someone to fix the wrong field.
+problem, and saying otherwise would send someone to fix the wrong field — and a collision is
+checked ahead of supersede for the same reason: it's the more fundamental disagreement of the
+two.
 
 One more reason exists (`not-a-planner-change`) but only ever surfaces from an explicit
 multi-select of an untouched TMS booking — the range sweep never reaches it, having already
