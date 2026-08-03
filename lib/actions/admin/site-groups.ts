@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { sites } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 import { searchApprovedSites } from "@/lib/db/admin-queries";
 
 const ADMIN_ROLES = ["admin", "super_admin"] as const;
@@ -22,7 +23,10 @@ export type SiteGroupActionResult = { ok: true } | { ok: false; error: string };
 export async function searchSitesToGroup(companyId: number, query: string, excludeId?: number) {
   const actor = await requireRole([...ADMIN_ROLES]);
   if (!actor) return [];
-  if (!companyAllowed(actor.companyAccess, companyId)) return [];
+  if (!companyAllowed(actor.companyAccess, companyId)) {
+    logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: companyId, resource: "searchSitesToGroup" });
+    return [];
+  }
   return searchApprovedSites(companyId, query, excludeId);
 }
 
@@ -31,7 +35,10 @@ export async function searchSitesToGroup(companyId: number, query: string, exclu
 export async function createSiteGroup(companyId: number, name: string): Promise<SiteGroupActionResult & { id?: number }> {
   const actor = await requireRole([...ADMIN_ROLES]);
   if (!actor) return { ok: false, error: "You don't have permission to manage site groups." };
-  if (!companyAllowed(actor.companyAccess, companyId)) return { ok: false, error: "Company not found." };
+  if (!companyAllowed(actor.companyAccess, companyId)) {
+    logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: companyId, resource: "createSiteGroup" });
+    return { ok: false, error: "Company not found." };
+  }
 
   const trimmed = name.trim();
   if (!trimmed) return { ok: false, error: "Name is required." };
@@ -59,7 +66,10 @@ export async function setSiteParent(siteId: number, parentSiteId: number | null)
   return db.transaction(async (tx) => {
     const [site] = await tx.select().from(sites).where(and(eq(sites.id, siteId), isNull(sites.deletedAt))).limit(1);
     if (!site) return { ok: false, error: "Site not found." };
-    if (!companyAllowed(actor.companyAccess, site.companyId)) return { ok: false, error: "Site not found." };
+    if (!companyAllowed(actor.companyAccess, site.companyId)) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: site.companyId, resource: "setSiteParent" });
+      return { ok: false, error: "Site not found." };
+    }
 
     if (parentSiteId === null) {
       await tx.update(sites).set({ parentSiteId: null }).where(eq(sites.id, siteId));
@@ -72,7 +82,10 @@ export async function setSiteParent(siteId: number, parentSiteId: number | null)
 
     const [parent] = await tx.select().from(sites).where(and(eq(sites.id, parentSiteId), isNull(sites.deletedAt))).limit(1);
     if (!parent) return { ok: false, error: "Parent site not found." };
-    if (!companyAllowed(actor.companyAccess, parent.companyId)) return { ok: false, error: "Parent site not found." };
+    if (!companyAllowed(actor.companyAccess, parent.companyId)) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: parent.companyId, resource: "setSiteParent.parent" });
+      return { ok: false, error: "Parent site not found." };
+    }
     if (parent.companyId !== site.companyId) return { ok: false, error: "Can't group sites from different companies." };
     if (parent.parentSiteId !== null) {
       return { ok: false, error: "Can't group under a site that's itself part of a group — one level only." };

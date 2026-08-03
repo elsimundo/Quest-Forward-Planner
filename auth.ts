@@ -18,7 +18,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
         const clientIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-        return verifyCredentials(email, password, clientIp);
+        const userAgent = request.headers.get("user-agent");
+        return verifyCredentials(email, password, clientIp, userAgent);
       },
     }),
   ],

@@ -404,3 +404,31 @@ export const userRoleEvents = pgTable("user_role_events", {
   newRole: text("new_role", { enum: ROLES }).notNull(),
   at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Security audit log (docs/ISO-27001-TESTING-AUDITING-GUIDE.md §5) — distinct from
+// booking_events/user_role_events, which record WHAT changed in the app's own data.
+// This table records security-relevant EVENTS about who is trying to get in: logins
+// (success/failure), and access denied by requireRole. userId is nullable because a
+// failed login often has no matching local user row at all (unknown TMS identity,
+// wrong password before any user is resolved).
+export const SECURITY_EVENT_ACTIONS = ["login", "logout", "unauthorized_access"] as const;
+export type SecurityEventAction = (typeof SECURITY_EVENT_ACTIONS)[number];
+
+export const SECURITY_EVENT_STATUSES = ["success", "failure"] as const;
+export type SecurityEventStatus = (typeof SECURITY_EVENT_STATUSES)[number];
+
+export const securityEvents = pgTable("security_events", {
+  id: serial("id").primaryKey(),
+  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  userId: integer("user_id").references(() => users.id),
+  // The username/email that was attempted, even when it never resolved to a user row —
+  // needed to investigate a wrong-password or unknown-identity login attempt.
+  identifier: text("identifier"),
+  action: text("action", { enum: SECURITY_EVENT_ACTIONS }).notNull(),
+  status: text("status", { enum: SECURITY_EVENT_STATUSES }).notNull(),
+  // Machine-readable reason, e.g. "rate_limited", "no_scheduling_access", "wrong_role".
+  reason: text("reason"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  details: jsonb("details"),
+});

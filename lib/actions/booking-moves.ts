@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { bookings, bookingEvents, units, unitModalities, type BookingAction } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 import { getUnitRegistrations } from "@/lib/db/unit-labels";
 import { nextBookingRef } from "@/lib/db/booking-ref";
 import { resolveTmsCells, tmsCellKey } from "@/lib/db/tms/overlay";
@@ -241,7 +242,11 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
     // can't cross companies either way: that's not just an access check, it'd also leave
     // a booking's denormalised company_id pointing at the wrong company (§4.3).
     const sourceRows = sources as BookingRow[];
-    if (sourceRows.some((s) => !companyAllowed(actor.companyAccess, s.companyId))) {
+    const deniedSources = sourceRows.filter((s) => !companyAllowed(actor.companyAccess, s.companyId));
+    if (deniedSources.length > 0) {
+      for (const s of deniedSources) {
+        logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: s.companyId, resource: "booking_move_source" });
+      }
       throw new MoveRejected({ ok: false, error: "One of the selected bookings no longer exists — refresh and try again.", code: "CONFLICT" });
     }
     const targetUnitIds = [...new Set(moves.map((m) => m.toUnitId))];

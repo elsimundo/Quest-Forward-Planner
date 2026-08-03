@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { bookings, sites } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 import { searchApprovedSites } from "@/lib/db/admin-queries";
 
 const ADMIN_ROLES = ["admin", "super_admin"] as const;
@@ -37,7 +38,10 @@ export async function approvePendingSite(input: {
       .where(and(eq(sites.id, input.siteId), isNull(sites.deletedAt)))
       .limit(1);
     if (!site) return { ok: false, error: "Site not found." };
-    if (!companyAllowed(actor.companyAccess, site.companyId)) return { ok: false, error: "Site not found." };
+    if (!companyAllowed(actor.companyAccess, site.companyId)) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: site.companyId, resource: "approve_pending_site" });
+      return { ok: false, error: "Site not found." };
+    }
     if (!site.pendingReview) return { ok: false, error: "That site isn't pending review." };
 
     if (input.mergeIntoSiteId) {

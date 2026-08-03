@@ -17,6 +17,7 @@ import {
 } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 import { computeCapabilityWarnings, type CapabilityWarning } from "@/lib/capability-matching";
 import { nextBookingRef } from "@/lib/db/booking-ref";
 import { resolveTmsBookingAt } from "@/lib/db/tms/overlay";
@@ -94,6 +95,7 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
     // Hard company scoping (docs/DECISIONS.md #22) — a non-super_admin can only ever act
     // on their own company's units, regardless of what unitId the client sends.
     if (!companyAllowed(actor.companyAccess, unit.companyId)) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: unit.companyId, resource: "booking_unit" });
       return { ok: false, error: "Unit not found.", code: "VALIDATION" };
     }
 
@@ -314,6 +316,7 @@ export async function clearBooking(input: ClearBookingInput): Promise<ClearBooki
         .where(and(eq(units.id, input.unitId), isNull(units.deletedAt)))
         .limit(1);
       if (!unitRow || !companyAllowed(actor.companyAccess, unitRow.companyId)) {
+        if (unitRow) logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: unitRow.companyId, resource: "booking_clear_unit" });
         return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
       }
       const tms = await resolveTmsBookingAt(unitRow.companyId, input.unitId, input.date);
@@ -369,6 +372,7 @@ export async function clearBooking(input: ClearBookingInput): Promise<ClearBooki
     }
 
     if (!companyAllowed(actor.companyAccess, existing.companyId)) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: existing.companyId, resource: "booking_clear" });
       return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
     }
     if (existing.publishedAt) {

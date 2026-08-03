@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { users, type Role } from "@/lib/db/schema";
 import { getCompanyAccess, type CompanyAccess } from "@/lib/auth/company-access";
+import { logUnauthorizedAccess } from "@/lib/audit/security-log";
 
 export type AuthedUser = { id: number; name: string; role: Role; companyAccess: CompanyAccess };
 
@@ -25,10 +26,21 @@ export async function requireRole(allowed: Role[]): Promise<AuthedUser | null> {
     .from(users)
     .where(and(eq(users.id, Number(session.user.id)), isNull(users.deletedAt)))
     .limit(1);
-  if (!user || !allowed.includes(user.role)) return null;
+  if (!user) return null;
+  if (!allowed.includes(user.role)) {
+    await logUnauthorizedAccess({
+      userId: user.id,
+      reason: "wrong_role",
+      details: { requiredOneOf: allowed, actualRole: user.role },
+    });
+    return null;
+  }
   const companyAccess = await getCompanyAccess(user.id, user.role);
   // Shouldn't happen — login already rejects anyone without company access — but a role
   // could theoretically change between login and this check, so fail closed, not open.
-  if (!companyAccess) return null;
+  if (!companyAccess) {
+    await logUnauthorizedAccess({ userId: user.id, reason: "no_company_access" });
+    return null;
+  }
   return { ...user, companyAccess };
 }

@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { bookings, bookingEvents, type BookingAction } from "@/lib/db/schema";
 import { requireRole, type AuthedUser } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 import { getUnitRegistrations } from "@/lib/db/unit-labels";
 
 const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
@@ -95,7 +96,11 @@ export async function undoBatchWithinTx(tx: Tx, batchId: string, actor: AuthedUs
   // Hard company scoping (docs/DECISIONS.md #22) — a batchId is opaque to the client, so
   // this is the one place undo can be probed cross-company; refuse if ANY row it touches
   // isn't in the actor's allowed company, same as "not found" everywhere else.
-  if (currentRows.some((r) => !companyAllowed(actor.companyAccess, r.companyId))) {
+  const deniedRows = currentRows.filter((r) => !companyAllowed(actor.companyAccess, r.companyId));
+  if (deniedRows.length > 0) {
+    for (const r of deniedRows) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: r.companyId, resource: "undo_batch" });
+    }
     return { ok: false, error: "Nothing to undo.", code: "NOT_FOUND" };
   }
   // Undo can't rewrite history that sits under a lock — but undoing the publish *itself*

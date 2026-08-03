@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { bookings, bookingEvents, units, sites, companies } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 import { getTmsBookings } from "@/lib/db/tms/booking-cache";
 import { localStatusKeyForTmsStatus } from "@/lib/db/tms/status-map";
 
@@ -48,6 +49,7 @@ export async function resolveTmsSupersede(input: ResolveTmsSupersedeInput): Prom
       return { ok: false, error: "Nothing to resolve here.", code: "NOT_FOUND" };
     }
     if (!companyAllowed(actor.companyAccess, existing.companyId)) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: existing.companyId, resource: "tms_resolve" });
       return { ok: false, error: "Nothing to resolve here.", code: "NOT_FOUND" };
     }
     if (input.expectedUpdatedAt !== existing.updatedAt.toISOString()) {

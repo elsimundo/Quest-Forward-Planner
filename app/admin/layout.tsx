@@ -17,6 +17,7 @@ const SUPER_ADMIN_NAV = [
   { href: "/admin/tms-sync", label: "TMS sync" },
   { href: "/admin/tms-bookings", label: "TMS bookings" },
   { href: "/admin/users", label: "Users & roles" },
+  { href: "/admin/security-events", label: "Security events" },
 ] as const;
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {

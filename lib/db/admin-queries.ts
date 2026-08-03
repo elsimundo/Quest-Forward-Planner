@@ -11,9 +11,12 @@ import {
   unitSpecs,
   tmsSyncRuns,
   tmsBookingImportRuns,
+  securityEvents,
   type BookingAction,
   type Role,
   type TmsSyncStatus,
+  type SecurityEventAction,
+  type SecurityEventStatus,
 } from "./schema";
 import type { TmsSyncSummary } from "./tms/sync";
 import type { BookingImportSummary } from "./tms/booking-import";
@@ -393,6 +396,85 @@ export async function getRecentTmsBookingImportRuns(limit = 10): Promise<TmsBook
     .orderBy(desc(tmsBookingImportRuns.id))
     .limit(limit);
   return rows.map((r) => ({ ...r, summary: r.summary as BookingImportSummary | null, triggeredByName: r.triggeredByName ?? null }));
+}
+
+// ── Security events (docs/ISO-27001-COMPLIANCE.md — admin browse of security_events) ──
+
+export type SecurityEventRow = {
+  id: number;
+  at: Date;
+  userId: number | null;
+  identifier: string | null;
+  action: SecurityEventAction;
+  status: SecurityEventStatus;
+  reason: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  details: Record<string, unknown> | null;
+  userName: string | null;
+  userEmail: string | null;
+};
+
+export type SecurityEventFilters = {
+  q?: string;
+  action?: SecurityEventAction;
+  status?: SecurityEventStatus;
+  from?: string;
+  to?: string;
+};
+
+export async function getSecurityEvents(
+  filters: SecurityEventFilters,
+  page: number,
+): Promise<{ rows: SecurityEventRow[]; hasMore: boolean }> {
+  const conditions = [];
+  if (filters.action) conditions.push(eq(securityEvents.action, filters.action));
+  if (filters.status) conditions.push(eq(securityEvents.status, filters.status));
+  if (filters.from) conditions.push(gte(securityEvents.at, new Date(`${filters.from}T00:00:00Z`)));
+  if (filters.to) conditions.push(lte(securityEvents.at, new Date(`${filters.to}T23:59:59.999Z`)));
+  if (filters.q?.trim()) {
+    const q = `%${filters.q.trim()}%`;
+    conditions.push(
+      or(
+        ilike(securityEvents.identifier, q),
+        ilike(users.name, q),
+        ilike(users.email, q),
+        ilike(securityEvents.ipAddress, q),
+        ilike(securityEvents.reason, q),
+      ),
+    );
+  }
+
+  const rows = await db
+    .select({
+      id: securityEvents.id,
+      at: securityEvents.at,
+      userId: securityEvents.userId,
+      identifier: securityEvents.identifier,
+      action: securityEvents.action,
+      status: securityEvents.status,
+      reason: securityEvents.reason,
+      ipAddress: securityEvents.ipAddress,
+      userAgent: securityEvents.userAgent,
+      details: securityEvents.details,
+      userName: users.name,
+      userEmail: users.email,
+    })
+    .from(securityEvents)
+    .leftJoin(users, eq(users.id, securityEvents.userId))
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(securityEvents.at), desc(securityEvents.id))
+    .limit(PAGE_SIZE + 1)
+    .offset(page * PAGE_SIZE);
+
+  const hasMore = rows.length > PAGE_SIZE;
+  return {
+    rows: rows.slice(0, PAGE_SIZE).map((r) => ({
+      ...r,
+      details: r.details as Record<string, unknown> | null,
+    })),
+    hasMore,
+  };
 }
 
 export type { Role };

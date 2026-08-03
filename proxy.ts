@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { applySecurityHeaders } from "@/lib/security/headers";
 
 export default auth((req) => {
   if (!req.auth) {
     const loginUrl = new URL("/login", req.nextUrl);
     loginUrl.searchParams.set("callbackUrl", req.nextUrl.pathname);
-    return NextResponse.redirect(loginUrl);
+    return applySecurityHeaders(NextResponse.redirect(loginUrl));
   }
+  return applySecurityHeaders(NextResponse.next());
 });
 
 export const config = {

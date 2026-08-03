@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { siteCapabilityRequirements, sites } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 
 const ADMIN_ROLES = ["admin", "super_admin"] as const;
 
@@ -28,7 +29,10 @@ export async function setSiteRequirement(input: {
   // company_id of its own, so check the site it's attached to.
   const [site] = await db.select({ companyId: sites.companyId }).from(sites).where(and(eq(sites.id, input.siteId), isNull(sites.deletedAt))).limit(1);
   if (!site) return { ok: false, error: "Site not found." };
-  if (!companyAllowed(actor.companyAccess, site.companyId)) return { ok: false, error: "Site not found." };
+  if (!companyAllowed(actor.companyAccess, site.companyId)) {
+    logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: site.companyId, resource: "setSiteRequirement" });
+    return { ok: false, error: "Site not found." };
+  }
 
   const [row] = await db
     .insert(siteCapabilityRequirements)
@@ -57,7 +61,10 @@ export async function removeSiteRequirement(input: { id: number }): Promise<Remo
     .where(eq(siteCapabilityRequirements.id, input.id))
     .limit(1);
   if (!row) return { ok: true }; // already gone — same idempotent behaviour as before
-  if (!companyAllowed(actor.companyAccess, row.companyId)) return { ok: false, error: "Requirement not found." };
+  if (!companyAllowed(actor.companyAccess, row.companyId)) {
+    logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: row.companyId, resource: "removeSiteRequirement" });
+    return { ok: false, error: "Requirement not found." };
+  }
 
   await db.delete(siteCapabilityRequirements).where(eq(siteCapabilityRequirements.id, input.id));
   revalidatePath("/admin/site-requirements");

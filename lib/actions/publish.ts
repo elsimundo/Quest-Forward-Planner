@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { bookings, bookingEvents, bookingStatuses, companies, units } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
+import { logCompanyAccessDenied } from "@/lib/audit/security-log";
 import { getUnitRegistrations } from "@/lib/db/unit-labels";
 import { getTmsBookings } from "@/lib/db/tms/booking-cache";
 import { classifyForPublish, type PublishExclusionReason } from "@/lib/publish-eligibility";
@@ -59,7 +60,10 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
       // Hard company scoping (docs/DECISIONS.md #22) — silently drop, same as any other
       // ineligible target, rather than a distinct error that would confirm cross-company
       // data exists at that unit/date.
-      if (!companyAllowed(actor.companyAccess, row.companyId)) continue;
+      if (!companyAllowed(actor.companyAccess, row.companyId)) {
+        logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: row.companyId, resource: "publish_target" });
+        continue;
+      }
       candidateRows.push(row);
     }
 
@@ -209,6 +213,7 @@ export async function unpublishBooking(target: PublishTarget): Promise<Unpublish
 
     if (!existing) return { ok: false, error: "Booking not found.", code: "NOT_FOUND" };
     if (!companyAllowed(actor.companyAccess, existing.companyId)) {
+      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: existing.companyId, resource: "unpublish_booking" });
       return { ok: false, error: "Booking not found.", code: "NOT_FOUND" };
     }
     if (!existing.publishedAt) return { ok: false, error: "That booking isn't published.", code: "VALIDATION" };
