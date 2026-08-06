@@ -24,7 +24,11 @@ import { CompanyPicker } from "@/components/planner/company-picker";
 // even the first load correct.
 export const dynamic = "force-dynamic";
 
-function fallbackRange(): { from: string; to: string } {
+// The grid's baseline planning window — a year back, a year forward — shown regardless of
+// where actual bookings fall. It's a planner: a modality with only one booking still needs
+// empty future cells to book more units into, not a grid clamped to whatever data happens
+// to exist yet.
+function planningWindow(): { from: string; to: string } {
   const now = new Date();
   const from = new Date(Date.UTC(now.getUTCFullYear() - 1, now.getUTCMonth(), 1));
   const to = new Date(Date.UTC(now.getUTCFullYear() + 1, now.getUTCMonth(), 1));
@@ -129,7 +133,18 @@ async function PlannerBody({
   let range: { from: string; to: string };
   let overlay: Awaited<ReturnType<typeof getOverlayBookings>>;
   try {
-    range = (await getOverlayDateRange(companyId, modalityId)) ?? fallbackRange();
+    // Union with the planning window rather than falling back to it only when a modality has
+    // zero data — a sparse modality (one booking today) still needs the rest of the window's
+    // empty cells to plan into, and a booking that happens to fall outside the window (an old
+    // published one, say) must still be reachable rather than silently clipped.
+    const window = planningWindow();
+    const dataRange = await getOverlayDateRange(companyId, modalityId);
+    range = dataRange
+      ? {
+          from: dataRange.from < window.from ? dataRange.from : window.from,
+          to: dataRange.to > window.to ? dataRange.to : window.to,
+        }
+      : window;
     overlay = await getOverlayBookings(companyId, modalityId, range.from, range.to);
   } catch (err) {
     if (err instanceof TmsUnavailableError) {

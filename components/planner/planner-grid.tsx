@@ -71,6 +71,84 @@ function writeStack(key: string, stack: string[]) {
   }
 }
 
+// Same sessionStorage precedent as the undo/redo stacks above, applied to which cell's edit
+// drawer is open. Without this, the drawer closing is entirely a function of `PlannerGrid`
+// staying mounted — and it isn't guaranteed to: the ~10s background poll's router.refresh()
+// (see the live-updates effect below) re-renders app/(planner)/page.tsx server-side, and on
+// any TMS hiccup that page swaps the whole grid out for a structurally different
+// "TMS unavailable" screen and back (lib/db/tms/booking-cache.ts), unmounting this component
+// and silently dropping whatever the scheduler was mid-edit on. Restoring from here means a
+// remount — from that, or a stray tab refresh — reopens the drawer instead of just closing it.
+const OPEN_CELL_KEY = "planner-open-cell";
+
+type StoredOpenCell = { companyId: number; modalityId: number; unitId: number; date: string };
+
+function readOpenCell(): StoredOpenCell | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(OPEN_CELL_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as StoredOpenCell).companyId === "number" &&
+      typeof (parsed as StoredOpenCell).modalityId === "number" &&
+      typeof (parsed as StoredOpenCell).unitId === "number" &&
+      typeof (parsed as StoredOpenCell).date === "string"
+    ) {
+      return parsed as StoredOpenCell;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeOpenCell(value: StoredOpenCell | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (value) window.sessionStorage.setItem(OPEN_CELL_KEY, JSON.stringify(value));
+    else window.sessionStorage.removeItem(OPEN_CELL_KEY);
+  } catch {
+    // ignore quota/privacy-mode errors — worst case a remount just closes the drawer, as before
+  }
+}
+
+// Same idea, for the date the grid is currently scrolled to — see the mount-restore effect
+// near `jumpToday` for how this and OPEN_CELL_KEY are used together.
+const SCROLL_DATE_KEY = "planner-scroll-date";
+
+function readScrollDate(): { companyId: number; modalityId: number; date: string } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(SCROLL_DATE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as { companyId: unknown }).companyId === "number" &&
+      typeof (parsed as { modalityId: unknown }).modalityId === "number" &&
+      typeof (parsed as { date: unknown }).date === "string"
+    ) {
+      return parsed as { companyId: number; modalityId: number; date: string };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeScrollDate(value: { companyId: number; modalityId: number; date: string }) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(SCROLL_DATE_KEY, JSON.stringify(value));
+  } catch {
+    // ignore quota/privacy-mode errors — worst case a remount lands on today, as before
+  }
+}
+
 type Unit = { id: number; registration: string; description: string | null; displayOrder: number };
 type CapabilityRequirement = { requirementKey: string; required: boolean };
 const cellKey = (date: string, unitId: number) => `${date}|${unitId}`;
@@ -138,6 +216,28 @@ export function PlannerGrid({
   const [changesOnly, setChangesOnly] = useState(false);
   const [showLegend, setShowLegend] = useState(false);
   const [drawerTarget, setDrawerTarget] = useState<DrawerTarget | null>(null);
+
+  // Restores a drawer that was open the last time this component existed — see OPEN_CELL_KEY
+  // above for why that isn't guaranteed to be "before the user closed it": it also covers a
+  // remount this component didn't choose to have happen. Scoped to the SAME company+modality
+  // the target was opened under, on mount only, so a genuine company/modality switch (a
+  // deliberate action, not a remount) never resurrects a drawer from a different sheet.
+  useEffect(() => {
+    const stored = readOpenCell();
+    if (!stored || stored.companyId !== companyId || stored.modalityId !== activeModalityId) return;
+    const unit = units.find((u) => u.id === stored.unitId);
+    if (!unit) return;
+    setDrawerTarget({
+      unitId: unit.id,
+      unitRegistration: unit.registration,
+      date: stored.date,
+      unitDescription: unit.description,
+      modalityId: activeModalityId,
+    });
+    // Deliberately mount-only — see the comment above for why this must not re-fire on a
+    // later company/modality change on a live instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Modality is a URL param, not local state — switching pills navigates
   // (app/(planner)/page.tsx re-fetches server-side for the new modality), so the sheet
@@ -223,6 +323,22 @@ export function PlannerGrid({
     () => summariseChanges(bookings.filter((b) => b.updatedBy === actorId)),
     [bookings, actorId],
   );
+
+  // Which loaded date to land on when the changes view is switched on. `days` now spans a
+  // full ±1yr planning window (app/(planner)/page.tsx) and the grid opens scrolled to today,
+  // so the 22 changes a company might have pending are easily nowhere near the current
+  // scroll position — switching the view on would otherwise just fade the entire visible
+  // range to ~20% with nothing lit anywhere in sight. Picks the change closest to today
+  // (by calendar distance, not chronological order) since that's the one most likely to be
+  // what a scheduler opening the view actually wants to check first.
+  const nearestChangeDate = useMemo(() => {
+    const changeDates = bookings.filter((b) => changeKindFor(b) !== null).map((b) => b.date);
+    if (!changeDates.length) return null;
+    const todayMs = Date.parse(todayIso());
+    return changeDates.reduce((best, d) =>
+      Math.abs(Date.parse(d) - todayMs) < Math.abs(Date.parse(best) - todayMs) ? d : best,
+    );
+  }, [bookings]);
 
   // Transient highlight on the cell we just jumped to from a ghost, so the eye lands on it
   // rather than on "some row scrolled past". Cleared on a timer, and on unmount.
@@ -338,6 +454,54 @@ export function PlannerGrid({
     if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "center" });
   };
 
+  // Persists roughly where the grid is scrolled to, on the same sessionStorage precedent as
+  // OPEN_CELL_KEY above — so a remount (see there for why this component isn't guaranteed to
+  // stay mounted) lands back near where the scheduler was, rather than snapping to today via
+  // the mount branch of the effect below. Debounced: this only needs to be fresh enough to
+  // survive a remount, not live-updated on every pixel of a drag-scroll.
+  const scrollDateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (scrollDateTimer.current) clearTimeout(scrollDateTimer.current); }, []);
+  const handleGridScroll = useCallback(() => {
+    if (scrollDateTimer.current) clearTimeout(scrollDateTimer.current);
+    scrollDateTimer.current = setTimeout(() => {
+      const items = virtualizer.getVirtualItems();
+      if (!items.length) return;
+      const centreDate = days[items[Math.floor(items.length / 2)].index]?.date;
+      if (centreDate) writeScrollDate({ companyId, modalityId: activeModalityId, date: centreDate });
+    }, 300);
+  }, [virtualizer, days, companyId, activeModalityId]);
+
+  // Land on today whenever the sheet being viewed changes (first mount, or switching
+  // modality pills). `days` now spans a full ±1yr planning window regardless of where actual
+  // bookings fall (app/(planner)/page.tsx), so row 0 is frequently a stretch of genuinely
+  // empty future/past dates — opening there reads as "the schedule is empty" even when the
+  // real data is just scrolled out of view. Keyed on `activeModalityId` rather than `days`
+  // itself so the ~10s poll's router.refresh() (same modality, new `days` reference) doesn't
+  // re-snap the view and fight a scheduler who has since scrolled elsewhere on purpose.
+  //
+  // The very first run of this effect is special-cased to prefer a persisted scroll position
+  // (same company+modality) over today, via `hasMountedRef`: it's the only run that could be a
+  // remount rather than a deliberate switch, and a remount should put the scheduler back where
+  // they were, not reset them to today out from under an edit. Every later run of this effect
+  // IS a deliberate modality switch (the id actually changed on a live instance), which should
+  // still land on today as before.
+  const hasMountedRef = useRef(false);
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      const stored = readScrollDate();
+      if (stored && stored.companyId === companyId && stored.modalityId === activeModalityId) {
+        const idx = days.findIndex((d) => d.date === stored.date);
+        if (idx >= 0) {
+          virtualizer.scrollToIndex(idx, { align: "center" });
+          return;
+        }
+      }
+    }
+    jumpToday();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeModalityId]);
+
   const gridTemplateColumns = `${DATE_COL_WIDTH}px repeat(${visibleUnits.length}, ${UNIT_COL_WIDTH}px)`;
 
   // The TMS booking still sitting at the open cell, when we've moved or cleared it away.
@@ -388,16 +552,26 @@ export function PlannerGrid({
   }, []);
 
   const openCell = useCallback(
-    (day: DayInfo, unit: Unit) =>
+    (day: DayInfo, unit: Unit) => {
       setDrawerTarget({
         unitId: unit.id,
         unitRegistration: unit.registration,
         date: day.date,
         unitDescription: unit.description,
         modalityId: activeModalityId,
-      }),
-    [activeModalityId],
+      });
+      writeOpenCell({ companyId, modalityId: activeModalityId, unitId: unit.id, date: day.date });
+    },
+    [activeModalityId, companyId],
   );
+
+  // Every place the drawer closes (Escape, "go to where it moved", and the `onClose` prop
+  // <BookingDrawer> itself calls after saving/clearing/unlocking) routes through this, so the
+  // persisted target never outlives the drawer it describes.
+  const closeDrawer = useCallback(() => {
+    setDrawerTarget(null);
+    writeOpenCell(null);
+  }, []);
 
   const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: OverlayBooking | null) => {
     if (booking?.publishedAt) return openCell(day, unit);
@@ -909,7 +1083,7 @@ export function PlannerGrid({
           return;
         }
         clearSelection();
-        setDrawerTarget(null);
+        closeDrawer();
         endDrag();
         setConflict(null);
         setPublishRange(null);
@@ -928,7 +1102,7 @@ export function PlannerGrid({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearSelection, endDrag, undoStack, redoStack, pending, moveDialogOpen]);
+  }, [clearSelection, closeDrawer, endDrag, undoStack, redoStack, pending, moveDialogOpen]);
 
   // ── live updates (SPEC.md §1/§11: ~10s polling) ──
   // Skipped while a mutation is in flight or a drag is live, so a background refresh can't
@@ -963,7 +1137,16 @@ export function PlannerGrid({
         onStatusFilterChange={setStatusFilter}
         changesOnly={changesOnly}
         changeCount={changeSummary.total}
-        onToggleChangesOnly={() => setChangesOnly((v) => !v)}
+        onToggleChangesOnly={() =>
+          setChangesOnly((v) => {
+            const next = !v;
+            if (next && nearestChangeDate) {
+              const idx = dateIdx.get(nearestChangeDate);
+              if (idx !== undefined) virtualizer.scrollToIndex(idx, { align: "center" });
+            }
+            return next;
+          })
+        }
         showLegend={showLegend}
         onToggleLegend={() => setShowLegend((v) => !v)}
         onJumpToday={jumpToday}
@@ -1012,7 +1195,11 @@ export function PlannerGrid({
           drops the scheduler out of the planner mid-scroll. Belt-and-braces with the
           root-level rule in globals.css — this one states the intent where the scrolling
           actually happens. */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto overscroll-contain bg-white">
+      <div
+        ref={scrollRef}
+        onScroll={handleGridScroll}
+        className="min-h-0 flex-1 overflow-auto overscroll-contain bg-white"
+      >
         <div style={{ minWidth: "max-content" }}>
           <div
             className="sticky top-0 z-20 grid border-b-2 border-[#214b7f]"
@@ -1069,6 +1256,11 @@ export function PlannerGrid({
                         {fmtDate(day.date)}
                       </span>
                       <span className="text-[11px] text-[#9a9a9a]">{DOW_FULL[day.dow]}</span>
+                      {/* `days` now spans a full ±1yr planning window (app/(planner)/page.tsx),
+                          so scrolling from e.g. "5 Mar" to another "5 Mar" a year later reads
+                          as if nothing moved — the year has to be on every row, not just at a
+                          boundary, since a scroll can land anywhere in the range. */}
+                      <span className="text-[11px] text-[#c2c7d1] tabular-nums">{day.date.slice(0, 4)}</span>
                     </div>
                     <div className="mt-1">
                       <AvailabilityBar free={free} total={units.length} />
@@ -1185,11 +1377,11 @@ export function PlannerGrid({
             ? `${unitById.get(drawerGhost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(drawerGhost.movedTo.date)}`
             : null
         }
-        onGoToGhost={drawerGhost?.movedTo ? () => { const to = drawerGhost.movedTo!; setDrawerTarget(null); goToMoved(to); } : undefined}
+        onGoToGhost={drawerGhost?.movedTo ? () => { const to = drawerGhost.movedTo!; closeDrawer(); goToMoved(to); } : undefined}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         canUnlock={canUnlock}
-        onClose={() => setDrawerTarget(null)}
+        onClose={closeDrawer}
         onMutated={pushUndo}
       />
 

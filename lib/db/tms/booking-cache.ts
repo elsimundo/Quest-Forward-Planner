@@ -86,6 +86,34 @@ function isFresh(value: CachedTmsBookings | null, now: number): value is CachedT
   return value !== null && now - value.fetchedAt.getTime() < TTL_MS;
 }
 
+// One short retry before declaring TMS unreachable — absorbs a single flaky round-trip (a
+// dropped connection, a replica failover) without weakening the "loud failure, never stale"
+// contract above: a genuinely *sustained* outage still throws, just not on its first blip.
+// This matters because every open planner screen polls this roughly every 10s
+// (components/planner/planner-grid.tsx's live-update interval), and every one of those polls
+// runs through the SAME PlannerBody branch (app/(planner)/page.tsx) that swaps the whole grid
+// out for the TMS-unavailable screen on any failure — a structurally different component in
+// the same spot, which unmounts PlannerGrid and silently drops whatever the scheduler was
+// doing (an open edit drawer, their scroll position) even though the very next poll, ~10s
+// later, would have succeeded fine.
+const RETRY_DELAY_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchTmsBookings(tmsCompanyId: number): Promise<CachedTmsBookings> {
+  const [bookings, statuses] = await Promise.all([
+    listTmsBookings(tmsCompanyId),
+    listTmsBookingStatuses(tmsCompanyId),
+  ]);
+  return {
+    bookings,
+    statusNameById: new Map(statuses.map((s) => [s.id, s.name])),
+    fetchedAt: new Date(),
+  };
+}
+
 /**
  * TMS bookings for a company, from cache when fresh and from TMS when not.
  *
@@ -100,15 +128,15 @@ export async function getTmsBookings(tmsCompanyId: number): Promise<CachedTmsBoo
 
   const fetch = (async (): Promise<CachedTmsBookings> => {
     try {
-      const [bookings, statuses] = await Promise.all([
-        listTmsBookings(tmsCompanyId),
-        listTmsBookingStatuses(tmsCompanyId),
-      ]);
-      const value: CachedTmsBookings = {
-        bookings,
-        statusNameById: new Map(statuses.map((s) => [s.id, s.name])),
-        fetchedAt: new Date(),
-      };
+      let value: CachedTmsBookings;
+      try {
+        value = await fetchTmsBookings(tmsCompanyId);
+      } catch {
+        // First attempt failed — give it one more try after a short pause rather than
+        // failing on the spot. See RETRY_DELAY_MS above for why.
+        await sleep(RETRY_DELAY_MS);
+        value = await fetchTmsBookings(tmsCompanyId);
+      }
       entry.value = value;
       return value;
     } catch (err) {
