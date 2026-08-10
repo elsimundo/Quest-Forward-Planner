@@ -54,10 +54,257 @@ async function nameOfEditor(tx: Parameters<Parameters<typeof db.transaction>[0]>
   return row?.name ?? "someone else";
 }
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export type SiteInput = { id: number } | { name: string };
+
+// Resolve the drawer's site field to a real row: an existing id (company-scoped), or free
+// text — reusing an exact case-insensitive match, otherwise creating a new pending-review
+// site (SPEC.md §5). Shared by the single-cell save and the bulk create, which resolves it
+// ONCE for the whole batch: typing a new site name and booking five cells with it must
+// produce one new site, not five.
+async function resolveSite(
+  tx: Tx,
+  companyId: number,
+  input: SiteInput,
+): Promise<{ ok: true; site: { id: number; name: string } } | { ok: false; error: string }> {
+  if ("id" in input) {
+    // Company-scoped (docs/DECISIONS.md #22, #11) — without this, a client-supplied site
+    // id from a DIFFERENT company would silently attach the booking to it. Harmless while
+    // only one company existed; a real cross-company leak now that more than one does.
+    const [row] = await tx
+      .select({ id: sites.id, name: sites.name })
+      .from(sites)
+      .where(and(eq(sites.id, input.id), eq(sites.companyId, companyId), isNull(sites.deletedAt)))
+      .limit(1);
+    if (!row) return { ok: false, error: "Selected site not found." };
+    return { ok: true, site: row };
+  }
+
+  const trimmed = input.name.trim();
+  if (!trimmed) return { ok: false, error: "Site is required." };
+  // Company-scoped for the same reason as above — `sites.name` is only unique within a
+  // company (docs/DECISIONS.md #11), so two companies can share a name (confirmed live:
+  // "LCS Tesco Harrow" exists under both InHealth and Quest Power). Without this filter,
+  // typing a name that happens to match another company's site would silently attach
+  // this booking to THAT site instead of creating (or finding) this company's own.
+  const [existingSite] = await tx
+    .select({ id: sites.id, name: sites.name })
+    .from(sites)
+    .where(and(isNull(sites.deletedAt), eq(sites.companyId, companyId), ilike(sites.name, trimmed)))
+    .limit(1);
+  if (existingSite) return { ok: true, site: existingSite };
+
+  const [created] = await tx
+    .insert(sites)
+    .values({ name: trimmed, companyId, pendingReview: true })
+    .returning({ id: sites.id, name: sites.name });
+  return { ok: true, site: created };
+}
+
+// §2a capability check — logged alongside the audit snapshot, never blocking.
+async function warningsFor(
+  tx: Tx,
+  unit: { id: number; registration: string },
+  site: { id: number; name: string },
+): Promise<CapabilityWarning[]> {
+  const [specRows, reqRows] = await Promise.all([
+    tx.select({ key: unitSpecs.key, value: unitSpecs.value }).from(unitSpecs).where(eq(unitSpecs.unitId, unit.id)),
+    tx
+      .select({
+        requirementKey: siteCapabilityRequirements.requirementKey,
+        required: siteCapabilityRequirements.required,
+      })
+      .from(siteCapabilityRequirements)
+      .where(eq(siteCapabilityRequirements.siteId, site.id)),
+  ]);
+  const specMap: Record<string, string> = {};
+  for (const r of specRows) specMap[r.key] = r.value ?? "";
+  return computeCapabilityWarnings(reqRows, specMap, unit.registration, site.name);
+}
+
+type SlotWriteResult = { ok: true } | { ok: false; error: string; code: "CONFLICT" | "LOCKED" };
+
+/**
+ * Write one unit+date slot, and log the matching audit event under `batchId`.
+ *
+ * Every caller that puts a booking into a cell goes through here — the single-cell drawer
+ * save, the bulk create, and drag-to-extend — because the overlay rules this encodes are
+ * subtle enough that a second copy would drift from this one within a release:
+ *
+ *  - a write over a slot where TMS holds a booking we have no row for must become an
+ *    AMENDMENT carrying that `tms_booking_id`, or the merge renders the TMS original and
+ *    our new row in the same cell;
+ *  - a previously-CLEARED TMS booking is a soft-deleted row still holding that
+ *    `tms_booking_id`, which is UNIQUE — so re-booking that slot has to revive the existing
+ *    row rather than insert a second one, which would violate the constraint.
+ *
+ * `expectedUpdatedAt` is the optimistic lock (SPEC.md §11) and doubles as the caller's
+ * statement of what it expects to find: `null` means "this cell was empty when I read it",
+ * so a row appearing there since is a CONFLICT rather than a silent overwrite. That's what
+ * makes the bulk paths safe without a separate mode flag.
+ */
+async function writeBookingAtSlot(
+  tx: Tx,
+  opts: {
+    unit: { id: number; registration: string; companyId: number };
+    date: string;
+    site: { id: number; name: string };
+    status: string;
+    notes: string | null;
+    modalityId: number;
+    actor: { id: number };
+    batchId: string;
+    warnings: CapabilityWarning[];
+    expectedUpdatedAt: string | null;
+  },
+): Promise<SlotWriteResult> {
+  const { unit, date, site, status, notes, modalityId, actor, batchId, warnings } = opts;
+
+  const [existingBooking] = await tx
+    .select()
+    .from(bookings)
+    .where(and(eq(bookings.unitId, unit.id), eq(bookings.date, date), isNull(bookings.deletedAt)))
+    .limit(1);
+
+  const tmsAtSlot = existingBooking ? null : await resolveTmsBookingAt(unit.companyId, unit.id, date);
+
+  const [suppressed] = tmsAtSlot
+    ? await tx.select().from(bookings).where(eq(bookings.tmsBookingId, tmsAtSlot.tmsBookingId)).limit(1)
+    : [];
+
+  if (existingBooking?.publishedAt) {
+    return { ok: false, error: "This booking is published and locked. Unlock it first.", code: "LOCKED" };
+  }
+
+  if (existingBooking && opts.expectedUpdatedAt !== existingBooking.updatedAt.toISOString()) {
+    const name = await nameOfEditor(tx, existingBooking.updatedBy);
+    return {
+      ok: false,
+      error: `This booking was changed by ${name} — refresh to see the latest.`,
+      code: "CONFLICT",
+    };
+  }
+
+  if (existingBooking) {
+    // Editing and re-saving a booking is the scheduler's "I've reviewed this" signal —
+    // clears any TMS import conflict flag (docs/DECISIONS.md #21), even if this save
+    // didn't specifically address whatever TMS wanted to change. tmsImportedAt is reset
+    // to this SAME instant as updatedAt (not two separate `new Date()` calls, which could
+    // differ by a millisecond) so the import's "has this been locally edited since we
+    // last looked" check starts clean from the resolution point, rather than the import
+    // immediately re-flagging — or worse, silently reverting the resolution — on its
+    // next run. See the "frozen while conflicted" note in lib/db/tms/booking-import.ts.
+    const now = new Date();
+    const [updated] = await tx
+      .update(bookings)
+      .set({ siteId: site.id, status, notes, updatedBy: actor.id, updatedAt: now, tmsConflictAt: null, tmsImportedAt: existingBooking.tmsConflictAt ? now : existingBooking.tmsImportedAt })
+      .where(eq(bookings.id, existingBooking.id))
+      .returning();
+    await tx.insert(bookingEvents).values({
+      actorId: actor.id,
+      action: "update",
+      batchId,
+      // Same unit throughout — an edit never changes which unit a booking is on (that's
+      // booking-moves.ts's job) — so both snapshots share the one registration.
+      bookingBefore: { ...existingBooking, unitRegistration: unit.registration },
+      bookingAfter: { ...updated, unitRegistration: unit.registration, capabilityWarnings: warnings },
+    });
+  } else if (suppressed) {
+    // Revive the cleared amendment in place, at the slot being booked.
+    const now = new Date();
+    const [revived] = await tx
+      .update(bookings)
+      .set({
+        unitId: unit.id,
+        date,
+        siteId: site.id,
+        status,
+        notes,
+        deletedAt: null,
+        deletedBy: null,
+        updatedBy: actor.id,
+        updatedAt: now,
+        tmsConflictAt: null,
+      })
+      .where(eq(bookings.id, suppressed.id))
+      .returning();
+    await tx.insert(bookingEvents).values({
+      actorId: actor.id,
+      action: "create",
+      batchId,
+      bookingBefore: { ...suppressed, unitRegistration: unit.registration },
+      bookingAfter: { ...revived, unitRegistration: unit.registration, capabilityWarnings: warnings },
+    });
+  } else {
+    const [created] = await tx
+      .insert(bookings)
+      .values({
+        bookingRef: await nextBookingRef(tx),
+        unitId: unit.id,
+        companyId: unit.companyId,
+        modalityId,
+        date,
+        siteId: site.id,
+        status,
+        notes,
+        createdBy: actor.id,
+        updatedBy: actor.id,
+        // Claims the TMS booking this cell is showing, when there is one — see above.
+        tmsBookingId: tmsAtSlot?.tmsBookingId ?? null,
+        tmsUpdatedAt: tmsAtSlot?.tmsUpdatedAt ?? null,
+      })
+      .returning();
+    await tx.insert(bookingEvents).values({
+      actorId: actor.id,
+      action: "create",
+      batchId,
+      bookingBefore: null,
+      bookingAfter: { ...created, unitRegistration: unit.registration, capabilityWarnings: warnings },
+    });
+  }
+
+  return { ok: true };
+}
+
+// Unit lookup shared by every write path: exists, is in the actor's company, and is actually
+// tagged for the modality it's being booked on. The modality check is defense in depth
+// against a stale or spoofed client-supplied modalityId, not just a UX signal
+// (docs/TMS_INTEGRATION_PLAN.md §4.3) — a unit can carry more than one modality, so this
+// confirms the unit really belongs on the sheet it was booked from.
+async function resolveUnitForWrite(
+  tx: Tx,
+  unitId: number,
+  modalityId: number,
+  actor: { id: number; companyAccess: Parameters<typeof companyAllowed>[0] },
+): Promise<{ ok: true; unit: { id: number; registration: string; companyId: number } } | { ok: false; error: string }> {
+  const [unit] = await tx
+    .select({ id: units.id, registration: units.registration, companyId: units.companyId })
+    .from(units)
+    .where(and(eq(units.id, unitId), isNull(units.deletedAt)))
+    .limit(1);
+  if (!unit) return { ok: false, error: "Unit not found." };
+  // Hard company scoping (docs/DECISIONS.md #22) — a non-super_admin can only ever act
+  // on their own company's units, regardless of what unitId the client sends.
+  if (!companyAllowed(actor.companyAccess, unit.companyId)) {
+    logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: unit.companyId, resource: "booking_unit" });
+    return { ok: false, error: "Unit not found." };
+  }
+
+  const [tag] = await tx
+    .select({ id: unitModalities.id })
+    .from(unitModalities)
+    .where(and(eq(unitModalities.unitId, unitId), eq(unitModalities.modalityId, modalityId)))
+    .limit(1);
+  if (!tag) return { ok: false, error: "This unit isn't tagged for that modality." };
+
+  return { ok: true, unit };
+}
+
 export type SaveBookingInput = {
   unitId: number;
   date: string;
-  site: { id: number } | { name: string };
+  site: SiteInput;
   // A status key from the admin-managed catalogue — validated server-side against the live
   // table inside the transaction, not a fixed enum.
   status: string;
@@ -86,203 +333,30 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
       return { ok: false, error: "Invalid status.", code: "VALIDATION" };
     }
 
-    const [unit] = await tx
-      .select({ id: units.id, registration: units.registration, companyId: units.companyId })
-      .from(units)
-      .where(and(eq(units.id, input.unitId), isNull(units.deletedAt)))
-      .limit(1);
-    if (!unit) return { ok: false, error: "Unit not found.", code: "VALIDATION" };
-    // Hard company scoping (docs/DECISIONS.md #22) — a non-super_admin can only ever act
-    // on their own company's units, regardless of what unitId the client sends.
-    if (!companyAllowed(actor.companyAccess, unit.companyId)) {
-      logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: unit.companyId, resource: "booking_unit" });
-      return { ok: false, error: "Unit not found.", code: "VALIDATION" };
-    }
+    const unitResult = await resolveUnitForWrite(tx, input.unitId, input.modalityId, actor);
+    if (!unitResult.ok) return { ok: false, error: unitResult.error, code: "VALIDATION" };
+    const { unit } = unitResult;
 
-    // The unit must actually be tagged for the modality it's being booked on — defense in
-    // depth against a stale or spoofed client-supplied modalityId, not just a UX signal
-    // (docs/TMS_INTEGRATION_PLAN.md §4.3).
-    const [tag] = await tx
-      .select({ id: unitModalities.id })
-      .from(unitModalities)
-      .where(and(eq(unitModalities.unitId, input.unitId), eq(unitModalities.modalityId, input.modalityId)))
-      .limit(1);
-    if (!tag) return { ok: false, error: "This unit isn't tagged for that modality.", code: "VALIDATION" };
+    const siteResult = await resolveSite(tx, unit.companyId, input.site);
+    if (!siteResult.ok) return { ok: false, error: siteResult.error, code: "VALIDATION" };
+    const { site } = siteResult;
 
-    // Resolve the site — existing by id, or free-text (exact case-insensitive match
-    // reused, otherwise a new pending-review site is created — SPEC.md §5).
-    let site: { id: number; name: string };
-    if ("id" in input.site) {
-      // Company-scoped (docs/DECISIONS.md #22, #11) — without this, a client-supplied site
-      // id from a DIFFERENT company would silently attach the booking to it. Harmless while
-      // only one company existed; a real cross-company leak now that more than one does.
-      const [row] = await tx
-        .select({ id: sites.id, name: sites.name })
-        .from(sites)
-        .where(and(eq(sites.id, input.site.id), eq(sites.companyId, unit.companyId), isNull(sites.deletedAt)))
-        .limit(1);
-      if (!row) return { ok: false, error: "Selected site not found.", code: "VALIDATION" };
-      site = row;
-    } else {
-      const trimmed = input.site.name.trim();
-      if (!trimmed) return { ok: false, error: "Site is required.", code: "VALIDATION" };
-      // Company-scoped for the same reason as above — `sites.name` is only unique within a
-      // company (docs/DECISIONS.md #11), so two companies can share a name (confirmed live:
-      // "LCS Tesco Harrow" exists under both InHealth and Quest Power). Without this filter,
-      // typing a name that happens to match another company's site would silently attach
-      // this booking to THAT site instead of creating (or finding) this company's own.
-      const [existingSite] = await tx
-        .select({ id: sites.id, name: sites.name })
-        .from(sites)
-        .where(and(isNull(sites.deletedAt), eq(sites.companyId, unit.companyId), ilike(sites.name, trimmed)))
-        .limit(1);
-      if (existingSite) {
-        site = existingSite;
-      } else {
-        const [created] = await tx
-          .insert(sites)
-          .values({ name: trimmed, companyId: unit.companyId, pendingReview: true })
-          .returning({ id: sites.id, name: sites.name });
-        site = created;
-      }
-    }
-
-    const [existingBooking] = await tx
-      .select()
-      .from(bookings)
-      .where(and(eq(bookings.unitId, input.unitId), eq(bookings.date, input.date), isNull(bookings.deletedAt)))
-      .limit(1);
-
-    // Under the overlay, the cell may be occupied by a TMS booking we hold no row for
-    // (docs/OVERLAY_BUILD_PLAN.md C2). Saving over it must create an AMENDMENT carrying that
-    // booking's tms_booking_id — a free-standing local row would leave the TMS original
-    // unclaimed, and the merge would then render both in the same cell.
-    const tmsAtSlot = existingBooking
-      ? null
-      : await resolveTmsBookingAt(unit.companyId, input.unitId, input.date);
-
-    // A previously CLEARED TMS booking is a soft-deleted row still holding that
-    // tms_booking_id, which is UNIQUE — so re-booking that slot has to revive the existing
-    // row rather than insert a second one, which would violate the constraint.
-    const [suppressed] = tmsAtSlot
-      ? await tx
-          .select()
-          .from(bookings)
-          .where(eq(bookings.tmsBookingId, tmsAtSlot.tmsBookingId))
-          .limit(1)
-      : [];
-
-    if (existingBooking?.publishedAt) {
-      return { ok: false, error: "This booking is published and locked. Unlock it first.", code: "LOCKED" };
-    }
-
-    if (existingBooking && input.expectedUpdatedAt !== existingBooking.updatedAt.toISOString()) {
-      const name = await nameOfEditor(tx, existingBooking.updatedBy);
-      return {
-        ok: false,
-        error: `This booking was changed by ${name} — refresh to see the latest.`,
-        code: "CONFLICT",
-      };
-    }
-
-    // §2a capability check — logged alongside the audit snapshot, never blocking.
-    const [specRows, reqRows] = await Promise.all([
-      tx
-        .select({ key: unitSpecs.key, value: unitSpecs.value })
-        .from(unitSpecs)
-        .where(eq(unitSpecs.unitId, input.unitId)),
-      tx
-        .select({
-          requirementKey: siteCapabilityRequirements.requirementKey,
-          required: siteCapabilityRequirements.required,
-        })
-        .from(siteCapabilityRequirements)
-        .where(eq(siteCapabilityRequirements.siteId, site.id)),
-    ]);
-    const specMap: Record<string, string> = {};
-    for (const r of specRows) specMap[r.key] = r.value ?? "";
-    const warnings = computeCapabilityWarnings(reqRows, specMap, unit.registration, site.name);
-
+    const warnings = await warningsFor(tx, unit, site);
     const batchId = randomUUID();
-    const notes = input.notes.trim() || null;
 
-    if (existingBooking) {
-      // Editing and re-saving a booking is the scheduler's "I've reviewed this" signal —
-      // clears any TMS import conflict flag (docs/DECISIONS.md #21), even if this save
-      // didn't specifically address whatever TMS wanted to change. tmsImportedAt is reset
-      // to this SAME instant as updatedAt (not two separate `new Date()` calls, which could
-      // differ by a millisecond) so the import's "has this been locally edited since we
-      // last looked" check starts clean from the resolution point, rather than the import
-      // immediately re-flagging — or worse, silently reverting the resolution — on its
-      // next run. See the "frozen while conflicted" note in lib/db/tms/booking-import.ts.
-      const now = new Date();
-      const [updated] = await tx
-        .update(bookings)
-        .set({ siteId: site.id, status: input.status, notes, updatedBy: actor.id, updatedAt: now, tmsConflictAt: null, tmsImportedAt: existingBooking.tmsConflictAt ? now : existingBooking.tmsImportedAt })
-        .where(eq(bookings.id, existingBooking.id))
-        .returning();
-      await tx.insert(bookingEvents).values({
-        actorId: actor.id,
-        action: "update",
-        batchId,
-        // Same unit throughout — an edit never changes which unit a booking is on (that's
-        // booking-moves.ts's job) — so both snapshots share the one registration.
-        bookingBefore: { ...existingBooking, unitRegistration: unit.registration },
-        bookingAfter: { ...updated, unitRegistration: unit.registration, capabilityWarnings: warnings },
-      });
-    } else if (suppressed) {
-      // Revive the cleared amendment in place, at the slot being booked.
-      const now = new Date();
-      const [revived] = await tx
-        .update(bookings)
-        .set({
-          unitId: input.unitId,
-          date: input.date,
-          siteId: site.id,
-          status: input.status,
-          notes,
-          deletedAt: null,
-          deletedBy: null,
-          updatedBy: actor.id,
-          updatedAt: now,
-          tmsConflictAt: null,
-        })
-        .where(eq(bookings.id, suppressed.id))
-        .returning();
-      await tx.insert(bookingEvents).values({
-        actorId: actor.id,
-        action: "create",
-        batchId,
-        bookingBefore: { ...suppressed, unitRegistration: unit.registration },
-        bookingAfter: { ...revived, unitRegistration: unit.registration, capabilityWarnings: warnings },
-      });
-    } else {
-      const [created] = await tx
-        .insert(bookings)
-        .values({
-          bookingRef: await nextBookingRef(tx),
-          unitId: input.unitId,
-          companyId: unit.companyId,
-          modalityId: input.modalityId,
-          date: input.date,
-          siteId: site.id,
-          status: input.status,
-          notes,
-          createdBy: actor.id,
-          updatedBy: actor.id,
-          // Claims the TMS booking this cell is showing, when there is one — see above.
-          tmsBookingId: tmsAtSlot?.tmsBookingId ?? null,
-          tmsUpdatedAt: tmsAtSlot?.tmsUpdatedAt ?? null,
-        })
-        .returning();
-      await tx.insert(bookingEvents).values({
-        actorId: actor.id,
-        action: "create",
-        batchId,
-        bookingBefore: null,
-        bookingAfter: { ...created, unitRegistration: unit.registration, capabilityWarnings: warnings },
-      });
-    }
+    const written = await writeBookingAtSlot(tx, {
+      unit,
+      date: input.date,
+      site,
+      status: input.status,
+      notes: input.notes.trim() || null,
+      modalityId: input.modalityId,
+      actor,
+      batchId,
+      warnings,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+    });
+    if (!written.ok) return written;
 
     revalidatePath("/");
     return { ok: true, message: `Saved — ${unit.registration} · ${site.name}`, warnings, batchId };
@@ -406,4 +480,217 @@ export async function clearBooking(input: ClearBookingInput): Promise<ClearBooki
     revalidatePath("/");
     return { ok: true, message: `Cleared — ${unit?.registration ?? "unit"} on ${input.date}`, batchId };
   });
+}
+
+// ── bulk writes ───────────────────────────────────────────────────────────────────────────
+//
+// Two actions, one shape: a set of unit+date slots, one `batch_id`, all-or-nothing. They back
+// both of the client's asks that need more than one cell written at a time — booking a
+// multi-cell selection in one go, and dragging a run's top/bottom edge to lengthen or shorten
+// it — because underneath, those are the same operation. A booking is one row per unit per
+// day (`bookings.date` is a single date column, guarded by the partial unique index
+// `bookings_unit_date_live_unique`), so a five-day site visit IS five rows and "extend by
+// three days" IS "create three rows". There is no duration to edit.
+//
+// All-or-nothing matters here more than it looks: a half-applied extend leaves a run that
+// stops in a place the scheduler never chose, and — worse — leaves them with no single thing
+// to undo. Every rejection below throws so the transaction rolls back, and success writes one
+// batch id, so one Ctrl+Z reverses the whole gesture.
+
+export type BookingSlot = { unitId: number; date: string };
+
+export type BulkWriteResult =
+  | { ok: true; message: string; batchId: string; warnings: CapabilityWarning[] }
+  | { ok: false; error: string; code: "PERMISSION" | "VALIDATION" | "CONFLICT" | "LOCKED" };
+
+// Rejecting by RETURNING from inside db.transaction commits whatever has already been written
+// — and these loops write row by row. Throwing is what rolls that back. Same pattern, and the
+// same reasoning, as MoveRejected in lib/actions/booking-moves.ts.
+class BulkRejected extends Error {
+  constructor(public result: Extract<BulkWriteResult, { ok: false }>) {
+    super("bulk write rejected");
+  }
+}
+
+export type CreateBookingsInput = {
+  slots: BookingSlot[];
+  site: SiteInput;
+  status: string;
+  notes: string;
+  modalityId: number;
+};
+
+/**
+ * Book a set of empty cells with one set of field values.
+ *
+ * Every slot must be free. `expectedUpdatedAt: null` on each write says so, and a row that
+ * has appeared since the client read the grid comes back as CONFLICT for the whole batch
+ * rather than being silently overwritten — these slots were chosen *because* they were empty,
+ * so finding a booking in one is a reason to stop and re-look, not to clobber it.
+ */
+export async function createBookings(input: CreateBookingsInput): Promise<BulkWriteResult> {
+  const actor = await requireRole([...EDITOR_ROLES]);
+  if (!actor) return { ok: false, error: "You don't have permission to edit bookings.", code: "PERMISSION" };
+  if (!input.slots.length) return { ok: false, error: "Nothing to book.", code: "VALIDATION" };
+
+  try {
+    return await db.transaction(async (tx) => {
+      if (!(await isSettableStatus(tx, input.status))) {
+        throw new BulkRejected({ ok: false, error: "Invalid status.", code: "VALIDATION" });
+      }
+
+      // Resolve each distinct unit once, not once per slot — a 14-day run is 14 slots on one
+      // unit, and re-running the company and modality checks for each would be 28 needless
+      // round trips inside the transaction.
+      const unitIds = [...new Set(input.slots.map((s) => s.unitId))];
+      const unitById = new Map<number, { id: number; registration: string; companyId: number }>();
+      for (const unitId of unitIds) {
+        const result = await resolveUnitForWrite(tx, unitId, input.modalityId, actor);
+        if (!result.ok) throw new BulkRejected({ ok: false, error: result.error, code: "VALIDATION" });
+        unitById.set(unitId, result.unit);
+      }
+
+      // A selection spanning two companies can't be booked as one batch: `sites` are scoped
+      // per company (docs/DECISIONS.md #11), so there is no single site row the whole set
+      // could point at. The grid is always scoped to one company, so this is a guard against
+      // a malformed request rather than something a scheduler can do by hand.
+      const companyIds = new Set([...unitById.values()].map((u) => u.companyId));
+      if (companyIds.size > 1) {
+        throw new BulkRejected({ ok: false, error: "Those units belong to different companies.", code: "VALIDATION" });
+      }
+      const companyId = [...companyIds][0];
+
+      // Once for the batch — see resolveSite. Typing a brand-new site name and booking five
+      // cells with it must create one site, not five.
+      const siteResult = await resolveSite(tx, companyId, input.site);
+      if (!siteResult.ok) throw new BulkRejected({ ok: false, error: siteResult.error, code: "VALIDATION" });
+      const { site } = siteResult;
+
+      const batchId = randomUUID();
+      const notes = input.notes.trim() || null;
+
+      // Capability warnings depend on the unit and the site, so they're per distinct unit,
+      // not per slot. The union is what the caller reports.
+      const warningsByUnit = new Map<number, CapabilityWarning[]>();
+      for (const unit of unitById.values()) {
+        warningsByUnit.set(unit.id, await warningsFor(tx, unit, site));
+      }
+
+      for (const slot of input.slots) {
+        const unit = unitById.get(slot.unitId)!;
+        const written = await writeBookingAtSlot(tx, {
+          unit,
+          date: slot.date,
+          site,
+          status: input.status,
+          notes,
+          modalityId: input.modalityId,
+          actor,
+          batchId,
+          warnings: warningsByUnit.get(unit.id)!,
+          expectedUpdatedAt: null,
+        });
+        if (!written.ok) {
+          throw new BulkRejected({
+            ok: false,
+            // Name the slot: with a dozen cells in flight, "one of these is taken" leaves the
+            // scheduler hunting for which.
+            error: `${unit.registration} on ${slot.date}: ${written.error}`,
+            code: written.code,
+          });
+        }
+      }
+
+      revalidatePath("/");
+      const n = input.slots.length;
+      return {
+        ok: true,
+        message: `Booked ${n} day${n > 1 ? "s" : ""} — ${site.name}`,
+        batchId,
+        warnings: [...new Set([...warningsByUnit.values()].flat())],
+      };
+    });
+  } catch (err) {
+    if (err instanceof BulkRejected) return err.result;
+    throw err;
+  }
+}
+
+export type ClearBookingsInput = {
+  slots: (BookingSlot & { expectedUpdatedAt: string })[];
+};
+
+/**
+ * Soft-delete a set of bookings as one batch — what dragging a run's edge inward does.
+ *
+ * Only touches slots that already hold a local row. Unlike `clearBooking`, this does NOT fall
+ * back to writing a suppression for an untouched TMS booking: shrinking a run can only ever
+ * remove days the planner itself put there, and the run-edge detection on the client works
+ * off local bookings, so a TMS-only slot reaching here would mean the client and server
+ * disagree about what's in the cell — which is a CONFLICT to report, not a clear to perform.
+ */
+export async function clearBookings(input: ClearBookingsInput): Promise<BulkWriteResult> {
+  const actor = await requireRole([...EDITOR_ROLES]);
+  if (!actor) return { ok: false, error: "You don't have permission to edit bookings.", code: "PERMISSION" };
+  if (!input.slots.length) return { ok: false, error: "Nothing to clear.", code: "VALIDATION" };
+
+  try {
+    return await db.transaction(async (tx) => {
+      const batchId = randomUUID();
+
+      for (const slot of input.slots) {
+        const [existing] = await tx
+          .select()
+          .from(bookings)
+          .where(and(eq(bookings.unitId, slot.unitId), eq(bookings.date, slot.date), isNull(bookings.deletedAt)))
+          .limit(1);
+        if (!existing) {
+          throw new BulkRejected({ ok: false, error: "One of those bookings no longer exists — refresh and try again.", code: "CONFLICT" });
+        }
+        // Hard company scoping (docs/DECISIONS.md #22).
+        if (!companyAllowed(actor.companyAccess, existing.companyId)) {
+          logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: existing.companyId, resource: "booking_clear_bulk" });
+          throw new BulkRejected({ ok: false, error: "One of those bookings no longer exists — refresh and try again.", code: "CONFLICT" });
+        }
+        if (existing.publishedAt) {
+          throw new BulkRejected({ ok: false, error: "One of those bookings is published and locked. Unlock it first.", code: "LOCKED" });
+        }
+        if (slot.expectedUpdatedAt !== existing.updatedAt.toISOString()) {
+          const name = await nameOfEditor(tx, existing.updatedBy);
+          throw new BulkRejected({
+            ok: false,
+            error: `One of those bookings was changed by ${name} — refresh to see the latest.`,
+            code: "CONFLICT",
+          });
+        }
+
+        const now = new Date();
+        await tx
+          .update(bookings)
+          .set({ deletedAt: now, deletedBy: actor.id, updatedAt: now, updatedBy: actor.id })
+          .where(eq(bookings.id, existing.id));
+
+        const [unit] = await tx
+          .select({ registration: units.registration })
+          .from(units)
+          .where(eq(units.id, existing.unitId))
+          .limit(1);
+
+        await tx.insert(bookingEvents).values({
+          actorId: actor.id,
+          action: "delete",
+          batchId,
+          bookingBefore: { ...existing, unitRegistration: unit?.registration },
+          bookingAfter: null,
+        });
+      }
+
+      revalidatePath("/");
+      const n = input.slots.length;
+      return { ok: true, message: `Cleared ${n} day${n > 1 ? "s" : ""}`, batchId, warnings: [] };
+    });
+  } catch (err) {
+    if (err instanceof BulkRejected) return err.result;
+    throw err;
+  }
 }

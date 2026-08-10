@@ -365,8 +365,20 @@ Click any cell (booked or empty) → right-side drawer (shadcn Sheet):
 - Actions: **Save booking** (disabled until a site is set) · **Clear** (only when
   editing an existing booking). Both toast on success and write `booking_events`.
 
-**Bulk edit**: when the drawer is opened while ≥2 bookings are selected (via the
-multi-select mechanism in §6), it switches to bulk mode:
+**Bulk create** (built — `components/planner/bulk-booking-drawer.tsx`): with ≥1 **free**
+cells selected (§6), the selection bar offers "Book N days", which opens a sheet with just
+the site, status and notes fields. All of them are written with the same values in one
+`batch_id`, so one Ctrl/Cmd+Z reverses the lot. Notes start blank and apply to every day if
+used; they aren't copied from anywhere, since notes are per-day operational detail.
+Deliberately a separate component from the single-cell drawer, not a mode inside it — almost
+everything that drawer does (the optimistic lock, Clear, Unlock, the TMS supersede/collision
+banners) is about one specific booking. The two share their form fields properly, as
+components (`components/planner/booking-fields.tsx`). See `docs/DECISIONS.md` #46.
+
+**Bulk edit** — *specified, NOT built.* Deliberately out of scope for the client-feedback
+round that delivered bulk create above; the two are independent and bulk create was the one
+asked for. When the drawer is opened while ≥2 bookings are selected (via the multi-select
+mechanism in §6), it should switch to bulk mode:
 - Header reads "Edit N bookings" instead of a single unit/date.
 - Fields behave as **"apply to all"**: Site and Status show a placeholder if the
   selection has mixed values ("— multiple —") rather than guessing one; leaving a field
@@ -381,30 +393,58 @@ multi-select mechanism in §6), it switches to bulk mode:
 
 ## 6. Multi-select & drag-and-drop
 
-Selection (booked cells only):
+Selection (**booked or free** cells — `docs/DECISIONS.md` #46):
 - **Ctrl/Cmd-click** toggles a cell into the selection (tick badge on chip).
-- **Shift-click** selects the contiguous run of booked days between the last anchor and
-  the clicked cell **within the same unit column**.
+- **Shift-click** selects the contiguous run between the last anchor and the clicked cell
+  **within the same unit column**. The range takes its kind from the anchor: anchored on a
+  booking it picks up bookings, anchored on a free cell it picks up free cells — so a range
+  stays homogeneous without the user having to think about it.
 - **Select mode** toolbar toggle: every click selects (touch support).
 - **Clicking an already-selected chip always unselects it** (no modifier — this was a
   usability fix; keep it).
-- Selection bar (dark navy strip) shows count, hint text, and "Clear selection (Esc)".
-- Esc clears selection / closes drawer / cancels drag / closes dialogs.
+- A plain unmodified click on a free cell still opens the drawer for that one cell.
+- The selection **may hold both kinds at once**, and each action states its own scope: drag,
+  swap and publish act on the booked members; "Book N days" acts on the free members. The
+  selection bar names both counts.
+- Selection bar (dark navy strip) shows the counts, hint text, and "Clear selection (Esc)".
+- Esc clears selection / closes drawer / cancels drag or resize / closes dialogs.
 
 Drag-and-drop:
 - Dragging any chip moves it; if it's part of a selection, the **whole set moves rigidly**
   (same day-offset and unit-offset for every member, preserving relative spacing).
   Dragging an unselected chip moves just that one (and auto-selects it for the drag).
-- Live preview while dragging: every target cell highlights **green (free)** or
-  **red (occupied)**.
+- Live preview while dragging is **one verdict for the whole set**, not per cell
+  (`docs/DECISIONS.md` #44): every target highlights **green** only when *all* of them land
+  cleanly, and **red** across the board otherwise — including when part of the set falls
+  outside the loaded range. Green means exactly "drop this and it just moves".
+- While a drag is live, the selection bar becomes its readout and names the shortfall in
+  words ("9 bookings · 3 won't fit"), because colour alone can't distinguish a clash from an
+  out-of-range block.
 - Drop outcomes:
   - all targets free → move applies immediately, toast summarises ("Moved 3 bookings
     (+7 days)").
   - any target outside the loaded range → reject with explanatory toast.
-  - any target occupied → **clash dialog** (§7).
+  - any target occupied → **clash dialog** (§7). Red means "not a clean fit", not
+    "forbidden" — swap/overwrite is still reachable.
 - Statuses and notes travel with a moved booking unchanged (client question §13.3).
-- Production niceties not in the mock-up: auto-scroll while dragging near viewport edges;
-  a drag ghost showing the count ("3 bookings").
+- Production niceties not in the mock-up: auto-scroll while dragging near viewport edges
+  (built for the resize gesture below); a drag ghost showing the count ("3 bookings") —
+  **not built**, the selection-bar readout covers it.
+
+Extending a visit (`docs/DECISIONS.md` #47):
+- The first and last day of a **run** — contiguous days on one unit sharing a site, none
+  published — carry an 8px `ns-resize` grab strip, revealed on hover.
+- Dragging it outward lengthens the visit; inward shortens it. One gesture is one
+  `batch_id`, so one Ctrl/Cmd+Z reverses it.
+- New days inherit the grabbed booking's **site and status**; notes are left blank.
+- Growth **clamps** at the first occupied day — the edge simply refuses to go further rather
+  than turning red, since there is no invalid state to represent.
+- A run always keeps at least one day; emptying it is **Clear**, not a resize.
+- Status may vary within a run — only the site defines it. A week at one site that's
+  Confirmed for three days and Provisional for two is still one visit.
+- Note this is a bulk **create**, not a duration edit: `bookings.date` is a single date
+  column and a five-day visit is five rows (§2c). Shares `createBookings` with bulk create
+  above.
 
 ## 7. Admin page
 

@@ -10,11 +10,15 @@ import type { OverlayBooking } from "@/lib/db/tms/overlay";
 // links, the open-cell highlight) rather than the very dark navy this used to be: mixing
 // white toward near-black navy at a light ratio reads as grey, not blue, and Dave was
 // explicit that Confirmed-in-planner needed to actually look blue, not just "not quite
-// white" (docs/DECISIONS.md #32). Used two ways: as a background wash mixed into the status
-// colour (#31 — a small dot alone wasn't enough either), and as the corner dot that still
-// names which kind of change it is once you look closer. The wash is deliberately a small
-// mix (14%) so every status keeps its own colour family rather than eight statuses
-// converging on one "changed" colour — the grid has to stay readable as a *schedule* first.
+// white" (docs/DECISIONS.md #32). Applied as a background wash mixed into the status colour
+// (#31 — a small corner dot alone wasn't enough). The wash is deliberately a small mix (14%)
+// so every status keeps its own colour family rather than eight statuses converging on one
+// "changed" colour — the grid has to stay readable as a *schedule* first.
+//
+// The wash used to be accompanied by a 6px corner dot naming which KIND of change it was.
+// That dot is gone at the client's request (docs/DECISIONS.md #39): the wash already answers
+// "does TMS have this?", and the kind is still named in full in the chip's tooltip below, so
+// nothing was lost but clutter on every changed cell in the grid.
 const CHANGE_COLOR = "#2b7bb9";
 const CHANGE_WASH_RATIO = 0.14;
 
@@ -96,7 +100,12 @@ type CellChipProps = {
   checked?: boolean;
   isOpen?: boolean;
   draggable?: boolean;
-  preview?: "ok" | "bad" | null;
+  /**
+   * Live drag feedback. `ok`/`bad` come from a move — green when the whole set lands cleanly,
+   * red when it doesn't. `remove` comes from dragging a run's edge INWARD: this day is about
+   * to be given up, which is neither of those things.
+   */
+  preview?: "ok" | "bad" | "remove" | null;
   /** Transient highlight after jumping here from a ghost's "moved to" link (Stage C1). */
   flash?: boolean;
   /**
@@ -140,12 +149,21 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
   // Longhand only — the base styles below set `borderColor`, so mixing in the `border`
   // shorthand here makes React warn when the preview clears (shorthand removed while the
   // longhand persists). Keep every border property in longhand form on both sides.
-  const previewStyle =
+  // Typed as CSSProperties rather than inferred: every branch below sets borderColor,
+  // borderStyle and background, and an inferred union of those literals makes TypeScript
+  // flag the intentional override where this is spread over the base styles. The override
+  // IS the point — a drag preview outranks whatever the cell normally looks like.
+  const previewStyle: React.CSSProperties | null =
     preview === "ok"
       ? { borderColor: "#3d7f53", borderStyle: "solid", borderWidth: "1.5px", background: "#e9f4ec" }
       : preview === "bad"
         ? { borderColor: "#b13a3a", borderStyle: "solid", borderWidth: "1.5px", background: "#f9ebeb" }
-        : null;
+        : preview === "remove"
+          ? // The tan the app already uses for "pending removal" (the ⌫ mark on a cleared
+            // TMS slot), plus a fade — this day is on its way out, not in conflict. Red
+            // would have said "clash", which is a different thing entirely.
+            { borderColor: "#d8c5b4", borderStyle: "dashed", borderWidth: "1.5px", background: "#faf6f2", opacity: 0.5 }
+          : null;
 
   if (!booking) {
     return (
@@ -154,21 +172,44 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
         type="button"
         onClick={onClick}
         title={
-          pendingRemoval
-            ? `Free — you've cleared "${pendingRemoval}" here. TMS still shows it until that's published. Click to book something else.`
-            : "Available — click to assign"
+          checked
+            ? "Selected — book this and the rest of the selection in one go, or click to unselect"
+            : pendingRemoval
+              ? `Free — you've cleared "${pendingRemoval}" here. TMS still shows it until that's published. Click to book something else.`
+              : "Available — click to assign · Ctrl-click or Shift-click to select several"
         }
-        className="relative flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background] duration-150 select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+        className="relative flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background,box-shadow] duration-150 select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
         style={{
           ...injectedStyle,
-          borderColor: isOpen ? "#2b7bb9" : pendingRemoval ? "#d8c5b4" : "#e6e6e6",
-          background: isOpen ? "#f0f7ff" : "transparent",
+          // An empty cell flashes too. Undoing a *create* empties the cell it's taking you
+          // to, so without this the grid would scroll to the right place and highlight
+          // nothing — the one case where the highlight matters most, because there's no chip
+          // left to notice.
+          // An empty cell can be selected now (to book a run of free days in one go), so it
+          // needs the same blue border-and-ring the booked chip uses — the ✓ badge alone,
+          // floating in an otherwise-unchanged dashed outline, didn't read as "picked".
+          borderColor: flash ? "#f17f42" : checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : pendingRemoval ? "#d8c5b4" : "#e6e6e6",
+          borderStyle: flash || checked ? "solid" : "dashed",
+          boxShadow: flash
+            ? "0 0 0 3px rgba(241,127,66,0.45)"
+            : checked
+              ? "0 0 0 2px rgba(43,123,185,0.28)"
+              : "none",
+          background: isOpen ? "#f0f7ff" : checked ? "#f0f7ff" : "transparent",
           opacity: dimmed && !preview ? 0.22 : 1,
           ...(previewStyle ?? {}),
         }}
         {...rest}
       >
         {isOpen ? "+" : ""}
+        {checked && (
+          <span
+            className="absolute top-[3px] right-[3px] flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2b7bb9] text-[9px] leading-none font-bold text-white"
+            aria-hidden
+          >
+            ✓
+          </span>
+        )}
         {pendingRemoval && !isOpen && (
           // Small enough to read as "free with a note", not as an occupied cell — the whole
           // reason this isn't rendered as a struck-through booking chip.
@@ -203,10 +244,11 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
   const supersedes = booking.tmsSupersedes && !hasTmsConflict && !collision;
   // What publishing this cell would change in TMS, if anything. Null once published (🔒 is
   // already the stronger statement) and for untouched TMS bookings. See lib/planner-changes.ts.
+  // Now drives the background wash alone; the tooltip below is what names the kind.
   const changeKind = changeKindFor(booking);
-  // The background itself, not just a corner mark — see CHANGE_COLOR above. Skipped once
-  // locked: a published chip is already visually distinct (desaturated, padlocked), and by
-  // definition nothing published still has a changeKind anyway.
+  // The background itself — see CHANGE_COLOR above. Skipped once locked: a published chip is
+  // already visually distinct (desaturated, padlocked), and by definition nothing published
+  // still has a changeKind anyway.
   const fill = changeKind ? mixHex(st.bg, CHANGE_COLOR, CHANGE_WASH_RATIO) : st.bg;
 
   // `select-none` below matters for more than tidiness: this chip is draggable AND renders the
@@ -289,14 +331,6 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
         >
           ↻
         </span>
-      )}
-      {changeKind && (
-        <span
-          className="absolute right-[4px] bottom-[4px] h-[6px] w-[6px] rounded-full"
-          style={{ background: CHANGE_COLOR }}
-          aria-hidden
-          title={CHANGE_KIND_LABEL[changeKind]}
-        />
       )}
       {checked && (
         <span

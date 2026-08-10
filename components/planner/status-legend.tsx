@@ -67,14 +67,9 @@ export function StatusLegend() {
         <Item
           swatch={
             <span
-              className="relative h-3.5 w-3.5 rounded border-[1.5px] border-[#e6e6e6]"
+              className="h-3.5 w-3.5 rounded border-[1.5px] border-[#e6e6e6]"
               style={{ background: mixHex("#ffffff", CHANGE_COLOR, CHANGE_WASH_RATIO) }}
-            >
-              <span
-                className="absolute right-[1px] bottom-[1px] h-[5px] w-[5px] rounded-full"
-                style={{ background: CHANGE_COLOR }}
-              />
-            </span>
+            />
           }
         >
           Changed here — not sent to TMS yet

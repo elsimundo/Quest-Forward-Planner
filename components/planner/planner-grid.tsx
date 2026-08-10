@@ -24,6 +24,8 @@ import { MoveSelectedDialog, type MoveRow } from "./move-selected-dialog";
 import { PlannerToolbar } from "./toolbar";
 import { StatusLegend } from "./status-legend";
 import { SelectionBar } from "./selection-bar";
+import { BulkBookingDrawer } from "./bulk-booking-drawer";
+import { createBookings, clearBookings } from "@/lib/actions/bookings";
 import { ChangesBar } from "./changes-bar";
 import { ClashDialog, type Clash } from "./clash-dialog";
 import { PublishRangeDialog } from "./publish-range-dialog";
@@ -153,6 +155,65 @@ type Unit = { id: number; registration: string; description: string | null; disp
 type CapabilityRequirement = { requirementKey: string; required: boolean };
 const cellKey = (date: string, unitId: number) => `${date}|${unitId}`;
 
+/**
+ * A live "drag the edge of a run" gesture.
+ *
+ * `startIdx`/`endIdx` are the run as it stands in the database; `edgeIdx` is where the
+ * dragged edge currently sits, clamped to `[minIdx, maxIdx]` — the walls worked out once at
+ * pointer-down (the first occupied day in the growth direction, and one day short of the
+ * opposite end when shrinking). The difference between the two is what gets written.
+ */
+type ResizeState = {
+  unitId: number;
+  edge: "top" | "bottom";
+  /** Inherited by every day this gesture creates. */
+  siteId: number;
+  siteName: string;
+  status: string;
+  startIdx: number;
+  endIdx: number;
+  edgeIdx: number;
+  minIdx: number;
+  maxIdx: number;
+};
+
+/**
+ * The grab strip on the top or bottom edge of a run.
+ *
+ * A sibling of CellChip rather than a child: the chip is a `<button>`, and a button inside a
+ * button is invalid HTML that browsers recover from unpredictably — GhostChip already solved
+ * the same problem the same way. It's a plain div, not a button, because it isn't reachable
+ * or operable by keyboard; extending a run without a pointer is done by booking the extra
+ * days directly, which the keyboard path already supports.
+ *
+ * `draggable={false}` matters: without it the strip inherits the chip's HTML5 drag on some
+ * browsers and the two gestures fight over the same pointer-down.
+ */
+function ResizeHandle({ edge, onStart }: { edge: "top" | "bottom"; onStart: (e: React.PointerEvent) => void }) {
+  return (
+    <div
+      draggable={false}
+      onPointerDown={onStart}
+      title={edge === "top" ? "Drag to start this visit earlier or later" : "Drag to extend or shorten this visit"}
+      // (54px row − 40px chip) / 2 = 7px of dead space above and below the chip, so the
+      // strip sits exactly on the chip's edge without overhanging the row.
+      className={`absolute right-[3px] left-[3px] z-10 h-[8px] cursor-ns-resize rounded-full opacity-0 transition-opacity duration-150 group-hover:opacity-100 ${
+        edge === "top" ? "top-[7px]" : "bottom-[7px]"
+      }`}
+      style={{ background: "rgba(43,123,185,0.55)" }}
+    />
+  );
+}
+
+/** The days a resize would add, and the days it would give up. Exactly one is ever non-empty. */
+function resizeSlices(st: ResizeState, days: DayInfo[]): { add: string[]; remove: string[] } {
+  const range = (from: number, to: number) =>
+    from > to ? [] : days.slice(from, to + 1).map((d) => d.date);
+  return st.edge === "bottom"
+    ? { add: range(st.endIdx + 1, st.edgeIdx), remove: range(st.edgeIdx + 1, st.endIdx) }
+    : { add: range(st.edgeIdx, st.startIdx - 1), remove: range(st.startIdx, st.edgeIdx - 1) };
+}
+
 type DragPreview = {
   origin: { date: string; unitId: number };
   keys: string[];
@@ -251,6 +312,9 @@ export function PlannerGrid({
   }
 
   const [selectMode, setSelectMode] = useState(false);
+  // "Book N days" on a selection of free cells. Separate from `drawerTarget`, which is always
+  // about one specific cell.
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ date: string; unitId: number } | null>(null);
   const [drag, setDrag] = useState<DragPreview | null>(null);
@@ -340,9 +404,13 @@ export function PlannerGrid({
     );
   }, [bookings]);
 
-  // Transient highlight on the cell we just jumped to from a ghost, so the eye lands on it
-  // rather than on "some row scrolled past". Cleared on a timer, and on unmount.
-  const [flashKey, setFlashKey] = useState<string | null>(null);
+  // Transient highlight on the cells we just jumped to, so the eye lands on them rather than
+  // on "some row scrolled past". Cleared on a timer, and on unmount.
+  //
+  // A Set rather than one key: an undo reverts a whole batch, and flashing only the cell that
+  // happened to be scrolled to would understate what just changed — nine bookings snapping
+  // back should light up nine cells.
+  const [flashKeys, setFlashKeys] = useState<Set<string>>(() => new Set());
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
 
@@ -527,9 +595,15 @@ export function PlannerGrid({
     setAnchor({ date, unitId });
   }, []);
 
+  // Shift-click extends from the anchor down the same unit column. The range takes its KIND
+  // from the anchor: anchored on a booking it picks up bookings, anchored on an empty cell it
+  // picks up empty cells. That keeps a range homogeneous without anyone having to think about
+  // it, and it's what makes "shift-click twelve free days and book them all" one gesture
+  // instead of twelve ctrl-clicks — the thing the client asked for.
   const rangeCheck = useCallback(
     (date: string, unitId: number) => {
       if (!anchor || anchor.unitId !== unitId) return toggleCheck(date, unitId);
+      const wantEmpty = !bookingLookup.has(cellKey(anchor.date, anchor.unitId));
       const a = dateIdx.get(anchor.date)!;
       const b = dateIdx.get(date)!;
       const [lo, hi] = a < b ? [a, b] : [b, a];
@@ -538,12 +612,36 @@ export function PlannerGrid({
         for (let i = lo; i <= hi; i++) {
           const d = days[i].date;
           const c = bookingLookup.get(cellKey(d, unitId));
-          if (c && !c.publishedAt) next.add(cellKey(d, unitId));
+          if (wantEmpty ? !c : c && !c.publishedAt) next.add(cellKey(d, unitId));
         }
         return next;
       });
     },
     [anchor, dateIdx, days, bookingLookup, toggleCheck],
+  );
+
+  // The selection can now hold both booked and empty cells, so every action states its own
+  // scope rather than assuming one kind. Splitting it here once means `moveRows`, the publish
+  // preflight and the drag all read a list that's already the right shape for them.
+  //
+  // A moved-away ghost's cell counts as empty on purpose: that slot genuinely IS free (the
+  // availability bar counts it free, and the database will accept a booking there), and
+  // `bookingLookup` excludes ghosts, so it falls out correctly with no special case. See
+  // docs/CELL_STATES.md.
+  const selectedBookingKeys = useMemo(
+    () => [...checked].filter((k) => bookingLookup.has(k)),
+    [checked, bookingLookup],
+  );
+  const selectedBookingSet = useMemo(() => new Set(selectedBookingKeys), [selectedBookingKeys]);
+  const selectedEmptySlots = useMemo(
+    () =>
+      [...checked]
+        .filter((k) => !bookingLookup.has(k))
+        .map((k) => {
+          const [date, unitStr] = k.split("|");
+          return { unitId: Number(unitStr), date };
+        }),
+    [checked, bookingLookup],
   );
 
   const clearSelection = useCallback(() => {
@@ -573,26 +671,35 @@ export function PlannerGrid({
     writeOpenCell(null);
   }, []);
 
+  // Empty cells are selectable too now. The `&& booking` guards these branches used to carry
+  // were what made `checked` provably all-booked; the scoping memos above replace that
+  // guarantee with an explicit split, so each action still knows what it's acting on.
+  //
+  // A plain unmodified click on an empty cell is unchanged: it opens the drawer to book that
+  // one cell, which is the common case and shouldn't need a modifier.
   const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: OverlayBooking | null) => {
     if (booking?.publishedAt) return openCell(day, unit);
     const k = cellKey(day.date, unit.id);
-    if (booking && checked.has(k)) return toggleCheck(day.date, unit.id);
-    if (e.shiftKey && booking) return rangeCheck(day.date, unit.id);
-    if ((e.ctrlKey || e.metaKey || selectMode) && booking) return toggleCheck(day.date, unit.id);
+    if (checked.has(k)) return toggleCheck(day.date, unit.id);
+    if (e.shiftKey) return rangeCheck(day.date, unit.id);
+    if (e.ctrlKey || e.metaKey || selectMode) return toggleCheck(day.date, unit.id);
     openCell(day, unit);
   };
 
   // ── drag and drop ──
   const startDrag = (e: React.DragEvent, day: DayInfo, unit: Unit) => {
     const k = cellKey(day.date, unit.id);
-    let set = checked;
+    // A drag moves BOOKINGS. Any empty cells in the selection are along for a different ride
+    // (they're what "Book N cells" acts on) and are dropped from the drag here rather than
+    // being fed to computePreview, which has nothing to move for them.
+    let keys = selectedBookingKeys;
     if (!checked.has(k)) {
-      set = new Set([k]);
-      setChecked(set);
+      setChecked(new Set([k]));
+      keys = [k];
     }
     const origin = { date: day.date, unitId: unit.id };
-    dragRef.current = { origin, keys: [...set] };
-    setDrag({ origin, keys: [...set], single: false, preview: new Map(), valid: false, moves: [], clashes: [], oob: false, dDelta: 0, uDelta: 0 });
+    dragRef.current = { origin, keys };
+    setDrag({ origin, keys, single: false, preview: new Map(), valid: false, moves: [], clashes: [], oob: false, dDelta: 0, uDelta: 0 });
     e.dataTransfer.effectAllowed = "move";
     try {
       e.dataTransfer.setData("text/plain", "quest-move");
@@ -631,6 +738,18 @@ export function PlannerGrid({
         moves.push({ fromUnitId: srcUnit, fromDate: srcDate, toUnitId: tUnit, toDate: tDate });
       }
       const valid = !oob && clashes.length === 0;
+      // One block, one verdict. Painting each target cell on its own merits meant dragging
+      // nine bookings into a gap that fits six showed six green cells and three red ones —
+      // which the client read as "this will work", because green is the go-ahead colour and
+      // most of the block was green. It never did work: `attemptMove` below sends anything
+      // with a clash to the swap/overwrite dialog and anything out of range to a toast. So
+      // this is a feedback fix, not a behaviour one — if the set doesn't land cleanly as a
+      // set, the whole set says so. Green now means exactly "drop this and it just moves".
+      //
+      // Out-of-range members have no in-range key to paint, which is the case this matters
+      // most for: without the sweep a block hanging off the end of the calendar showed its
+      // remaining members in green with nothing to indicate the rest had nowhere to go.
+      if (!valid) for (const k of preview.keys()) preview.set(k, "bad");
       return { preview, valid, moves, clashes, oob, dDelta, uDelta };
     },
     [dateIdx, unitIdx, days, units, bookingLookup],
@@ -661,16 +780,6 @@ export function PlannerGrid({
     const res = computePreview(st, day.date, unit.id);
     e.dataTransfer.dropEffect = res.valid ? "move" : "none";
     const tKey = cellKey(day.date, unit.id);
-    // TEMP DEBUG — remove after diagnosing extra-drop-zone report.
-    console.log("[drag-debug]", {
-      originKeys: active.keys,
-      narrowedKeys: st.keys,
-      single,
-      hoverTarget: tKey,
-      previewEntries: [...res.preview.entries()],
-      dDelta: res.dDelta,
-      uDelta: res.uDelta,
-    });
     // Capture values now, synchronously — the updater below can run after a later event
     // (e.g. drop) has already nulled dragRef.current via endDrag().
     const { origin, keys } = st;
@@ -686,6 +795,188 @@ export function PlannerGrid({
     dragRef.current = null;
     setDrag(null);
   }, []);
+
+  // ── extend / shorten a run (drag the top or bottom edge) ──
+  //
+  // The client's "would be nice to drag the top or bottom of the planned movement to extend
+  // it". A "planned movement" on screen is a vertical run of days — but there is no run in the
+  // database: a booking is one row per unit per day (`bookings.date` is a single date column),
+  // so there is no duration to stretch. Extending by three days CREATES three rows; pulling
+  // the edge back in soft-deletes them. Both go through the bulk actions in
+  // lib/actions/bookings.ts under one batch id, so the whole gesture is one Ctrl+Z.
+  //
+  // A run is: contiguous days, same unit, same SITE, none of them published. Status is
+  // allowed to vary within one — a week at one site that's Confirmed for three days and
+  // Provisional for two is still one visit, and splitting the handle there would be
+  // surprising. New days inherit the grabbed booking's site and status, with blank notes:
+  // notes are per-day operational detail ("arrive 7am"), and copying one across a fortnight
+  // would be wrong more often than right.
+
+  // Which cells carry a handle, and on which edge. Computed once per render over the whole
+  // lookup rather than per cell — the grid is virtualised but still renders every visible
+  // unit column for every visible day, and walking neighbours inside the cell render would
+  // repeat this work a few hundred times a scroll.
+  const runEdges = useMemo(() => {
+    const edges = new Map<string, { top: boolean; bottom: boolean }>();
+    const sameRun = (unitId: number, siteId: number, idx: number) => {
+      if (idx < 0 || idx >= days.length) return false;
+      const n = bookingLookup.get(cellKey(days[idx].date, unitId));
+      return !!n && !n.publishedAt && n.siteId === siteId;
+    };
+    for (const [k, b] of bookingLookup) {
+      if (b.publishedAt) continue;
+      const i = dateIdx.get(b.date);
+      if (i === undefined) continue;
+      edges.set(k, {
+        top: !sameRun(b.unitId, b.siteId, i - 1),
+        bottom: !sameRun(b.unitId, b.siteId, i + 1),
+      });
+    }
+    return edges;
+  }, [bookingLookup, dateIdx, days]);
+
+  const [resize, setResize] = useState<ResizeState | null>(null);
+  // The live gesture, for the pointer handlers — same reason dragRef exists: they're
+  // registered once and can't see fresh state.
+  const resizeRef = useRef<ResizeState | null>(null);
+  const resizePointerY = useRef(0);
+  const autoScrollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Which day is under the pointer. Read from the DOM rather than computed from coordinates:
+  // rows are virtualised and sit behind a sticky header, columns behind a sticky date column,
+  // and reproducing all of that in arithmetic is exactly the kind of thing that drifts the
+  // first time a padding value changes.
+  function dayIdxAtPoint(clientY: number, unitId: number): number | null {
+    const el = document.elementFromPoint(
+      // Any x inside the unit's own column would do; the cell we want is keyed by both, so
+      // just probe straight down the column the run lives in via its data attribute.
+      resizeProbeX.current,
+      clientY,
+    );
+    const cell = (el as HTMLElement | null)?.closest<HTMLElement>("[data-cell-date]");
+    if (!cell || Number(cell.dataset.cellUnit) !== unitId) return null;
+    return dateIdx.get(cell.dataset.cellDate!) ?? null;
+  }
+  const resizeProbeX = useRef(0);
+
+  function updateResize(clientY: number) {
+    const st = resizeRef.current;
+    if (!st) return;
+    const idx = dayIdxAtPoint(clientY, st.unitId);
+    if (idx === null) return;
+    // Clamp to the walls: growth stops at the first occupied day (the run physically cannot
+    // pass another booking, so there's no invalid state to paint — the edge just refuses to
+    // go further), and shrinking stops one day short of the opposite end. A run always keeps
+    // at least one day; emptying it entirely is "Clear", not a resize.
+    const edgeIdx = Math.max(st.minIdx, Math.min(st.maxIdx, idx));
+    if (edgeIdx === st.edgeIdx) return;
+    const next = { ...st, edgeIdx };
+    resizeRef.current = next;
+    setResize(next);
+  }
+
+  function beginResize(e: React.PointerEvent, day: DayInfo, unit: Unit, edge: "top" | "bottom") {
+    const booking = bookingLookup.get(cellKey(day.date, unit.id));
+    if (!booking) return;
+    // Stop the chip's HTML5 dragstart from firing underneath: this gesture and the move
+    // gesture overlap on the same chip, and only one of them can own the pointer.
+    e.preventDefault();
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+    const i = dateIdx.get(day.date)!;
+    const inRun = (j: number) => {
+      if (j < 0 || j >= days.length) return false;
+      const n = bookingLookup.get(cellKey(days[j].date, unit.id));
+      return !!n && !n.publishedAt && n.siteId === booking.siteId;
+    };
+    let startIdx = i;
+    while (inRun(startIdx - 1)) startIdx--;
+    let endIdx = i;
+    while (inRun(endIdx + 1)) endIdx++;
+
+    // How far this edge can grow before it hits something. `bookingLookup` excludes ghosts,
+    // which is right: a moved-away ghost's slot is genuinely free and a run may grow over it.
+    const free = (j: number) => j >= 0 && j < days.length && !bookingLookup.has(cellKey(days[j].date, unit.id));
+    let limit = edge === "bottom" ? endIdx : startIdx;
+    while (free(edge === "bottom" ? limit + 1 : limit - 1)) limit += edge === "bottom" ? 1 : -1;
+
+    const st: ResizeState = {
+      unitId: unit.id,
+      edge,
+      siteId: booking.siteId,
+      siteName: booking.siteName,
+      status: booking.status,
+      startIdx,
+      endIdx,
+      edgeIdx: edge === "bottom" ? endIdx : startIdx,
+      minIdx: edge === "bottom" ? startIdx : limit,
+      maxIdx: edge === "bottom" ? limit : endIdx,
+    };
+    resizeRef.current = st;
+    resizePointerY.current = e.clientY;
+    resizeProbeX.current = e.clientX;
+    setResize(st);
+
+    // A downward extend runs off the bottom of the viewport within a few days, so the grid
+    // has to come to the pointer. Recomputed from the stored pointer position on each tick,
+    // since the pointer itself isn't moving while the content scrolls under it.
+    autoScrollTimer.current = setInterval(() => {
+      const el = scrollRef.current;
+      if (!el || !resizeRef.current) return;
+      const box = el.getBoundingClientRect();
+      const y = resizePointerY.current;
+      const margin = 48;
+      if (y < box.top + margin) el.scrollTop -= ROW_HEIGHT;
+      else if (y > box.bottom - margin) el.scrollTop += ROW_HEIGHT;
+      else return;
+      updateResize(y);
+    }, 60);
+  }
+
+  function endResize() {
+    if (autoScrollTimer.current) {
+      clearInterval(autoScrollTimer.current);
+      autoScrollTimer.current = null;
+    }
+    const st = resizeRef.current;
+    resizeRef.current = null;
+    setResize(null);
+    return st;
+  }
+
+  async function commitResize(st: ResizeState) {
+    const { add, remove } = resizeSlices(st, days);
+    if (!add.length && !remove.length) return;
+
+    setPending(true);
+    const result = add.length
+      ? await createBookings({
+          slots: add.map((date) => ({ unitId: st.unitId, date })),
+          site: { id: st.siteId },
+          status: st.status,
+          notes: "",
+          modalityId: activeModalityId,
+        })
+      : await clearBookings({
+          slots: remove.map((date) => ({
+            unitId: st.unitId,
+            date,
+            // Every removed day is a live local booking by construction — `remove` only ever
+            // covers days inside the run, and a run is built from bookingLookup.
+            expectedUpdatedAt: bookingLookup.get(cellKey(date, st.unitId))!.updatedAt.toISOString(),
+          })),
+        });
+    setPending(false);
+
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success(result.message);
+    pushUndo(result.batchId);
+    router.refresh();
+  }
 
   function pushUndo(batchId: string) {
     setUndoStack((s) => [...s, batchId]);
@@ -754,16 +1045,16 @@ export function PlannerGrid({
   // already uses for what a plain click targets.
   function moveCellToUnit(day: DayInfo, unit: Unit, targetUnitId: number) {
     const k = cellKey(day.date, unit.id);
-    const keys = checked.has(k) ? [...checked] : [k];
+    const keys = checked.has(k) ? selectedBookingKeys : [k];
     attemptMove({ origin: { date: day.date, unitId: unit.id }, keys }, day.date, targetUnitId);
   }
 
-  // The current selection, as dialog rows. Ghosts and published bookings can't be selected in
-  // the first place (bookingLookup excludes ghosts; handleCellClick opens rather than checks a
-  // locked cell), so anything in `checked` with a booking behind it is movable.
+  // The booked part of the current selection, as dialog rows. Published bookings can't be
+  // selected in the first place (handleCellClick opens rather than checks a locked cell), and
+  // empty cells and ghosts aren't in `selectedBookingKeys`, so everything here is movable.
   const moveRows: MoveRow[] = useMemo(() => {
     const rows: MoveRow[] = [];
-    for (const k of checked) {
+    for (const k of selectedBookingKeys) {
       const b = bookingLookup.get(k);
       if (!b) continue;
       rows.push({
@@ -775,7 +1066,7 @@ export function PlannerGrid({
       });
     }
     return rows.sort((a, b) => a.date.localeCompare(b.date) || a.unitLabel.localeCompare(b.unitLabel));
-  }, [checked, bookingLookup, unitById]);
+  }, [selectedBookingKeys, bookingLookup, unitById]);
 
   // Per-row destinations from the "Move selected bookings" dialog. Unlike a drag (one uniform
   // date/unit delta applied to the whole block) each row here names its own target unit, on its
@@ -812,8 +1103,8 @@ export function PlannerGrid({
   // mode computes the reciprocal reposition itself from a single MoveSpec). No clash dialog —
   // picking "Swap" on a two-cell selection IS the confirmation.
   async function handleSwapSelected() {
-    if (checked.size !== 2) return;
-    const [keyA, keyB] = [...checked];
+    if (selectedBookingKeys.length !== 2) return;
+    const [keyA, keyB] = selectedBookingKeys;
     const a = bookingLookup.get(keyA);
     const b = bookingLookup.get(keyB);
     if (!a || !b) return;
@@ -846,12 +1137,18 @@ export function PlannerGrid({
     setConflict(null);
   }
 
-  // ── ghost navigation (Stage C1) ──
-  // Jump from a ghost to where its booking actually sits now. Two axes to handle: rows are
-  // virtualised (so scrollIntoView on a DOM node is useless — the target row may not be
-  // mounted), and unit columns scroll horizontally behind a sticky date column.
-  const goToMoved = useCallback(
-    (to: { unitId: number; date: string }) => {
+  // ── cell navigation ──
+  // Scroll a specific cell into view and flash it. Built for the ghost's "jump to where this
+  // moved" link (Stage C1) and now shared with undo/redo, which has the same problem: the
+  // thing that changed is very often nowhere near the viewport, and a toast alone doesn't say
+  // where to look. Two axes to handle: rows are virtualised (so scrollIntoView on a DOM node
+  // is useless — the target row may not be mounted), and unit columns scroll horizontally
+  // behind a sticky date column.
+  //
+  // `flash` defaults to just the scrolled-to cell; callers reverting a whole batch pass every
+  // cell they touched, so the highlight describes the change rather than the destination.
+  const goToCell = useCallback(
+    (to: { unitId: number; date: string }, flash?: Iterable<string>) => {
       // If a search or "available units only" filter is hiding the destination column,
       // clear it first — jumping to a column that isn't rendered would silently do
       // nothing, which reads as a broken link.
@@ -877,9 +1174,9 @@ export function PlannerGrid({
           el.scrollTo({ left, behavior: "smooth" });
         }
 
-        setFlashKey(cellKey(to.date, to.unitId));
+        setFlashKeys(new Set(flash ?? [cellKey(to.date, to.unitId)]));
         if (flashTimer.current) clearTimeout(flashTimer.current);
-        flashTimer.current = setTimeout(() => setFlashKey(null), 2000);
+        flashTimer.current = setTimeout(() => setFlashKeys(new Set()), 2000);
       };
 
       // Clearing the search has to paint before the column index means anything.
@@ -888,6 +1185,17 @@ export function PlannerGrid({
     },
     [dateIdx, virtualizer, visibleUnits, units],
   );
+
+  // Green on the days about to be added, tan-and-faded on the days about to be given up.
+  // Same `preview` prop the move drag paints through, so a cell can never try to show both.
+  const resizePreview = useMemo(() => {
+    const map = new Map<string, "ok" | "remove">();
+    if (!resize) return map;
+    const { add, remove } = resizeSlices(resize, days);
+    for (const d of add) map.set(cellKey(d, resize.unitId), "ok");
+    for (const d of remove) map.set(cellKey(d, resize.unitId), "remove");
+    return map;
+  }, [resize, days]);
 
   // ── publish / lock ──
   // Which statuses may be forwarded to TMS, straight from the admin-managed catalogue
@@ -1041,6 +1349,25 @@ export function PlannerGrid({
   }
 
   // ── undo / redo — both call the same server action; redo is just "undo the undo" ──
+
+  // Take the scheduler to what just got reverted. Ctrl+Z from anywhere in a ±1yr scroll is
+  // otherwise a toast and nothing else — the booking snaps back somewhere off-screen and you
+  // have to go and find it to check the undo did what you meant.
+  //
+  // Scrolls to the earliest date in the batch (leftmost unit to break a tie) so a multi-day
+  // block is entered from its start, and flashes every reverted cell. Deliberately not
+  // awaiting router.refresh(): `days`/`dateIdx` are a fixed range, so the row index is valid
+  // regardless of whether fresh data has landed, and waiting would just delay the scroll.
+  function goToReverted(targets: { unitId: number; date: string }[]) {
+    if (!targets.length) return;
+    const focus = targets.reduce((best, t) =>
+      t.date < best.date || (t.date === best.date && (unitIdx.get(t.unitId) ?? 0) < (unitIdx.get(best.unitId) ?? 0))
+        ? t
+        : best,
+    );
+    goToCell(focus, targets.map((t) => cellKey(t.date, t.unitId)));
+  }
+
   async function handleUndo() {
     if (!undoStack.length) {
       toast.info("Nothing to undo");
@@ -1058,6 +1385,7 @@ export function PlannerGrid({
     toast.success(result.message);
     setRedoStack((s) => [...s, result.newBatchId]);
     router.refresh();
+    goToReverted(result.targets);
   }
 
   async function handleRedo() {
@@ -1077,7 +1405,38 @@ export function PlannerGrid({
     toast.success(result.message.replace("Undone", "Redone"));
     setUndoStack((s) => [...s, result.newBatchId]);
     router.refresh();
+    goToReverted(result.targets);
   }
+
+  // Pointer tracking for a live edge-resize. Registered on the window, and gated on whether a
+  // gesture is running rather than on `resize` itself — the state object changes on every day
+  // the edge crosses, and re-registering three listeners each time would be pure churn. The
+  // handlers read everything they need through refs, so there's no stale closure to worry
+  // about across the gesture.
+  const resizing = resize !== null;
+  useEffect(() => {
+    if (!resizing) return;
+    function onMove(e: PointerEvent) {
+      resizePointerY.current = e.clientY;
+      resizeProbeX.current = e.clientX;
+      updateResize(e.clientY);
+    }
+    function onUp() {
+      const st = endResize();
+      if (st) void commitResize(st);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    // Losing the pointer (the browser stealing it, a touch cancelled) abandons the gesture
+    // rather than committing whatever the edge happened to be sitting on.
+    window.addEventListener("pointercancel", endResize);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", endResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resizing]);
 
   // ── keyboard shortcuts ──
   useEffect(() => {
@@ -1092,9 +1451,16 @@ export function PlannerGrid({
           setMoveDialogOpen(false);
           return;
         }
+        // Same reasoning for the bulk booking sheet: it's *about* the selection, so backing
+        // out of it must leave the selection intact — that's the expensive part to rebuild.
+        if (bulkOpen) {
+          setBulkOpen(false);
+          return;
+        }
         clearSelection();
         closeDrawer();
         endDrag();
+        endResize();
         setConflict(null);
         setPublishRange(null);
         return;
@@ -1112,7 +1478,7 @@ export function PlannerGrid({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearSelection, closeDrawer, endDrag, undoStack, redoStack, pending, moveDialogOpen]);
+  }, [clearSelection, closeDrawer, endDrag, undoStack, redoStack, pending, moveDialogOpen, bulkOpen]);
 
   // ── live updates (SPEC.md §1/§11: ~10s polling) ──
   // Skipped while a mutation is in flight or a drag is live, so a background refresh can't
@@ -1121,8 +1487,11 @@ export function PlannerGrid({
   // interval itself is set up once instead of restarting on every state change.
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
+  // A live edge-resize counts as a drag here for the same reason: the run bounds and growth
+  // walls were worked out at pointer-down from the data as it stood, and a refresh mid-gesture
+  // would repaint the grid underneath a preview computed against the old rows.
   const dragActiveRef = useRef(false);
-  dragActiveRef.current = !!drag;
+  dragActiveRef.current = !!drag || !!resize;
   useEffect(() => {
     const id = setInterval(() => {
       if (!pendingRef.current && !dragActiveRef.current) router.refresh();
@@ -1192,10 +1561,17 @@ export function PlannerGrid({
         />
       )}
       <SelectionBar
-        count={checked.size}
+        bookingCount={selectedBookingKeys.length}
+        emptyCount={selectedEmptySlots.length}
         publishableCount={publishableSelected}
         canPublish={canPublish}
+        dragSummary={
+          drag?.target
+            ? { total: drag.keys.length, clashes: drag.clashes.length, oob: drag.oob, valid: drag.valid }
+            : null
+        }
         onPublish={() => void publishSelected()}
+        onBookEmpty={() => setBulkOpen(true)}
         onClear={clearSelection}
       />
       {showLegend && <StatusLegend />}
@@ -1302,6 +1678,8 @@ export function PlannerGrid({
                     const isChange = changeCell ? changeKindFor(changeCell) !== null : false;
                     const dimmed =
                       (!!statusFilter && booking?.status !== statusFilter) || (changesOnly && !isChange);
+                    // Handles only on the outermost days of an unpublished run — see runEdges.
+                    const edges = booking && !booking.publishedAt ? runEdges.get(k) : null;
                     const warning = booking
                       ? computeCapabilityWarnings(
                           siteCapabilityRequirements[booking.siteId] ?? [],
@@ -1313,10 +1691,25 @@ export function PlannerGrid({
                     return (
                       <div
                         key={u.id}
-                        className="flex items-center px-[3px]"
+                        // data-* is how the resize gesture finds the day under the pointer
+                        // (see dayIdxAtPoint) — cheaper and far more robust than reproducing
+                        // the virtualiser's row maths plus two sticky offsets in arithmetic.
+                        data-cell-date={day.date}
+                        data-cell-unit={u.id}
+                        className="group relative flex items-center px-[3px]"
                         onDragOver={(e) => onCellDragOver(e, day, u)}
                         onDrop={(e) => onCellDrop(e, day, u)}
                       >
+                        {edges && !drag && (
+                          <>
+                            {edges.top && (
+                              <ResizeHandle edge="top" onStart={(e) => beginResize(e, day, u, "top")} />
+                            )}
+                            {edges.bottom && (
+                              <ResizeHandle edge="bottom" onStart={(e) => beginResize(e, day, u, "bottom")} />
+                            )}
+                          </>
+                        )}
                         {movedGhost ? (
                           <GhostChip
                             booking={movedGhost}
@@ -1326,7 +1719,7 @@ export function PlannerGrid({
                                 ? `${unitById.get(movedGhost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(movedGhost.movedTo.date)}`
                                 : null
                             }
-                            onGoTo={movedGhost.movedTo ? () => goToMoved(movedGhost.movedTo!) : undefined}
+                            onGoTo={movedGhost.movedTo ? () => goToCell(movedGhost.movedTo!) : undefined}
                           />
                         ) : (
                         (() => {
@@ -1335,11 +1728,11 @@ export function PlannerGrid({
                               booking={booking}
                               dimmed={dimmed}
                               warning={warning}
-                              checked={booking ? checked.has(k) : false}
+                              checked={checked.has(k)}
                               isOpen={drawerTarget?.unitId === u.id && drawerTarget?.date === day.date}
                               draggable={!!booking}
-                              preview={drag?.preview.get(k) ?? null}
-                              flash={flashKey === k}
+                              preview={drag?.preview.get(k) ?? resizePreview.get(k) ?? null}
+                              flash={flashKeys.has(k)}
                               pendingRemoval={pendingRemoval?.siteName ?? null}
                               onClick={(e) => handleCellClick(e, day, u, booking)}
                               onDragStart={(e) => startDrag(e, day, u)}
@@ -1355,7 +1748,7 @@ export function PlannerGrid({
                               day={day}
                               unit={u}
                               cellKey={k}
-                              checked={checked}
+                              selectedBookings={selectedBookingSet}
                               visibleUnits={visibleUnits}
                               computePreview={computePreview}
                               onMove={(targetUnitId) => moveCellToUnit(day, u, targetUnitId)}
@@ -1387,11 +1780,23 @@ export function PlannerGrid({
             ? `${unitById.get(drawerGhost.movedTo.unitId)?.registration ?? "another unit"} · ${fmtDate(drawerGhost.movedTo.date)}`
             : null
         }
-        onGoToGhost={drawerGhost?.movedTo ? () => { const to = drawerGhost.movedTo!; closeDrawer(); goToMoved(to); } : undefined}
+        onGoToGhost={drawerGhost?.movedTo ? () => { const to = drawerGhost.movedTo!; closeDrawer(); goToCell(to); } : undefined}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         canUnlock={canUnlock}
         onClose={closeDrawer}
+        onMutated={pushUndo}
+      />
+
+      <BulkBookingDrawer
+        open={bulkOpen && selectedEmptySlots.length > 0}
+        companyId={companyId}
+        modalityId={activeModalityId}
+        slots={selectedEmptySlots}
+        unitLabels={unitById}
+        unitSpecs={unitSpecs}
+        siteCapabilityRequirements={siteCapabilityRequirements}
+        onClose={() => setBulkOpen(false)}
         onMutated={pushUndo}
       />
 

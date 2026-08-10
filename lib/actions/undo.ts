@@ -14,8 +14,19 @@ const EDITOR_ROLES = ["scheduler", "admin", "super_admin"] as const;
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+/**
+ * Where each touched booking sits once the undo has been applied — i.e. the cells the grid
+ * should take the scheduler back to. Read from the rows AFTER the restore, not from the
+ * event snapshots, so a move that's been reverted names the origin it went back to rather
+ * than the destination it came from.
+ *
+ * An undone `create` leaves a soft-deleted row, and its unit/date still name the cell that
+ * just emptied — which is exactly the cell worth looking at, so those are kept too.
+ */
+export type UndoTarget = { unitId: number; date: string };
+
 export type UndoResult =
-  | { ok: true; message: string; newBatchId: string; count: number }
+  | { ok: true; message: string; newBatchId: string; count: number; targets: UndoTarget[] }
   | { ok: false; error: string; code: "PERMISSION" | "NOT_FOUND" | "LOCKED" | "CONFLICT" };
 
 // Undoing (or redoing — redo is just "undo the undo batch") is derived from
@@ -214,5 +225,6 @@ export async function undoBatchWithinTx(tx: Tx, batchId: string, actor: AuthedUs
   );
 
   const n = new Set(events.map((e) => (e.bookingAfter as Snapshot | null)?.id ?? (e.bookingBefore as Snapshot).id)).size;
-  return { ok: true, message: `Undone — ${n} booking${n > 1 ? "s" : ""} reverted`, newBatchId, count: n };
+  const targets: UndoTarget[] = afterRows.map((r) => ({ unitId: r.unitId, date: r.date }));
+  return { ok: true, message: `Undone — ${n} booking${n > 1 ? "s" : ""} reverted`, newBatchId, count: n, targets };
 }

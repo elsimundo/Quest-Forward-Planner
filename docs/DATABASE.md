@@ -244,6 +244,17 @@ The core operational table.
 unique index. One *live* booking per unit per day; a soft-deleted booking doesn't block a
 new one being created in its place.
 
+> **`date` is a single day, and there is no duration.** A multi-day site visit is N rows,
+> one per day — the index above is what makes that the only possible shape. Anything the UI
+> calls a "run" (the contiguous same-site block a scheduler drags the edge of, see
+> `docs/DECISIONS.md` #47) is a *rendering* of several rows, not a row with a span.
+> "Extending a booking by three days" is therefore an INSERT of three rows, and shortening
+> it is a soft-delete of some — which is why `createBookings` / `clearBookings`
+> (`lib/actions/bookings.ts`) exist and why both take one `batch_id` for the whole gesture.
+> If you find yourself reaching for an `end_date` column, this is the constraint to reckon
+> with first: every read path, the overlay merge and the TMS import all assume one row per
+> unit-day.
+
 > **Repositioning around this index (swaps & chained shifts).** Postgres enforces a
 > unique index *per row* as an `UPDATE` scans — not against the statement's final state —
 > and a *partial* index can't be made `DEFERRABLE`. So a one-shot `UPDATE … SET (unit_id,
@@ -271,7 +282,20 @@ Append-only audit log. **Never soft-deleted or hard-deleted.**
 
 Undo is implemented as: find the events for a `batch_id`, apply `booking_before` back
 over the current row, write a new event recording the undo itself (so undo actions are
-themselves auditable).
+themselves auditable). It also returns the unit+date of every row it touched, read from the
+rows *after* the restore, so the grid can scroll to what was reverted and flash it
+(`docs/DECISIONS.md` #45).
+
+> **The bulk write paths reuse the single-cell one.** `saveBooking`, `createBookings` (bulk
+> booking and drag-to-extend) and the run-resize all write through one helper,
+> `writeBookingAtSlot` in `lib/actions/bookings.ts`. The overlay rules it encodes are the
+> reason: a write over a slot TMS holds but we have no row for must become an *amendment*
+> carrying that `tms_booking_id`, and a previously-cleared TMS booking is a soft-deleted row
+> still holding that id — which is UNIQUE — so re-booking that slot must revive the existing
+> row rather than insert a second. A second copy of that would drift within a release. Its
+> `expectedUpdatedAt` doubles as the caller's claim about what's there: `null` means "this
+> cell was empty when I read it", so a row appearing since is a `CONFLICT`, never a silent
+> overwrite.
 
 **`unitRegistration` enrichment.** Since `unit_id` became a numeric surrogate key
 (`docs/DECISIONS.md` #19), every write site spreads an extra `unitRegistration` string

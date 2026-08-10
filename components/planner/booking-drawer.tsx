@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -12,8 +12,8 @@ import {
   SheetFooter,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { SiteField, StatusPicker, useSiteField } from "./booking-fields";
 import { fmtDateLong } from "@/lib/dates";
 import { DEFAULT_STATUS_KEY } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
@@ -24,8 +24,6 @@ import type { OverlayBooking } from "@/lib/db/tms/overlay";
 import { saveBooking, clearBooking } from "@/lib/actions/bookings";
 import { resolveTmsSupersede } from "@/lib/actions/tms-resolve";
 import { unpublishBooking } from "@/lib/actions/publish";
-import { searchSites, getSiteChildren } from "@/lib/actions/sites";
-import type { SiteMatch } from "@/lib/db/queries";
 
 export type DrawerTarget = {
   unitId: number;
@@ -119,19 +117,7 @@ function BookingDrawerBody({
   // The user-pickable statuses (active, not calendar-derived), in display order.
   const editableStatuses = catalog.all.filter((s) => s.editable && s.active);
 
-  const [siteQuery, setSiteQuery] = useState(booking?.siteName ?? "");
-  const [selectedSite, setSelectedSite] = useState<{ id: number; name: string } | null>(
-    booking ? { id: booking.siteId, name: booking.siteName } : null,
-  );
-  const [matches, setMatches] = useState<SiteMatch[]>([]);
-  // Drives the dropdown's visibility directly, rather than deriving it from siteQuery
-  // length — that's what lets focusing an EMPTY field browse the full site list (the
-  // client's "or a dropdown list of locations" ask) alongside the existing type-ahead.
-  const [siteFieldOpen, setSiteFieldOpen] = useState(false);
-  // Set when a picked match has pads grouped under it (docs/TMS_INTEGRATION_PLAN.md §5,
-  // docs/DECISIONS.md #25) — swaps the dropdown to "which pad?" instead of finalizing the
-  // parent itself, which is never directly bookable.
-  const [padPrompt, setPadPrompt] = useState<{ parentName: string; children: SiteMatch[] } | null>(null);
+  const siteField = useSiteField(companyId, booking ? { id: booking.siteId, name: booking.siteName } : null);
   const [status, setStatus] = useState<string>(
     booking && editableStatuses.some((s) => s.key === booking.status) ? booking.status : DEFAULT_STATUS_KEY,
   );
@@ -149,58 +135,28 @@ function BookingDrawerBody({
   // actually saw when they opened the drawer.
   const [initialUpdatedAt] = useState(() => booking?.updatedAt ?? null);
 
-  useEffect(() => {
-    if (!siteFieldOpen || selectedSite?.name === siteQuery) return;
-    // No debounce needed to browse the full list (empty query, an immediate DB read keyed
-    // only on companyId) — only the type-ahead narrowing needs one. A single-character
-    // query hits the same call and comes back empty (searchSites' own ≥2-char rule),
-    // so it doesn't need special-casing here.
-    const handle = setTimeout(
-      async () => {
-        const results = await searchSites(companyId, siteQuery);
-        setMatches(results);
-      },
-      siteQuery.trim().length === 0 ? 0 : 200,
-    );
-    return () => clearTimeout(handle);
-  }, [siteQuery, selectedSite, companyId, siteFieldOpen]);
-
-  async function handlePickSite(m: SiteMatch) {
-    if (m.hasChildren) {
-      const children = await getSiteChildren(companyId, m.id);
-      setPadPrompt({ parentName: m.name, children });
-      return;
-    }
-    setSelectedSite(m);
-    setSiteQuery(m.name);
-    setMatches([]);
-    setPadPrompt(null);
-  }
-
   const locked = !!booking?.publishedAt;
   // Says in words what the dot on the chip says as a mark — "Confirmed" on its own doesn't
   // tell you whether TMS has it (docs/DECISIONS.md #29). Only for an existing booking: the
   // moved/cleared cases have their own banner below, which explains far more than a line.
   const changeKind = booking ? changeKindFor(booking) : null;
   const specs = unitSpecs[target.unitId] ?? {};
-  const showMatches = !!padPrompt || (siteFieldOpen && selectedSite?.name !== siteQuery && matches.length > 0);
 
-  const warnings = selectedSite
+  const warnings = siteField.selected
     ? computeCapabilityWarnings(
-        siteCapabilityRequirements[selectedSite.id] ?? [],
+        siteCapabilityRequirements[siteField.selected.id] ?? [],
         specs,
         target.unitRegistration,
-        selectedSite.name,
+        siteField.selected.name,
       )
     : [];
 
   async function handleSave() {
     setSaving(true);
-    const site = selectedSite && selectedSite.name === siteQuery ? { id: selectedSite.id } : { name: siteQuery };
     const result = await saveBooking({
       unitId: target.unitId,
       date: target.date,
-      site,
+      site: siteField.siteInput,
       status,
       notes,
       modalityId: target.modalityId,
@@ -407,64 +363,7 @@ function BookingDrawerBody({
           )}
 
           <div className="flex-1 overflow-y-auto px-5.5 py-4.5">
-            <label className="mb-1.5 block text-[13px] font-medium text-[#333333]">Site location</label>
-            <Input
-              value={siteQuery}
-              onChange={(e) => {
-                setSiteQuery(e.target.value);
-                if (selectedSite && e.target.value !== selectedSite.name) setSelectedSite(null);
-                setPadPrompt(null); // typing again backs out of a "which pad?" prompt to plain search
-              }}
-              onFocus={() => setSiteFieldOpen(true)}
-              onBlur={() => setSiteFieldOpen(false)}
-              placeholder="Search, browse, or enter a new site…"
-            />
-            {showMatches && (
-              <div className="mt-1.5 max-h-64 overflow-y-auto rounded-xl border">
-                {padPrompt ? (
-                  <>
-                    <button
-                      type="button"
-                      // preventDefault keeps focus on the Input — without it, the button
-                      // steals focus on click, which blurs the field and closes the whole
-                      // dropdown instead of returning to the parent search results.
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setPadPrompt(null);
-                      }}
-                      className="block w-full border-b bg-[#f7f9fc] px-3.5 py-2 text-left text-xs text-[#757575] hover:bg-[#eef2f7] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
-                    >
-                      ← Back — which pad at {padPrompt.parentName}?
-                    </button>
-                    {padPrompt.children.map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onMouseDown={() => void handlePickSite(m)}
-                        className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
-                      >
-                        {m.name}
-                      </button>
-                    ))}
-                    {padPrompt.children.length === 0 && (
-                      <div className="px-3.5 py-3 text-xs text-[#9a9a9a]">No pads found in this group.</div>
-                    )}
-                  </>
-                ) : (
-                  matches.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onMouseDown={() => void handlePickSite(m)}
-                      className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
-                    >
-                      {m.name}
-                      {m.hasChildren && <span className="ml-2 text-xs text-[#757575]">— has pads</span>}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
+            <SiteField field={siteField} />
 
             {warnings.length > 0 && (
               <div className="mt-3 rounded-lg border border-[#f6ddc8] bg-[#fdf1e7] p-3 text-xs leading-[17px] text-[#9a4d1e]">
@@ -474,30 +373,7 @@ function BookingDrawerBody({
               </div>
             )}
 
-            <label className="mt-5 mb-2 block text-[13px] font-medium text-[#333333]">Status</label>
-            <div className="flex flex-col gap-1.5">
-              {editableStatuses.map((st) => {
-                const on = status === st.key;
-                return (
-                  <button
-                    key={st.key}
-                    type="button"
-                    onClick={() => setStatus(st.key)}
-                    className="flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2b7bb9]"
-                    style={{
-                      borderColor: on ? st.bar : "#e6e6e6",
-                      background: on ? st.bg : "#fff",
-                      boxShadow: on ? `inset 3px 0 0 ${st.bar}` : "none",
-                    }}
-                  >
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: st.bar }} />
-                    <span className="text-[13px]" style={{ color: on ? st.text : "#333333" }}>
-                      {st.label}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            <StatusPicker statuses={editableStatuses} value={status} onChange={setStatus} />
 
             <label className="mt-5 mb-1.5 block text-[13px] font-medium text-[#333333]">Notes</label>
             <Textarea
@@ -535,7 +411,7 @@ function BookingDrawerBody({
           )
         ) : (
           <div className="flex flex-row gap-2">
-            <Button className="flex-1" disabled={!siteQuery.trim() || saving} onClick={handleSave}>
+            <Button className="flex-1" disabled={!siteField.query.trim() || saving} onClick={handleSave}>
               Save booking
             </Button>
             {booking && (

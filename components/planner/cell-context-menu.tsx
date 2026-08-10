@@ -34,7 +34,7 @@ export function CellMoveMenu({
   day,
   unit,
   cellKey,
-  checked,
+  selectedBookings,
   visibleUnits,
   computePreview,
   onMove,
@@ -45,7 +45,12 @@ export function CellMoveMenu({
   day: { date: string };
   unit: Unit;
   cellKey: string;
-  checked: Set<string>;
+  /**
+   * The BOOKED part of the current selection. Not the raw selection: empty cells can be
+   * selected too now (for bulk booking), and every item in this menu moves or swaps existing
+   * bookings, so counting empties would overstate what "Move 5 selected bookings…" would do.
+   */
+  selectedBookings: Set<string>;
   /** Candidate destinations — the same list the toolbar's search/"Available units" filter produces. */
   visibleUnits: Unit[];
   computePreview: (st: MoveState, targetDate: string, targetUnitId: number) => PreviewResult;
@@ -56,8 +61,8 @@ export function CellMoveMenu({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const inSelection = checked.has(cellKey);
-  const movingCount = inSelection ? checked.size : 1;
+  const inSelection = selectedBookings.has(cellKey);
+  const movingCount = inSelection ? selectedBookings.size : 1;
   const multi = movingCount > 1;
   const canSwap = inSelection && movingCount === 2;
 

@@ -100,17 +100,26 @@ These layer on top of a base state rather than replacing it. More than one can a
 
 | Mark | Where | Meaning |
 |---|---|---|
-| Blue-tinted fill + blue dot | whole chip / bottom-right | **TMS doesn't have this cell as shown yet** — publishing would change something here. See [Sync state](#sync-state-the-second-axis) below. |
+| Blue-tinted fill | whole chip | **TMS doesn't have this cell as shown yet** — publishing would change something here. Which *kind* of change is in the tooltip. See [Sync state](#sync-state-the-second-axis) below. |
 | `⚠` | top-right | Capability mismatch — the unit doesn't meet a requirement of the site (`SPEC.md` §2a). Informational, never blocks. |
 | `⇄` orange | bottom-left | **Legacy.** TMS and a local edit both changed since the last import. Belongs to the booking import being retired in Stage F and won't fire under the overlay. |
 | `⨯` red | bottom-left | **TMS has a DIFFERENT booking on this unit+date** — no shared lineage, just two things wanting one slot (Stage B4). Usually means the TMS side was booked directly, bypassing the planner. Move or clear one side. Blocks publishing until resolved. |
 | `↻` purple | bottom-left | **TMS has changed this booking since you amended it.** Open the drawer to resolve — keep your version, or take TMS's. Blocks publishing until resolved. |
-| `✓` blue | top-right | Selected in multi-select. |
+| `✓` blue | top-right | Selected in multi-select. Applies to **free** cells as well as booked ones (`docs/DECISIONS.md` #46) — a selected free cell also gets the blue border and pale fill, since a lone tick in an otherwise-unchanged dashed outline didn't read as "picked". |
 | Blue ring | whole cell | The drawer is open on this cell. |
-| Amber ring | whole cell | You've just jumped here from a ghost's link. Clears after 2s. |
-| Green border | whole cell | Valid drop target during a drag. |
-| Red border | whole cell | Drop here would clash — you'll be asked to swap or overwrite. |
+| Amber ring | whole cell | You've just jumped here — from a ghost's link, or from an undo (`docs/DECISIONS.md` #45). Clears after 2s. Applies to free cells too: undoing a *create* empties the cell it takes you to. |
+| Blue grab strip | top or bottom edge, on hover | The end of a contiguous same-site run. Drag it to lengthen or shorten the visit (`docs/DECISIONS.md` #47). Only on unpublished runs. |
+| Green border | whole cell | Part of a drop that lands cleanly. Green appears only when the **whole** dragged set fits — see below. |
+| Red border | whole cell | This drop isn't a clean fit. Painted across every target in the set, not just the colliding ones (`docs/DECISIONS.md` #44); dropping anyway still offers swap/overwrite. |
+| Tan dashed + 50% opacity | whole cell | A run's edge is being dragged inward past this day — it's about to be given up. Not red: nothing is clashing. |
 | 22% opacity | whole cell | Dimmed by the status filter. |
+
+**Green is a statement about the set, not the cell.** Dragging nine bookings into a gap that
+fits six used to show six green cells and three red ones, which reads as "mostly fine" — the
+client reported it as the drag going green when it shouldn't. The behaviour was always
+correct (a partial fit has never half-applied), so the fix was to make one drag paint one
+verdict. The selection bar carries the reason in words while a drag is live, because red
+can't distinguish "three of these clash" from "this hangs off the end of the calendar".
 
 `⇄`, `⨯`, and `↻` share a corner. Priority when more than one is ever true at once: `⇄`
 (legacy) wins over `⨯` (collision) wins over `↻` (supersede) — different colours and different
@@ -129,7 +138,7 @@ the sync marker and the changes view are for (`docs/DECISIONS.md` #29). It's der
 stored: `lib/planner-changes.ts` reads `origin` and `publishedAt` off the `OverlayBooking` and
 returns one of four kinds, or null when TMS already agrees.
 
-The marker is two layers, both driven by the same value (`docs/DECISIONS.md` #31, #32):
+The marker is two layers, both driven by the same value (`docs/DECISIONS.md` #31, #32, #43):
 
 - **The fill itself** is the status colour blended 14% toward the app's blue accent
   (`#2b7bb9`, via `mixHex` in `lib/statuses.ts`) instead of the flat colour — a Confirmed
@@ -138,8 +147,15 @@ The marker is two layers, both driven by the same value (`docs/DECISIONS.md` #31
   needing a different background), and the first version of the wash mixed toward a very
   dark navy, which reads as grey rather than blue at a light ratio — swapped to the actual
   blue accent once Dave asked for it explicitly.
-- **The corner dot** stays on top of the wash, because the wash alone can't say *which* kind of
-  change this is — that's still in the tooltip.
+- **The tooltip** names *which* kind of change it is, which the wash alone can't say.
+
+There used to be a third layer — a 6px blue dot in the bottom-right corner. It was the first
+version of this signal, and the wash was added when it proved not to be enough on its own
+(#31). Once the wash landed the dot was carrying nothing the tooltip didn't already carry, on
+a grid where a busy week shows it on forty cells at once, and the client asked for it to go
+(`docs/DECISIONS.md` #43). The legend swatch lost its dot to match. The drawer's inline sync
+line keeps one, because there it sits beside a written explanation rather than standing
+alone.
 
 **This is what caps the status fills' saturation.** The wash is a 14% blend *into* `st.bg`, so
 the more saturated the base colour, the less of a shift it produces — which is why #38 settled
@@ -196,18 +212,29 @@ sweep to find and the two counts would disagree (`docs/DECISIONS.md` #29).
 
 ## What you can do in each state
 
-| | Click to book | Click to edit | Drag | Select | Publish |
-|---|---|---|---|---|---|
-| Available | ✅ | — | — | — | — |
-| Pending removal | ✅ | — | — | — | — |
-| Booked | — | ✅ | ✅ | ✅ | ✅ |
-| Moved-away ghost | ✅ (body) | ❌ | ❌ | ❌ | ❌ |
-| Published / locked | — | admin unlock | ❌ | ✅ | already |
+| | Click to book | Click to edit | Drag | Select | Resize | Publish |
+|---|---|---|---|---|---|---|
+| Available | ✅ | — | — | ✅ | — | — |
+| Pending removal | ✅ | — | — | ✅ | — | — |
+| Booked | — | ✅ | ✅ | ✅ | ✅ (run ends) | ✅ |
+| Moved-away ghost | ✅ (body) | ❌ | ❌ | ✅ (as free) | — | ❌ |
+| Published / locked | — | admin unlock | ❌ | ✅ | ❌ | already |
+
+**Selecting a free cell** books it as part of a set: the selection bar offers "Book N days",
+which writes them all with one site and status under one `batch_id` (`docs/DECISIONS.md` #46).
+A plain unmodified click on a free cell still opens the drawer for that one cell — the common
+case shouldn't need a modifier.
 
 Ghosts are excluded from `bookingLookup` in `planner-grid.tsx` rather than being checked at
 each call site. That single omission is what guarantees the whole ghost row of that table:
-selection, dragging, the drawer and publish counts all read that map, so none of them can act
-on a ghost even by accident.
+dragging, editing, the drawer and publish counts all read that map, so none of them can act
+on a ghost even by accident. A ghost's *cell* is selectable, but only as the free slot it
+genuinely is — the same omission is what puts it on the empty side of the selection split,
+with no special case needed.
+
+A **run** is a contiguous set of days on one unit sharing a site, none of them published. Only
+its first and last day carry a resize handle, and only the run's own ends move — the site is
+what defines the run, so status may vary within one.
 
 ---
 

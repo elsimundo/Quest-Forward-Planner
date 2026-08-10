@@ -1553,6 +1553,117 @@ confirmation dialog (`discard-changes-dialog.tsx`) is the safety net for this pa
 `clearBooking` having no confirmation today and `unpublishBooking` using a two-step
 arm/confirm rather than relying on Undo.
 
+### 43. The corner "change dot" is gone; the wash carries the sync state alone
+
+**Decided:** removed the 6px blue dot from the bottom-right of every changed chip
+(`components/planner/cell-chip.tsx`). The 14% blue background wash stays and is now the only
+mark for "TMS doesn't have this cell as shown yet". Which *kind* of change it is
+(new/amended/moved/cleared) is still named in full in the chip's tooltip, and still drives
+the changes bar's breakdown — nothing was removed but the mark itself. The legend swatch
+(`status-legend.tsx`) lost its dot to match; the drawer's inline sync line keeps its dot,
+because there it sits beside a written explanation rather than standing alone.
+
+**Why:** the client asked for it directly — "get rid of the little dots on the booking,
+they're not needed". They're right, and #31 is why: the dot was the *first* attempt at this
+signal, and the wash was added when the dot alone proved not to be enough. Once the wash
+landed, the dot was carrying no information the tooltip didn't already carry, on a grid where
+a busy week can show it on forty cells at once.
+
+**Not chosen:** removing the wash as well, which would leave "what's unpublished?" answerable
+only from the changes bar and the publish pre-flight. The wash is the part the client was
+explicitly "adamant" about in #32. Also not chosen: stripping the other corner marks
+(⚠ ⇄ ⨯ ↻ ⌫) at the same time. They look similar but do a different job — ⨯ and ↻ mark cells
+that publishing will *refuse*, and hiding a blocker until the pre-flight dialog is worse than
+a slightly busier chip.
+
+### 44. A drop preview is one verdict for the whole block, not one per cell
+
+**Decided:** `computePreview` (`planner-grid.tsx`) paints every target cell red when the drag
+as a whole can't land cleanly, rather than colouring each target on its own merits. Green now
+means exactly "drop this and it just moves". The selection bar becomes the drag's readout
+while a drag is live, naming the shortfall in words ("9 bookings · 3 won't fit"), since colour
+alone can't distinguish "three of these clash" from "this hangs off the end of the calendar".
+
+**Why:** the client's report was "if we're moving 9 bookings then it needs to turn green and
+allow that movement only when all 9 fit". The *behaviour* was already that — a partial fit has
+never half-applied; it goes to the clash dialog or a toast. What was wrong was the feedback:
+six green cells and three red ones reads as "mostly fine", because green is the go-ahead
+colour and most of the block was green. Out-of-range drags were worse still — their members
+have no in-range cell to paint, so a block hanging off the end of the calendar showed its
+remainder in green with nothing at all to indicate the rest had nowhere to go.
+
+**Not chosen:** blocking the drop outright when the block doesn't fit. That would remove
+swap/overwrite for multi-drags, which is approved behaviour from mock-up review (SPEC.md §8)
+and is often exactly what the scheduler wants. Red now means "not a clean fit", not
+"forbidden". Also not chosen: a cursor-following drag ghost showing the count — SPEC.md §6
+lists it as a nicety, and the selection bar is already on screen throughout a multi-drag with
+no positioning edge cases to get wrong.
+
+### 45. Undo takes you to what it reverted
+
+**Decided:** `undoBatch` returns the unit+date of every row it touched (`UndoTarget[]`, read
+from the rows *after* the restore), and the grid scrolls to the earliest of them and flashes
+all of them amber for two seconds. Redo does the same. `goToMoved` was generalised to
+`goToCell` and `flashKey` to a `flashKeys` set to support it, and `CellChip`'s empty branch
+gained flash styling.
+
+**Why:** the client asked "when undo'ing, can it go to where the change is going back to". The
+grid is one continuous ±1yr virtualised scroll, so Ctrl+Z from anywhere frequently reverted
+something well outside the viewport and said so only in a toast — leaving the scheduler to go
+and find it to confirm the undo did what they meant. The machinery already existed for the
+ghost's "jump to where this moved" link; this is the same problem.
+
+**Not chosen:** flashing only the cell scrolled to. Nine bookings snapping back should light up
+nine cells, or the highlight describes the destination rather than the change. Also not
+chosen: awaiting `router.refresh()` before scrolling — `days`/`dateIdx` are a fixed range, so
+the row index is valid regardless of data freshness, and waiting would just delay the scroll.
+
+### 46. Empty cells are selectable; each action states its own scope
+
+**Decided:** ctrl-click, shift-click and Select mode now work on free cells as well as booked
+ones, and the selection may hold both kinds at once. `checked` is no longer provably
+all-booked, so the guarantee is replaced with an explicit split (`selectedBookingKeys` /
+`selectedEmptySlots`) that each consumer reads: drag and swap and publish take the booked
+part, "Book N days" takes the empty part, and the selection bar names both counts. A
+shift-click range takes its kind from its anchor, so ranges stay homogeneous without the user
+thinking about it.
+
+**Why:** the client asked to "select multiple empty bookings and manage all of them in one
+go". Booking a fortnight at one site was fourteen separate drawer visits. The mixed selection
+falls out of allowing it at all — a shift-range down a column will cross both kinds — so
+rather than forbidding that, each action says what it operates on.
+
+**Not chosen:** a separate `checkedEmpty` set. Two selection states means two things to clear,
+two things to keep in sync through a move, and two sources of truth for "is this cell
+selected". Also not chosen: forcing the selection homogeneous by clearing it when the user
+crosses kinds — that silently throws away work in exactly the case the feature exists for.
+
+### 47. Drag a run's edge to extend it; the run is a rendering, not a row
+
+**Decided:** the top and bottom day of a contiguous same-site unpublished run carry an
+8px `ns-resize` grab strip. Dragging it out creates one booking row per new day (inheriting
+site and status, notes blank); dragging it in soft-deletes the days given up. One gesture is
+one `batch_id`, so one Ctrl+Z. Growth clamps at the first occupied day rather than turning
+red, and a run always keeps at least one day. Built on pointer events with
+`setPointerCapture`, and the handles are siblings of `CellChip`, not children.
+
+**Why:** the client asked to "drag the top or bottom of the planned movement to extend it".
+The catch is that there is no planned movement in the database — `bookings.date` is a single
+date column under `bookings_unit_date_live_unique`, so a five-day visit IS five rows and there
+is no duration to stretch. "Extend by three days" is therefore a bulk *create*, which is the
+same operation as #46's bulk booking; both go through `createBookings` in
+`lib/actions/bookings.ts`, and `writeBookingAtSlot` was extracted from `saveBooking` so the
+overlay's amendment and revive rules have exactly one implementation.
+
+**Not chosen:** HTML5 drag-and-drop, which the chip's *move* gesture already owns — two
+overlapping drag sources on one element is where this would break. Not chosen: turning the
+preview red when growth meets a booking; the edge physically cannot pass one, so there's no
+invalid state to represent and a wall feels better than an error. Not chosen: letting a
+run shrink to nothing — that's Clear, and it should be the deliberate thing it already is.
+Status is allowed to vary within a run (only the site must match): a week at one site that's
+Confirmed for three days and Provisional for two is still one visit, and splitting the handle
+there would surprise.
+
 <!--
 Template for new entries:
 
