@@ -5,6 +5,7 @@ import { verifyCredentials } from "@/lib/auth/verify-credentials";
 export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
+  trustHost: true,
   providers: [
     Credentials({
       credentials: {
