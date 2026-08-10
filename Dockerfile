@@ -19,7 +19,6 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --prod --frozen-lockfile
 
 COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
 COPY --from=builder /app/next.config.ts ./next.config.ts
 COPY --from=builder /app/lib/db/migrations ./lib/db/migrations
 COPY --from=builder /app/scripts/migrate.mjs ./scripts/migrate.mjs
