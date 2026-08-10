@@ -3,10 +3,10 @@
   "configurations": [
     {
       "name": "quest-planner-dev",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
-      "port": 3000,
-      "autoPort": true
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["next", "dev", "-p", "3002"],
+      "port": 3002,
+      "autoPort": false
     }
   ]
 }
