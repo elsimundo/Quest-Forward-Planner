@@ -32,4 +32,4 @@ ENV PORT=3000
 # Migrations run on every container start — safe to re-run (drizzle tracks what's
 # already applied) and simpler than coordinating a separate deploy step for a
 # small pilot deployment.
-CMD ["sh", "-c", "node scripts/migrate.mjs && pnpm start"]
+CMD ["sh", "-c", "node scripts/migrate.mjs; pnpm start"]
