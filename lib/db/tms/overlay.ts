@@ -517,6 +517,7 @@ type AmendmentRow = {
   tmsBookingId: number | null;
   tmsUpdatedAt: Date | null;
   updatedBy: number | null;
+  tmsImportedAt: Date | null;
 };
 
 /** Owner info for a suppressed (cleared) TMS booking — see `OverlayBooking.updatedBy`. */
@@ -541,7 +542,7 @@ async function loadSuppressedTmsBookingIds(companyId: number, modalityId: number
 }
 
 async function loadAmendments(companyId: number, modalityId: number): Promise<AmendmentRow[]> {
-  return db
+  const rows = await db
     .select({
       unitId: bookings.unitId,
       date: bookings.date,
@@ -555,12 +556,25 @@ async function loadAmendments(companyId: number, modalityId: number): Promise<Am
       tmsBookingId: bookings.tmsBookingId,
       tmsUpdatedAt: bookings.tmsUpdatedAt,
       updatedBy: bookings.updatedBy,
+      tmsImportedAt: bookings.tmsImportedAt,
     })
     .from(bookings)
     .innerJoin(sites, eq(sites.id, bookings.siteId))
     .where(
       and(eq(bookings.companyId, companyId), eq(bookings.modalityId, modalityId), isNull(bookings.deletedAt)),
     );
+
+  // The retiring TMS booking import (docs/TMS_WRITE_BACK.md §4, OVERLAY_BUILD_PLAN.md Stage
+  // F) still writes a local row for every TMS booking it imports/refreshes, carrying
+  // `tms_booking_id` — exactly what this module otherwise treats as "an amendment". Without
+  // this filter, every one of those untouched copies renders with `origin: "amended"` and
+  // counts as a pending planner change (lib/planner-changes.ts), even though nothing was
+  // ever actually amended — this is what made "moved 2 bookings" show up as thousands of
+  // changes to publish. `updatedAt > tmsImportedAt` is the same "has a scheduler touched
+  // this since the import last looked" test booking-import.ts itself uses
+  // (`localEditedSinceImport`) — reuse it here so a row only counts as a real amendment once
+  // something has actually diverged from what was imported.
+  return rows.filter((r) => r.tmsBookingId === null || r.tmsImportedAt === null || r.updatedAt.getTime() > r.tmsImportedAt.getTime());
 }
 
 function toOverlay(

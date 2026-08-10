@@ -6,3 +6,16 @@ node_modules
 !.env.example
 *.log
 .DS_Store
+design-system
+docs
+reference
+.claude
+.windsurf
+.devin
+*.md
+!README.md
+lib/__tests__
+**/__tests__
+coverage
+.vscode
+.github

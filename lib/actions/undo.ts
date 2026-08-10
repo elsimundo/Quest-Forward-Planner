@@ -152,6 +152,14 @@ export async function undoBatchWithinTx(tx: Tx, batchId: string, actor: AuthedUs
   // Phase 2: restore each row's full pre-event snapshot (including deleted_at, which
   // re-enters live rows into the index) in one CASE-mapped bulk UPDATE. Targets are all
   // free because Phase 1 vacated every touched row.
+  //
+  // updated_at is restored from the snapshot too, NOT stamped with now() — undoing a row
+  // that's been edited more than once has to put updated_at back to exactly what it was
+  // right after the PREVIOUS action, because that's the value the conflict check above
+  // will compare against when that previous action's batch is undone next. Stamping now()
+  // here would permanently sever that chain: every undo after the first on the same row
+  // would fail as a false CONFLICT ("changed since then"), even though nothing but this
+  // same undo sequence touched it.
   const restorable = events.filter((e) => e.bookingBefore !== null);
   if (restorable.length) {
     const snap = (e: (typeof events)[number]) => e.bookingBefore as Snapshot;
@@ -173,7 +181,7 @@ export async function undoBatchWithinTx(tx: Tx, batchId: string, actor: AuthedUs
           deleted_at = (CASE id ${col("deletedAt")} END)::timestamptz,
           deleted_by = (CASE id ${col("deletedBy")} END)::int,
           updated_by = ${actor.id},
-          updated_at = now()
+          updated_at = (CASE id ${col("updatedAt")} END)::timestamptz
       WHERE id IN (${sql.join(
         restorable.map((e) => sql`${snap(e).id}`),
         sql`, `,

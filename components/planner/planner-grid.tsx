@@ -661,6 +661,16 @@ export function PlannerGrid({
     const res = computePreview(st, day.date, unit.id);
     e.dataTransfer.dropEffect = res.valid ? "move" : "none";
     const tKey = cellKey(day.date, unit.id);
+    // TEMP DEBUG — remove after diagnosing extra-drop-zone report.
+    console.log("[drag-debug]", {
+      originKeys: active.keys,
+      narrowedKeys: st.keys,
+      single,
+      hoverTarget: tKey,
+      previewEntries: [...res.preview.entries()],
+      dDelta: res.dDelta,
+      uDelta: res.uDelta,
+    });
     // Capture values now, synchronously — the updater below can run after a later event
     // (e.g. drop) has already nulled dragRef.current via endDrag().
     const { origin, keys } = st;
