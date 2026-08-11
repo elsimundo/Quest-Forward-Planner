@@ -6,7 +6,14 @@ node_modules
 !.env.example
 *.log
 .DS_Store
-design-system
+# design-system/ is 9.7MB of brand assets, component demos and guidelines — none of it
+# needed to build. EXCEPT tokens/ (20KB): app/globals.css @imports four files from there,
+# so excluding the whole folder breaks `next build` with "Can't resolve
+# '../design-system/tokens/colors.css'". Excluding `design-system/*` rather than
+# `design-system` matters — Docker won't re-include a path whose parent directory is
+# itself excluded, so the negation below only works if the directory stays listed.
+design-system/*
+!design-system/tokens
 docs
 reference
 .claude
