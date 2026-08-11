@@ -20,23 +20,28 @@ function dragMessage({ total, clashes, oob, valid }: DragSummary) {
 export function SelectionBar({
   bookingCount,
   emptyCount,
+  editableCount,
   publishableCount,
   canPublish,
   dragSummary,
   onPublish,
   onBookEmpty,
+  onBulkEdit,
   onClear,
 }: {
   /** Selected cells that hold a booking — what "move", "swap" and "publish" act on. */
   bookingCount: number;
   /** Selected cells that are free — what "Book N cells" acts on. */
   emptyCount: number;
+  /** Of `bookingCount`, how many are unpublished — what "Bulk edit" acts on. */
+  editableCount: number;
   publishableCount: number;
   canPublish: boolean;
   /** Non-null only while a drag is hovering a target cell. */
   dragSummary: DragSummary | null;
   onPublish: () => void;
   onBookEmpty: () => void;
+  onBulkEdit: () => void;
   onClear: () => void;
 }) {
   // The bar keeps its slot in the layout even with nothing selected. Mounting and unmounting it
@@ -92,6 +97,23 @@ export function SelectionBar({
           className="rounded-full border border-white bg-white px-3.5 py-1.5 text-xs font-medium text-[#1a3d69] transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
         >
           Book {emptyCount} day{emptyCount === 1 ? "" : "s"}
+        </button>
+      )}
+      {/* Gated on there being bookings in the selection at all, not on the role: a
+          selection of free days has nothing to bulk-edit. Disabled once every booking in
+          the set is already published — same reasoning as "Publish selected" below. */}
+      {bookingCount > 0 && (
+        <button
+          onClick={onBulkEdit}
+          disabled={editableCount === 0}
+          title={
+            editableCount === 0
+              ? "All selected bookings are published and locked"
+              : `Edit ${editableCount} selected booking${editableCount > 1 ? "s" : ""}`
+          }
+          className="rounded-full border border-white/70 px-3.5 py-1.5 text-xs font-medium text-white transition-colors enabled:hover:bg-white/10 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
+        >
+          ✎ Bulk edit
         </button>
       )}
       {/* Gated on there being bookings in the selection at all, not just on the role: a

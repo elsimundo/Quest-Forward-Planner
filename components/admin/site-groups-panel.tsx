@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { createSiteGroup, setSiteParent, searchSitesToGroup } from "@/lib/actions/admin/site-groups";
+import { createSiteGroup, setSiteParent, searchSitesToGroup, renameSiteGroup, deleteSiteGroup } from "@/lib/actions/admin/site-groups";
 
 type SiteGroup = { id: number; name: string; children: { id: number; name: string }[] };
 
@@ -22,7 +22,12 @@ export function SiteGroupsPanel({ companyId, groups }: { companyId: number; grou
       toast.error(result.error);
       return;
     }
-    toast.success(`Created "${name}" — add pads to it below`);
+    const finalName = result.name ?? name;
+    toast.success(
+      finalName === name
+        ? `"${finalName}" is ready — add pads to it below`
+        : `A site named "${name}" already existed, so the group was created as "${finalName}" — add pads to it below`,
+    );
     setNewGroupName("");
     router.refresh();
   }
@@ -67,6 +72,9 @@ function GroupCard({ companyId, group }: { companyId: number; group: SiteGroup }
   const [pending, setPending] = useState(false);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<{ id: number; name: string }[]>([]);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState(group.name);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   useEffect(() => {
     if (query.trim().length < 2) return;
@@ -103,9 +111,96 @@ function GroupCard({ companyId, group }: { companyId: number; group: SiteGroup }
     router.refresh();
   }
 
+  async function handleRename() {
+    const trimmed = nameValue.trim();
+    if (!trimmed || trimmed === group.name) {
+      setEditingName(false);
+      setNameValue(group.name);
+      return;
+    }
+    setPending(true);
+    const result = await renameSiteGroup(group.id, trimmed);
+    setPending(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success(`Renamed to "${trimmed}"`);
+    setEditingName(false);
+    router.refresh();
+  }
+
+  async function handleDelete() {
+    setPending(true);
+    const result = await deleteSiteGroup(group.id);
+    setPending(false);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success(`Deleted "${group.name}"`);
+    setConfirmingDelete(false);
+    router.refresh();
+  }
+
   return (
     <div className="rounded-xl border border-[#e6e6e6] p-4">
-      <h2 className="text-[14px] font-bold text-[#333333]">{group.name}</h2>
+      <div className="flex items-center gap-2">
+        {editingName ? (
+          <input
+            autoFocus
+            value={nameValue}
+            onChange={(e) => setNameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleRename();
+              if (e.key === "Escape") { setEditingName(false); setNameValue(group.name); }
+            }}
+            disabled={pending}
+            className="flex-1 rounded-lg border border-[#e6e6e6] px-2.5 py-1 text-[14px] font-bold text-[#333333] outline-none focus:border-[#2b7bb9]"
+          />
+        ) : (
+          <h2 className="flex-1 text-[14px] font-bold text-[#333333]">{group.name}</h2>
+        )}
+        {editingName ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void handleRename()}
+              disabled={pending}
+              className="text-xs font-medium text-[#2b7bb9] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+            >Save</button>
+            <button
+              onClick={() => { setEditingName(false); setNameValue(group.name); }}
+              disabled={pending}
+              className="text-xs text-[#757575] hover:underline"
+            >Cancel</button>
+          </div>
+        ) : confirmingDelete ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-[#b13a3a]">Delete?</span>
+            <button
+              onClick={() => void handleDelete()}
+              disabled={pending}
+              className="text-xs font-medium text-[#b13a3a] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+            >Yes</button>
+            <button
+              onClick={() => setConfirmingDelete(false)}
+              disabled={pending}
+              className="text-xs text-[#757575] hover:underline"
+            >No</button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => { setEditingName(true); setNameValue(group.name); }}
+              className="text-xs text-[#2b7bb9] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+            >Rename</button>
+            <button
+              onClick={() => setConfirmingDelete(true)}
+              className="text-xs text-[#b13a3a] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+            >Delete</button>
+          </div>
+        )}
+      </div>
 
       <div className="mt-3 flex flex-col gap-1.5">
         {group.children.map((c) => (

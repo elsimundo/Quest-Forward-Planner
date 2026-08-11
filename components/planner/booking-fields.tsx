@@ -16,11 +16,18 @@ import type { StatusView } from "@/lib/statuses";
 // the kind of detail a duplicate loses within a release, and losing it doesn't break loudly,
 // it just makes the field feel broken.
 
+// When the picked site has children, the dropdown swaps to a "which pad?" prompt listing
+// the child sites. `bookedSiteIds` (when provided) lets each pad show a free/booked badge
+// for the drawer's date, so the scheduler can see availability at a glance.
 type PadPrompt = { parentName: string; children: SiteMatch[] };
 
 export type SiteField = ReturnType<typeof useSiteField>;
 
-export function useSiteField(companyId: number, initial: { id: number; name: string } | null) {
+export function useSiteField(
+  companyId: number,
+  initial: { id: number; name: string } | null,
+  bookedSiteIds?: Set<number>,
+) {
   const [query, setQuery] = useState(initial?.name ?? "");
   const [selected, setSelected] = useState<{ id: number; name: string } | null>(initial);
   const [matches, setMatches] = useState<SiteMatch[]>([]);
@@ -29,8 +36,7 @@ export function useSiteField(companyId: number, initial: { id: number; name: str
   // dropdown list of locations" ask) alongside the existing type-ahead.
   const [open, setOpen] = useState(false);
   // Set when a picked match has pads grouped under it (docs/TMS_INTEGRATION_PLAN.md §5,
-  // docs/DECISIONS.md #25) — swaps the dropdown to "which pad?" instead of finalizing the
-  // parent itself, which is never directly bookable.
+  // docs/DECISIONS.md #25) — swaps the dropdown to "which pad?".
   const [padPrompt, setPadPrompt] = useState<PadPrompt | null>(null);
 
   useEffect(() => {
@@ -48,7 +54,10 @@ export function useSiteField(companyId: number, initial: { id: number; name: str
 
   async function pick(m: SiteMatch) {
     if (m.hasChildren) {
-      setPadPrompt({ parentName: m.name, children: await getSiteChildren(companyId, m.id) });
+      setPadPrompt({
+        parentName: m.name,
+        children: await getSiteChildren(companyId, m.id),
+      });
       return;
     }
     setSelected(m);
@@ -68,6 +77,7 @@ export function useSiteField(companyId: number, initial: { id: number; name: str
     padPrompt,
     setPadPrompt,
     pick,
+    bookedSiteIds,
     showMatches: !!padPrompt || (open && selected?.name !== query && matches.length > 0),
     /** What to send the server: an existing site id, or free text for a new pending-review site. */
     get siteInput(): SiteInput {
@@ -77,6 +87,7 @@ export function useSiteField(companyId: number, initial: { id: number; name: str
 }
 
 export function SiteField({ field, label = "Site location" }: { field: SiteField; label?: string }) {
+  const booked = field.bookedSiteIds;
   return (
     <>
       <label className="mb-1.5 block text-[13px] font-medium text-[#333333]">{label}</label>
@@ -108,16 +119,28 @@ export function SiteField({ field, label = "Site location" }: { field: SiteField
               >
                 ← Back — which pad at {field.padPrompt.parentName}?
               </button>
-              {field.padPrompt.children.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onMouseDown={() => void field.pick(m)}
-                  className="block w-full border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
-                >
-                  {m.name}
-                </button>
-              ))}
+              {field.padPrompt.children.map((m) => {
+                const isBooked = booked?.has(m.id) ?? false;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onMouseDown={() => void field.pick(m)}
+                    className="flex w-full items-center border-b px-3.5 py-2.5 text-left text-[13px] text-[#333333] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+                  >
+                    <span className="flex-1">{m.name}</span>
+                    {booked && (
+                      <span
+                        className={`ml-2 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          isBooked ? "bg-[#fde8e8] text-[#b13a3a]" : "bg-[#e8f5e9] text-[#2e7d32]"
+                        }`}
+                      >
+                        {isBooked ? "Booked" : "Free"}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
               {field.padPrompt.children.length === 0 && (
                 <div className="px-3.5 py-3 text-xs text-[#9a9a9a]">No pads found in this group.</div>
               )}

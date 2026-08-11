@@ -178,15 +178,20 @@ export async function searchApprovedSites(companyId: number | null, q: string, e
 
 export type SiteGroupRow = { id: number; name: string; children: { id: number; name: string }[] };
 
-// A "group" here means a site that currently HAS at least one child — a plain ungrouped
-// site also has parent_site_id null but isn't a group, just a normal site, so it's excluded.
+const hasChildrenForGroups = sql<boolean>`EXISTS (
+  SELECT 1 FROM sites AS child WHERE child.parent_site_id = sites.id AND child.deleted_at IS NULL
+)`;
+
+// A "group" is a parentless site that's either locally-created (no tmsLocationId — a
+// pure group wrapper) or already has children (a site with pads grouped under it).
+// TMS-synced sites without children are excluded — they're regular sites, not groups.
 export async function getSiteGroups(companyId: number | null): Promise<SiteGroupRow[]> {
   const parentConditions = [isNull(sites.deletedAt), isNull(sites.parentSiteId)];
   if (companyId !== null) parentConditions.push(eq(sites.companyId, companyId));
   const parents = await db
     .select({ id: sites.id, name: sites.name })
     .from(sites)
-    .where(and(...parentConditions, sql`EXISTS (SELECT 1 FROM sites AS child WHERE child.parent_site_id = sites.id AND child.deleted_at IS NULL)`))
+    .where(and(...parentConditions, or(isNull(sites.tmsLocationId), hasChildrenForGroups)))
     .orderBy(asc(sites.name));
 
   const parentIds = parents.map((p) => p.id);

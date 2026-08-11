@@ -47,6 +47,7 @@ export function BookingDrawer({
   unitSpecs,
   siteCapabilityRequirements,
   canUnlock,
+  bookedSiteIds,
   onClose,
   onMutated,
 }: {
@@ -59,6 +60,7 @@ export function BookingDrawer({
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;
+  bookedSiteIds: Set<number>;
   onClose: () => void;
   onMutated: (batchId: string) => void;
 }) {
@@ -79,6 +81,7 @@ export function BookingDrawer({
             unitSpecs={unitSpecs}
             siteCapabilityRequirements={siteCapabilityRequirements}
             canUnlock={canUnlock}
+            bookedSiteIds={bookedSiteIds}
             onClose={onClose}
             onMutated={onMutated}
           />
@@ -98,6 +101,7 @@ function BookingDrawerBody({
   unitSpecs,
   siteCapabilityRequirements,
   canUnlock,
+  bookedSiteIds,
   onClose,
   onMutated,
 }: {
@@ -110,6 +114,7 @@ function BookingDrawerBody({
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, { requirementKey: string; required: boolean }[]>;
   canUnlock: boolean;
+  bookedSiteIds: Set<number>;
   onClose: () => void;
   onMutated: (batchId: string) => void;
 }) {
@@ -117,7 +122,7 @@ function BookingDrawerBody({
   // The user-pickable statuses (active, not calendar-derived), in display order.
   const editableStatuses = catalog.all.filter((s) => s.editable && s.active);
 
-  const siteField = useSiteField(companyId, booking ? { id: booking.siteId, name: booking.siteName } : null);
+  const siteField = useSiteField(companyId, booking ? { id: booking.siteId, name: booking.siteName } : null, bookedSiteIds);
   const [status, setStatus] = useState<string>(
     booking && editableStatuses.some((s) => s.key === booking.status) ? booking.status : DEFAULT_STATUS_KEY,
   );

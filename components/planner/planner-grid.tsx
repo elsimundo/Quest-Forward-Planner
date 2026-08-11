@@ -25,6 +25,7 @@ import { PlannerToolbar } from "./toolbar";
 import { StatusLegend } from "./status-legend";
 import { SelectionBar } from "./selection-bar";
 import { BulkBookingDrawer } from "./bulk-booking-drawer";
+import { BulkEditDrawer, type BulkEditRow } from "./bulk-edit-drawer";
 import { createBookings, clearBookings } from "@/lib/actions/bookings";
 import { ChangesBar } from "./changes-bar";
 import { ClashDialog, type Clash } from "./clash-dialog";
@@ -315,6 +316,10 @@ export function PlannerGrid({
   // "Book N days" on a selection of free cells. Separate from `drawerTarget`, which is always
   // about one specific cell.
   const [bulkOpen, setBulkOpen] = useState(false);
+  // "Bulk edit" on a selection of already-booked cells — the booked-cell counterpart to
+  // `bulkOpen`, which is for booking empty cells. Separate from `drawerTarget` (one cell)
+  // and from `bulkOpen` (empty cells only) because the action and its drawer are different.
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<{ date: string; unitId: number } | null>(null);
   const [drag, setDrag] = useState<DragPreview | null>(null);
@@ -583,6 +588,18 @@ export function PlannerGrid({
     ? (bookingLookup.get(cellKey(drawerTarget.date, drawerTarget.unitId)) ?? null)
     : null;
 
+  // Site IDs that already have a (non-ghost) booking on the drawer's date, so the "which pad?"
+  // prompt can show a free/booked badge next to each pad.
+  const bookedSiteIds = useMemo(() => {
+    if (!drawerTarget) return new Set<number>();
+    const set = new Set<number>();
+    for (const b of bookings) {
+      if (b.isGhost) continue;
+      if (b.date === drawerTarget.date) set.add(b.siteId);
+    }
+    return set;
+  }, [bookings, drawerTarget]);
+
   // ── selection ──
   const toggleCheck = useCallback((date: string, unitId: number) => {
     const k = cellKey(date, unitId);
@@ -643,6 +660,35 @@ export function PlannerGrid({
         }),
     [checked, bookingLookup],
   );
+
+  // Of the booked selection, how many are unpublished (and therefore editable). Same gate
+  // as "Publish selected" uses: published bookings are locked until an admin unlocks them,
+  // so the "Bulk edit" button is disabled when this is zero.
+  const editableSelectedCount = useMemo(
+    () => selectedBookingKeys.filter((k) => !bookingLookup.get(k)!.publishedAt).length,
+    [selectedBookingKeys, bookingLookup],
+  );
+
+  // The actual rows the BulkEditDrawer will act on: unpublished, unlocked bookings only.
+  // Published bookings in the selection are reported as `lockedCount` rather than silently
+  // dropped — same reasoning as the publish preflight's excluded list.
+  const bulkEditTargets = useMemo<BulkEditRow[]>(
+    () =>
+      selectedBookingKeys
+        .filter((k) => !bookingLookup.get(k)!.publishedAt)
+        .map((k) => {
+          const b = bookingLookup.get(k)!;
+          const [date, unitStr] = k.split("|");
+          return {
+            unitId: Number(unitStr),
+            date,
+            expectedUpdatedAt: b.updatedAt.toISOString(),
+            unitLabel: unitById.get(b.unitId)?.registration ?? "?",
+          };
+        }),
+    [selectedBookingKeys, bookingLookup, unitById],
+  );
+  const bulkEditLockedCount = selectedBookingKeys.length - editableSelectedCount;
 
   const clearSelection = useCallback(() => {
     setChecked(new Set());
@@ -1477,6 +1523,11 @@ export function PlannerGrid({
           setBulkOpen(false);
           return;
         }
+        // Same again for the bulk edit sheet.
+        if (bulkEditOpen) {
+          setBulkEditOpen(false);
+          return;
+        }
         clearSelection();
         closeDrawer();
         endDrag();
@@ -1498,7 +1549,7 @@ export function PlannerGrid({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clearSelection, closeDrawer, endDrag, undoStack, redoStack, pending, moveDialogOpen, bulkOpen]);
+  }, [clearSelection, closeDrawer, endDrag, undoStack, redoStack, pending, moveDialogOpen, bulkOpen, bulkEditOpen]);
 
   // ── live updates (SPEC.md §1/§11: ~10s polling) ──
   // Skipped while a mutation is in flight or a drag is live, so a background refresh can't
@@ -1583,6 +1634,7 @@ export function PlannerGrid({
       <SelectionBar
         bookingCount={selectedBookingKeys.length}
         emptyCount={selectedEmptySlots.length}
+        editableCount={editableSelectedCount}
         publishableCount={publishableSelected}
         canPublish={canPublish}
         dragSummary={
@@ -1592,6 +1644,7 @@ export function PlannerGrid({
         }
         onPublish={() => void publishSelected()}
         onBookEmpty={() => setBulkOpen(true)}
+        onBulkEdit={() => setBulkEditOpen(true)}
         onClear={clearSelection}
       />
       {showLegend && <StatusLegend />}
@@ -1794,6 +1847,7 @@ export function PlannerGrid({
                               computePreview={computePreview}
                               onMove={(targetUnitId) => moveCellToUnit(day, u, targetUnitId)}
                               onOpenMoveDialog={() => setMoveDialogOpen(true)}
+                              onOpenBulkEdit={() => setBulkEditOpen(true)}
                               onSwapSelected={() => void handleSwapSelected()}
                               onReturnToTms={() => returnToTms(day, u)}
                               tmsReturnLabel={tmsReturnLabel}
@@ -1827,6 +1881,7 @@ export function PlannerGrid({
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         canUnlock={canUnlock}
+        bookedSiteIds={bookedSiteIds}
         onClose={closeDrawer}
         onMutated={pushUndo}
       />
@@ -1840,6 +1895,15 @@ export function PlannerGrid({
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         onClose={() => setBulkOpen(false)}
+        onMutated={pushUndo}
+      />
+
+      <BulkEditDrawer
+        open={bulkEditOpen && bulkEditTargets.length > 0}
+        companyId={companyId}
+        targets={bulkEditTargets}
+        lockedCount={bulkEditLockedCount}
+        onClose={() => setBulkEditOpen(false)}
         onMutated={pushUndo}
       />
 

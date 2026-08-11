@@ -39,6 +39,7 @@ export function CellMoveMenu({
   computePreview,
   onMove,
   onOpenMoveDialog,
+  onOpenBulkEdit,
   onSwapSelected,
   onReturnToTms,
   tmsReturnLabel,
@@ -58,6 +59,9 @@ export function CellMoveMenu({
   computePreview: (st: MoveState, targetDate: string, targetUnitId: number) => PreviewResult;
   onMove: (targetUnitId: number) => void;
   onOpenMoveDialog: () => void;
+  /** Opens the BulkEditDrawer over the current multi-select — same action as the blue
+   * SelectionBar's "Bulk edit" button, reachable without moving the pointer up to the bar. */
+  onOpenBulkEdit: () => void;
   /** Swap the two currently-selected bookings directly. Only ever called when exactly two are selected. */
   onSwapSelected: () => void;
   /**
@@ -106,6 +110,9 @@ export function CellMoveMenu({
             )}
             <ContextMenuItem onSelect={onOpenMoveDialog}>
               Move {movingCount} selected bookings…
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={onOpenBulkEdit}>
+              ✎ Bulk edit {movingCount} selected booking{movingCount === 1 ? "" : "s"}…
             </ContextMenuItem>
           </>
         ) : (

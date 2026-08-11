@@ -616,6 +616,146 @@ export async function createBookings(input: CreateBookingsInput): Promise<BulkWr
   }
 }
 
+export type BulkEditTarget = { unitId: number; date: string; expectedUpdatedAt: string };
+
+export type BulkEditInput = {
+  targets: BulkEditTarget[];
+  /** `undefined` on any of these three means "leave unchanged" — only the fields the
+   * scheduler explicitly opted into (via the Bulk edit drawer's per-field toggles) are
+   * written; the rest keep whatever each individual booking already had. */
+  site?: SiteInput;
+  status?: string;
+  notes?: string;
+};
+
+/**
+ * Change one or more fields across a set of ALREADY-BOOKED cells in one go — the bulk
+ * counterpart to the single-cell drawer's "Save booking", for a multi-select. Unlike
+ * `createBookings`, every target must already hold a live, unpublished, unlocked local
+ * booking: this only ever edits existing rows, never creates or revives one, and a
+ * published booking in the set is rejected for the whole batch (same "unlock it first"
+ * rule the single-cell drawer enforces) rather than silently skipped.
+ */
+export async function updateBookings(input: BulkEditInput): Promise<BulkWriteResult> {
+  const actor = await requireRole([...EDITOR_ROLES]);
+  if (!actor) return { ok: false, error: "You don't have permission to edit bookings.", code: "PERMISSION" };
+  if (!input.targets.length) return { ok: false, error: "Nothing to edit.", code: "VALIDATION" };
+  if (input.site === undefined && input.status === undefined && input.notes === undefined) {
+    return { ok: false, error: "Choose at least one field to change.", code: "VALIDATION" };
+  }
+
+  try {
+    return await db.transaction(async (tx) => {
+      if (input.status !== undefined && !(await isSettableStatus(tx, input.status))) {
+        throw new BulkRejected({ ok: false, error: "Invalid status.", code: "VALIDATION" });
+      }
+
+      const batchId = randomUUID();
+      const notes = input.notes !== undefined ? input.notes.trim() || null : undefined;
+
+      const unitCache = new Map<number, { id: number; registration: string; companyId: number }>();
+      async function unitFor(unitId: number) {
+        const cached = unitCache.get(unitId);
+        if (cached) return cached;
+        const [row] = await tx
+          .select({ id: units.id, registration: units.registration, companyId: units.companyId })
+          .from(units)
+          .where(eq(units.id, unitId))
+          .limit(1);
+        if (!row) throw new BulkRejected({ ok: false, error: "Unit not found.", code: "VALIDATION" });
+        unitCache.set(unitId, row);
+        return row;
+      }
+
+      // Resolved once for the whole batch, same reasoning as createBookings — typing a
+      // new site name and editing five bookings with it must create one new site, not
+      // five. The grid only ever selects cells from one company, so the first target's
+      // company is the one every site lookup is scoped to.
+      let resolvedSite: { id: number; name: string } | null = null;
+      const warningsAll: CapabilityWarning[] = [];
+
+      for (const target of input.targets) {
+        const [existing] = await tx
+          .select()
+          .from(bookings)
+          .where(and(eq(bookings.unitId, target.unitId), eq(bookings.date, target.date), isNull(bookings.deletedAt)))
+          .limit(1);
+        if (!existing) {
+          throw new BulkRejected({ ok: false, error: "One of those bookings no longer exists — refresh and try again.", code: "CONFLICT" });
+        }
+        if (!companyAllowed(actor.companyAccess, existing.companyId)) {
+          logCompanyAccessDenied({ userId: actor.id, requestedCompanyId: existing.companyId, resource: "booking_bulk_edit" });
+          throw new BulkRejected({ ok: false, error: "One of those bookings no longer exists — refresh and try again.", code: "CONFLICT" });
+        }
+        if (existing.publishedAt) {
+          throw new BulkRejected({ ok: false, error: "One of those bookings is published and locked. Unlock it first.", code: "LOCKED" });
+        }
+        if (target.expectedUpdatedAt !== existing.updatedAt.toISOString()) {
+          const name = await nameOfEditor(tx, existing.updatedBy);
+          throw new BulkRejected({
+            ok: false,
+            error: `One of those bookings was changed by ${name} — refresh to see the latest.`,
+            code: "CONFLICT",
+          });
+        }
+
+        const unit = await unitFor(existing.unitId);
+
+        const patch: Partial<{
+          siteId: number;
+          status: string;
+          notes: string | null;
+          updatedBy: number;
+          updatedAt: Date;
+          tmsConflictAt: Date | null;
+          tmsImportedAt: Date | null;
+        }> = {};
+
+        if (input.site !== undefined) {
+          if (!resolvedSite) {
+            const siteResult = await resolveSite(tx, unit.companyId, input.site);
+            if (!siteResult.ok) throw new BulkRejected({ ok: false, error: siteResult.error, code: "VALIDATION" });
+            resolvedSite = siteResult.site;
+          }
+          patch.siteId = resolvedSite.id;
+          warningsAll.push(...(await warningsFor(tx, unit, resolvedSite)));
+        }
+        if (input.status !== undefined) patch.status = input.status;
+        if (notes !== undefined) patch.notes = notes;
+
+        const now = new Date();
+        patch.updatedBy = actor.id;
+        patch.updatedAt = now;
+        // Same "editing and re-saving is the review signal" rule as the single-cell save.
+        patch.tmsConflictAt = null;
+        patch.tmsImportedAt = existing.tmsConflictAt ? now : existing.tmsImportedAt;
+
+        const [updated] = await tx.update(bookings).set(patch).where(eq(bookings.id, existing.id)).returning();
+
+        await tx.insert(bookingEvents).values({
+          actorId: actor.id,
+          action: "update",
+          batchId,
+          bookingBefore: { ...existing, unitRegistration: unit.registration },
+          bookingAfter: { ...updated, unitRegistration: unit.registration, capabilityWarnings: warningsAll },
+        });
+      }
+
+      revalidatePath("/");
+      const n = input.targets.length;
+      return {
+        ok: true,
+        message: `Updated ${n} booking${n > 1 ? "s" : ""}${resolvedSite ? ` — ${resolvedSite.name}` : ""}`,
+        batchId,
+        warnings: [...new Set(warningsAll)],
+      };
+    });
+  } catch (err) {
+    if (err instanceof BulkRejected) return err.result;
+    throw err;
+  }
+}
+
 export type ClearBookingsInput = {
   slots: (BookingSlot & { expectedUpdatedAt: string })[];
 };
