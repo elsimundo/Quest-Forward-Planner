@@ -106,20 +106,20 @@ export function CellMoveMenu({
         {multi ? (
           <>
             {canSwap && (
-              <ContextMenuItem onSelect={onSwapSelected}>⇄ Swap these two bookings</ContextMenuItem>
+              <ContextMenuItem onSelect={onSwapSelected}>Swap these two bookings</ContextMenuItem>
             )}
             <ContextMenuItem onSelect={onOpenMoveDialog}>
               Move {movingCount} selected bookings…
             </ContextMenuItem>
             <ContextMenuItem onSelect={onOpenBulkEdit}>
-              ✎ Bulk edit {movingCount} selected booking{movingCount === 1 ? "" : "s"}…
+              Bulk edit {movingCount} selected booking{movingCount === 1 ? "" : "s"}…
             </ContextMenuItem>
           </>
         ) : (
           <>
             {tmsReturnLabel && (
               <ContextMenuItem onSelect={onReturnToTms}>
-                ↩ Return to TMS: {tmsReturnLabel}
+                Return to TMS: {tmsReturnLabel}
               </ContextMenuItem>
             )}
             <ContextMenuSub>
