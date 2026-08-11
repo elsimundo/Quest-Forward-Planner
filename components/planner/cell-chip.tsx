@@ -39,6 +39,7 @@ export function GhostChip({
   toLabel,
   onOpen,
   onGoTo,
+  preview,
 }: {
   booking: OverlayBooking;
   /** Human-readable destination, e.g. "RCT22 · 3 Mar" — for the tooltip. */
@@ -46,12 +47,25 @@ export function GhostChip({
   /** Open this cell, as clicking any other cell would. The slot is free — see below. */
   onOpen: () => void;
   onGoTo?: () => void;
+  /**
+   * Live drag feedback, same as CellChip's `preview` — this slot is excluded from
+   * `bookingLookup` (see docs/CELL_STATES.md) so a drag treats it as free, and the border
+   * needs to say so instead of staying silent while every other free cell paints green.
+   */
+  preview?: "ok" | "bad" | "remove" | null;
 }) {
   const catalog = useStatusCatalog();
   const st = catalog.get(booking.status);
 
   const where = toLabel ? `Moved to ${toLabel}` : "Moved elsewhere";
   const bodyTitle = `${booking.siteName} — still here in TMS. ${where} in the planner, not yet published. This slot is free: click to book something else.`;
+
+  const previewStyle: React.CSSProperties | null =
+    preview === "ok"
+      ? { borderColor: "#3d7f53", borderStyle: "solid", borderWidth: "1.5px", background: "#e9f4ec" }
+      : preview === "bad"
+        ? { borderColor: "#b13a3a", borderStyle: "solid", borderWidth: "1.5px", background: "#f9ebeb" }
+        : null;
 
   // TWO targets, not one. The body opens the cell like every other cell in the grid, because
   // the slot genuinely IS free — the booking that was here now lives somewhere else, the
@@ -65,7 +79,7 @@ export function GhostChip({
   return (
     <div
       className="relative flex h-10 w-full items-center overflow-hidden rounded-md border border-dashed select-none"
-      style={{ borderColor: tintBorder(st.bar, 0.45), background: st.bg }}
+      style={{ borderColor: tintBorder(st.bar, 0.45), background: st.bg, ...(previewStyle ?? {}) }}
     >
       <button
         type="button"

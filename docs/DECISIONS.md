@@ -1664,6 +1664,29 @@ Status is allowed to vary within a run (only the site must match): a week at one
 Confirmed for three days and Provisional for two is still one visit, and splitting the handle
 there would surprise.
 
+### 48. Right-click "Return to TMS" — one-click revert to TMS position
+
+**Decided:** the cell context menu (`CellMoveMenu`) gains a "↩ Return to TMS: {unit · date}"
+item for a single moved TMS-sourced booking. It moves the booking back to where TMS still has
+it, using the same `attemptMove` / clash-detection / undo pipeline as any other move. The
+overlay's `movedFrom` field — already computed in `lib/db/tms/overlay.ts` and carried on
+`OverlayBooking` — is the source of the TMS position. The item only appears when `movedFrom`
+is non-null (the booking has actually been moved from its TMS slot) and the booking is
+unpublished (the menu is already gated on that).
+
+**Why:** undo is batch-scoped and stack-ordered — a scheduler who moved a TMS booking, then
+did other things, can't selectively revert just that one booking without undoing everything
+in between. The ghost cell already shows where TMS has it, but manually finding the ghost and
+dragging back is fiddly. This is a targeted one-click revert that doesn't touch the undo
+stack. The label (unit registration + date) gives confidence about where the booking will go.
+
+**Not chosen:** a general "revert to original position" that also covers locally-created
+bookings — those have no TMS position to return to, and undo already covers recent moves.
+Not chosen: snapping to TMS's *current* position bypassing the clash dialog — the TMS slot
+could be occupied by another amendment, so going through `attemptMove`'s clash detection is
+correct. Not chosen: showing the item in the multi-select case — returning a block to
+different TMS positions is a per-booking operation, not a uniform delta shift.
+
 <!--
 Template for new entries:
 

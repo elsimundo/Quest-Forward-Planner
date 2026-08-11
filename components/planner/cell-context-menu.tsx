@@ -40,6 +40,8 @@ export function CellMoveMenu({
   onMove,
   onOpenMoveDialog,
   onSwapSelected,
+  onReturnToTms,
+  tmsReturnLabel,
   children,
 }: {
   day: { date: string };
@@ -58,6 +60,14 @@ export function CellMoveMenu({
   onOpenMoveDialog: () => void;
   /** Swap the two currently-selected bookings directly. Only ever called when exactly two are selected. */
   onSwapSelected: () => void;
+  /**
+   * Return this booking to where TMS still has it (docs/DECISIONS.md #36). Only shown for a
+   * single moved TMS-sourced booking — `tmsReturnLabel` is null otherwise. Routes through the
+   * same clash-detection/move pipeline as any other move.
+   */
+  onReturnToTms: () => void;
+  /** Human-readable label for the TMS position (e.g. "CT17 · 11 Aug 2026"), or null to hide. */
+  tmsReturnLabel: string | null;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -99,19 +109,54 @@ export function CellMoveMenu({
             </ContextMenuItem>
           </>
         ) : (
-          <ContextMenuSub>
-            <ContextMenuSubTrigger>Move to unit</ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              {candidates.length === 0 && <ContextMenuItem disabled>No other units in view</ContextMenuItem>}
-              {candidates.map(({ unit: u, clashes }) => (
-                <ContextMenuItem key={u.id} onSelect={() => onMove(u.id)}>
-                  <span className="flex-1">{u.registration}</span>
-                  {clashes > 0 && <span className="text-xs text-muted-foreground">occupied</span>}
-                </ContextMenuItem>
-              ))}
-            </ContextMenuSubContent>
-          </ContextMenuSub>
+          <>
+            {tmsReturnLabel && (
+              <ContextMenuItem onSelect={onReturnToTms}>
+                ↩ Return to TMS: {tmsReturnLabel}
+              </ContextMenuItem>
+            )}
+            <ContextMenuSub>
+              <ContextMenuSubTrigger>Move to unit</ContextMenuSubTrigger>
+              <ContextMenuSubContent>
+                {candidates.length === 0 && <ContextMenuItem disabled>No other units in view</ContextMenuItem>}
+                {candidates.map(({ unit: u, clashes }) => (
+                  <ContextMenuItem key={u.id} onSelect={() => onMove(u.id)}>
+                    <span className="flex-1">{u.registration}</span>
+                    {clashes > 0 && <span className="text-xs text-muted-foreground">occupied</span>}
+                  </ContextMenuItem>
+                ))}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          </>
         )}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+/**
+ * Right-click "Book N days" on a selected free cell — the same bulk-booking action the blue
+ * SelectionBar offers, reachable without moving the pointer up to the bar. Only wraps cells
+ * that are already part of the current empty-cell selection: right-clicking a free cell that
+ * isn't selected falls through to the browser's default menu, same as it always has.
+ */
+export function EmptySlotContextMenu({
+  count,
+  onBook,
+  children,
+}: {
+  /** Size of the current free-cell selection — always ≥ 1 when this menu is mounted. */
+  count: number;
+  onBook: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={onBook}>
+          Book {count} day{count === 1 ? "" : "s"}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );

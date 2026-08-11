@@ -19,7 +19,7 @@ import { changeKindFor, summariseChanges, type ChangeSummary } from "@/lib/plann
 import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip, GhostChip } from "./cell-chip";
-import { CellMoveMenu } from "./cell-context-menu";
+import { CellMoveMenu, EmptySlotContextMenu } from "./cell-context-menu";
 import { MoveSelectedDialog, type MoveRow } from "./move-selected-dialog";
 import { PlannerToolbar } from "./toolbar";
 import { StatusLegend } from "./status-legend";
@@ -197,8 +197,8 @@ function ResizeHandle({ edge, onStart }: { edge: "top" | "bottom"; onStart: (e: 
       title={edge === "top" ? "Drag to start this visit earlier or later" : "Drag to extend or shorten this visit"}
       // (54px row − 40px chip) / 2 = 7px of dead space above and below the chip, so the
       // strip sits exactly on the chip's edge without overhanging the row.
-      className={`absolute right-[3px] left-[3px] z-10 h-[8px] cursor-ns-resize rounded-full opacity-0 transition-opacity duration-150 group-hover:opacity-100 ${
-        edge === "top" ? "top-[7px]" : "bottom-[7px]"
+      className={`absolute right-[3px] left-[3px] z-10 h-[8px] cursor-ns-resize opacity-0 transition-opacity duration-150 group-hover:opacity-100 ${
+        edge === "top" ? "top-[7px] rounded-t-md" : "bottom-[7px] rounded-b-md"
       }`}
       style={{ background: "rgba(43,123,185,0.55)" }}
     />
@@ -823,13 +823,19 @@ export function PlannerGrid({
       const n = bookingLookup.get(cellKey(days[idx].date, unitId));
       return !!n && !n.publishedAt && n.siteId === siteId;
     };
+    // A handle is pointless if there's no room to grow into: the neighbouring day is either
+    // off the grid or already held by some other booking (bookingLookup excludes ghosts, so a
+    // moved-away ghost's slot still counts as free — a run may grow over it, same as the
+    // actual clamp in beginResize below).
+    const free = (unitId: number, idx: number) =>
+      idx >= 0 && idx < days.length && !bookingLookup.has(cellKey(days[idx].date, unitId));
     for (const [k, b] of bookingLookup) {
       if (b.publishedAt) continue;
       const i = dateIdx.get(b.date);
       if (i === undefined) continue;
       edges.set(k, {
-        top: !sameRun(b.unitId, b.siteId, i - 1),
-        bottom: !sameRun(b.unitId, b.siteId, i + 1),
+        top: !sameRun(b.unitId, b.siteId, i - 1) && free(b.unitId, i - 1),
+        bottom: !sameRun(b.unitId, b.siteId, i + 1) && free(b.unitId, i + 1),
       });
     }
     return edges;
@@ -1047,6 +1053,20 @@ export function PlannerGrid({
     const k = cellKey(day.date, unit.id);
     const keys = checked.has(k) ? selectedBookingKeys : [k];
     attemptMove({ origin: { date: day.date, unitId: unit.id }, keys }, day.date, targetUnitId);
+  }
+
+  // Right-click "Return to TMS" (docs/DECISIONS.md #36): moves a single TMS-sourced booking
+  // back to where TMS still has it, using the same clash-detection/move pipeline as any other
+  // move. The overlay's `movedFrom` field is the TMS position — only non-null when the
+  // booking has actually been moved from its TMS slot.
+  function returnToTms(day: DayInfo, unit: Unit) {
+    const booking = bookingLookup.get(cellKey(day.date, unit.id));
+    if (!booking?.movedFrom) return;
+    attemptMove(
+      { origin: { date: day.date, unitId: unit.id }, keys: [cellKey(day.date, unit.id)] },
+      booking.movedFrom.date,
+      booking.movedFrom.unitId,
+    );
   }
 
   // The booked part of the current selection, as dialog rows. Published bookings can't be
@@ -1720,6 +1740,7 @@ export function PlannerGrid({
                                 : null
                             }
                             onGoTo={movedGhost.movedTo ? () => goToCell(movedGhost.movedTo!) : undefined}
+                            preview={drag?.preview.get(k) ?? null}
                           />
                         ) : (
                         (() => {
@@ -1739,10 +1760,30 @@ export function PlannerGrid({
                               onDragEnd={endDrag}
                             />
                           );
-                          // Only booked, unpublished cells get the menu — same rule that
+                          // A free cell that's part of the current multi-selection gets the
+                          // same "Book N days" the blue SelectionBar offers, so the bulk
+                          // action is reachable without moving the pointer up to the bar. An
+                          // unselected free cell falls through to the browser's default menu.
+                          if (!booking) {
+                            if (checked.has(k) && selectedEmptySlots.length > 0) {
+                              return (
+                                <EmptySlotContextMenu
+                                  count={selectedEmptySlots.length}
+                                  onBook={() => setBulkOpen(true)}
+                                >
+                                  {chip}
+                                </EmptySlotContextMenu>
+                              );
+                            }
+                            return chip;
+                          }
+                          // Only booked, unpublished cells get the move menu — same rule that
                           // already gates dragging (published bookings are locked until an
                           // admin unlocks them).
-                          if (!booking || booking.publishedAt) return chip;
+                          if (booking.publishedAt) return chip;
+                          const tmsReturnLabel = booking.movedFrom
+                            ? `${unitById.get(booking.movedFrom.unitId)?.registration ?? "?"} · ${fmtDate(booking.movedFrom.date)}`
+                            : null;
                           return (
                             <CellMoveMenu
                               day={day}
@@ -1754,6 +1795,8 @@ export function PlannerGrid({
                               onMove={(targetUnitId) => moveCellToUnit(day, u, targetUnitId)}
                               onOpenMoveDialog={() => setMoveDialogOpen(true)}
                               onSwapSelected={() => void handleSwapSelected()}
+                              onReturnToTms={() => returnToTms(day, u)}
+                              tmsReturnLabel={tmsReturnLabel}
                             >
                               {chip}
                             </CellMoveMenu>
