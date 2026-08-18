@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { TriangleAlertIcon } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -172,7 +173,10 @@ function BulkBookingBody({
         {warnings.length > 0 && (
           <div className="mt-3 rounded-lg border border-[#f6ddc8] bg-[#fdf1e7] p-3 text-xs leading-[17px] text-[#9a4d1e]">
             {warnings.map((w, i) => (
-              <div key={`${w.requirementKey}-${i}`}>⚠ {w.message}</div>
+              <div key={`${w.requirementKey}-${i}`} className="flex items-center gap-1">
+                <TriangleAlertIcon className="size-3 shrink-0" aria-hidden />
+                {w.message}
+              </div>
             ))}
           </div>
         )}

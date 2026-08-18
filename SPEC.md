@@ -119,6 +119,19 @@ users
   id, name, email, role text       -- viewer | scheduler | admin | super_admin  (§7)
   tms_synced_at timestamptz null   -- if TMS ends up being the identity source
 
+-- Tag categories (docs/DECISIONS.md) — admin-designated subset of TMS's live
+-- `booking_tags` catalogue (§ "TMS booking_tags" note below `bookings`), not a parallel
+-- catalogue of our own. "generator" was the first category, "parking" the second — a new
+-- category is a code change (add to TAG_CATEGORIES), not a schema change.
+tag_category_assignments
+  id serial pk
+  tms_tag_id int                   -- TMS booking_tags.id — no local tags table to FK
+                                    -- against, same reasoning as bookings.tag_ids below
+  category text                    -- "generator" | "parking"
+  created_at timestamptz
+  created_by fk -> users null
+  UNIQUE (tms_tag_id, category)
+
 -- ── Planner data — owned by this app
 bookings
   id serial pk
@@ -127,6 +140,9 @@ bookings
   site_id fk -> sites
   status text                      -- see §3
   notes text null
+  tag_ids int[]                    -- TMS booking_tags.id values selected for this booking —
+                                    -- a booking "needs a generator" when any of these is a
+                                    -- tag_category_assignments row of category "generator"
   published_at timestamptz null    -- set when locked/forwarded — see §2b
   published_by fk -> users null
   created_by / updated_by fk -> users
@@ -193,6 +209,23 @@ for a date.
 - Drag-and-drop of a published/locked booking is blocked (can't accidentally move
   something already sent downstream); the clash dialog and undo still apply freely to
   unpublished bookings.
+
+### 2b-i. Past-date read-only boundary
+
+A second, independent editable-source-of-truth boundary alongside the publish-lock above: a
+booking on a day **before today** is read-only — no drag, edit, move, resize, or bulk-edit —
+regardless of whether it was ever published. Gated purely on calendar date, checked both
+client- and server-side, and never merged into the `published_at`/"locked" concept above — the
+two are different reasons and get distinct visual treatment and drawer copy.
+
+Past days aren't part of day-to-day scheduling, so the grid doesn't load scrolled through them
+either: it opens straight on today, with a **"Click to view previous bookings" banner** in
+their place. Clicking it reveals the full history back to the start of the loaded window,
+scrollable from there — the deliberate action for "I want to check something from the past",
+not the default view. Publish/unpublish are deliberately **not** gated by this boundary
+(blocking them would strand a forgotten-to-publish past booking permanently). See
+`docs/DECISIONS.md` #54/#55 for the full reasoning, the combined past+published precedence, and
+the exclusions.
 
 ### 2c. Soft deletes — no data is ever hard-deleted
 
@@ -361,6 +394,10 @@ Click any cell (booked or empty) → right-side drawer (shadcn Sheet):
 - **Site location**: combobox with type-ahead over `sites` (≥2 chars, top 6), free-text
   allowed → creates a new site (flag for admin review).
 - **Status**: radio list of the six user-selectable statuses, each with colour swatch.
+- **Tags**: TMS's live per-company tag catalogue — no separate "generator" field of its
+  own; picking a tag an admin has designated a generator tag (§7) is what makes a booking
+  "need a generator", rendered on the grid cell as a colour-coded ⚡ (`docs/CELL_STATES.md`,
+  `docs/DECISIONS.md`).
 - **Notes**: free text.
 - Actions: **Save booking** (disabled until a site is set) · **Clear** (only when
   editing an existing booking). Both toast on success and write `booking_events`.
@@ -475,6 +512,9 @@ role, timestamp) so "who made X an admin" is always answerable.
   TMS site if it's a duplicate/typo) or reject. *(`admin` and above.)*
 - **Unlock published bookings**: the admin-only override from §2b, also reachable inline
   from the grid, but listed here as it's an admin capability. *(`admin` and above.)*
+- **Tag categories**: for a chosen company, list TMS's live tag catalogue and designate
+  which tags mean "generator required", "parking required", etc — a checkbox per category
+  per tag, not a catalogue of our own. *(`admin` and above.)*
 - **Audit log viewer**: searchable view over `booking_events` — "who moved CT38 off the
   Gloucester run and when" (this is the payoff for the append-only log design in §10).
   *(`admin` and above.)*

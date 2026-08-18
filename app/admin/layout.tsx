@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ArrowLeftIcon } from "lucide-react";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { ROLES, type Role } from "@/lib/db/schema";
@@ -9,6 +10,7 @@ const ADMIN_NAV = [
   { href: "/admin/site-requirements", label: "Site requirements" },
   // { href: "/admin/site-groups", label: "Site groups" },
   { href: "/admin/booking-statuses", label: "Booking statuses" },
+  { href: "/admin/tag-categories", label: "Tag categories" },
 ] as const;
 
 // super_admin-only — both now trigger/show a run spanning every scheduling-enabled TMS
@@ -45,9 +47,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         </div>
         <Link
           href="/"
-          className="rounded-full border border-white/25 px-3.5 py-1.5 text-[13px] text-white/85 transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
+          className="inline-flex items-center gap-1.5 rounded-full border border-white/25 px-3.5 py-1.5 text-[13px] text-white/85 transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
         >
-          ← Back to planner
+          <ArrowLeftIcon className="size-3.5" aria-hidden /> Back to planner
         </Link>
       </header>
 

@@ -207,6 +207,27 @@ access add/relabel/recolour/reorder/retire rows at `/admin/booking-statuses`.
 | `active` | bool | `false` hides it from the picker without breaking historical bookings |
 | `deleted_at` | timestamptz, null | Soft delete |
 
+### `tag_category_assignments`
+Admin-designated subset of TMS's live `booking_tags` catalogue (`docs/DECISIONS.md`) —
+supersedes the standalone `generator_providers` catalogue. Not a catalogue of our own:
+just flags which TMS tag ids mean something structural. `generator` was the first
+category, `parking` the second (`lib/db/schema.ts`'s `TAG_CATEGORIES`); a new category is
+a code change, not a schema change. Managed at `/admin/tag-categories`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | serial, PK | |
+| `tms_tag_id` | integer, not null | TMS `booking_tags.id` — no local tags table to FK against, same reasoning as `bookings.tag_ids` below |
+| `category` | text, not null | `"generator"` \| `"parking"` — `TagCategory` in `lib/db/schema.ts` |
+| `created_at` | timestamptz, not null, default now() | |
+| `created_by` | FK → `users`, null | |
+
+Unique on `(tms_tag_id, category)` — a tag can belong to more than one category, but not
+the same category twice. Toggling a category off is a real `DELETE` of the row, not a soft
+delete: this is an admin preference about what a tag *means*, not booking data, so
+CLAUDE.md's soft-delete rule (scoped to `bookings`/`units`/`sites`/`companies`) doesn't
+apply here.
+
 ### `bookings`
 The core operational table.
 
@@ -221,6 +242,7 @@ The core operational table.
 | `site_id` | FK → `sites` | |
 | `status` | text, FK → `booking_statuses.key` | Free-text key into the admin-managed catalogue, not a fixed enum — SPEC §3, `docs/DECISIONS.md` #18 |
 | `notes` | text, null | |
+| `tag_ids` | integer[], not null, default `'{}'` | TMS `booking_tags.id` values selected for this booking. No local tags table to FK against — the catalogue is queried live from TMS (`lib/db/tms/queries.ts:listTmsBookingTags`), company-scoped. `docs/DECISIONS.md` #51. A booking "needs a generator" when any of these ids is a `tag_category_assignments` row of category `generator` — no separate column of its own |
 | `updated_at` | timestamptz, not null, default now() | Not in SPEC §2's table — added because §11's optimistic-lock reconciliation ("save is rejected if another user changed the same booking first") needs a column to compare against. See `docs/DECISIONS.md` #11. |
 | `published_at` | timestamptz, null | Set on publish/lock — SPEC §2b. `publishBookings` refuses to publish a booking with an open `tms_conflict_at` |
 | `published_by` | FK → `users`, null | |

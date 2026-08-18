@@ -1,0 +1,1 @@
+DROP TABLE "generator_tags" CASCADE;

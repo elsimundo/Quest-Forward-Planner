@@ -92,7 +92,20 @@ export type TmsBooking = {
   statusId: number;
   notes: string | null;
   updatedAt: Date;
+  // TMS booking_tags.id values this booking already carries in TMS — see TmsBookingTag
+  // below. Parsed from TMS's own booking_tag_ids column, a Rails multi-select serialized
+  // as YAML (confirmed live: `---\n- ''\n- '2'\n`). Empty for a booking with no tags set.
+  tagIds: number[];
 };
+
+// A fixed, simple YAML shape (Rails' `serialize :booking_tag_ids, Array` default), not
+// arbitrary YAML — a real parser is unwarranted for one field this shape. Extracts every
+// single-quoted digit run (`- '2'`), and ignores the leading `- ''` every multi-select
+// serializes even when nothing is picked.
+function parseTmsTagIds(yaml: string | null): number[] {
+  if (!yaml) return [];
+  return [...yaml.matchAll(/- '(\d+)'/g)].map((m) => Number(m[1]));
+}
 
 export async function listTmsBookings(tmsCompanyId: number): Promise<TmsBooking[]> {
   const pool = getTmsPool();
@@ -108,7 +121,7 @@ export async function listTmsBookings(tmsCompanyId: number): Promise<TmsBooking[
   // instant, not a calendar date, so it's left as a normal DATETIME/JS Date on purpose.
   const [rows] = await pool.execute<mysql.RowDataPacket[]>(
     "SELECT id, unit_id, location_id, DATE_FORMAT(first_day, '%Y-%m-%d') AS first_day, " +
-      "DATE_FORMAT(last_day, '%Y-%m-%d') AS last_day, status, notes, updated_at " +
+      "DATE_FORMAT(last_day, '%Y-%m-%d') AS last_day, status, notes, updated_at, booking_tag_ids " +
       "FROM bookings " +
       "WHERE company_id = ? AND deleted_at IS NULL AND unit_id IS NOT NULL AND location_id IS NOT NULL " +
       "ORDER BY id ASC",
@@ -131,7 +144,33 @@ export async function listTmsBookings(tmsCompanyId: number): Promise<TmsBooking[
       statusId: r.status,
       notes: r.notes?.trim() || null,
       updatedAt: r.updated_at,
+      tagIds: parseTmsTagIds(r.booking_tag_ids),
     });
   }
   return out;
+}
+
+export type TmsBookingTag = {
+  id: number;
+  name: string;
+  description: string | null;
+  hexColour: string;
+};
+
+// booking_tags is TMS's own, live, per-company catalogue — not mirrored locally
+// (docs/DECISIONS.md #51). Read fresh every time the drawer/grid need it, same convention
+// as listTmsUnits/listTmsLocations, so a colour or name change in TMS shows up on the very
+// next load with no sync job to maintain.
+export async function listTmsBookingTags(tmsCompanyId: number): Promise<TmsBookingTag[]> {
+  const pool = getTmsPool();
+  const [rows] = await pool.execute<mysql.RowDataPacket[]>(
+    "SELECT id, name, description, hex_colour FROM booking_tags WHERE company_id = ? AND active = 1 ORDER BY name ASC",
+    [tmsCompanyId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    name: String(r.name).trim(),
+    description: r.description?.trim() || null,
+    hexColour: String(r.hex_colour).trim(),
+  }));
 }

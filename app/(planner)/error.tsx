@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { TriangleAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 // Catches genuinely unexpected failures. A TMS outage does NOT reach here — page.tsx handles
@@ -22,8 +23,8 @@ export default function PlannerError({ error, reset }: { error: Error & { digest
   return (
     <main className="flex flex-1 items-center justify-center bg-[var(--quest-surface-alt)] p-8">
       <div className="max-w-[460px] text-center">
-        <div className="text-3xl" aria-hidden>
-          ⚠
+        <div className="flex justify-center text-[#b13a3a]" aria-hidden>
+          <TriangleAlertIcon className="size-9" />
         </div>
         <h1 className="mt-3 text-lg font-bold text-[#333333]">Something went wrong</h1>
         <p className="mt-2 text-[13px] leading-[19px] text-[#757575]">

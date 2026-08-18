@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { PlusIcon } from "lucide-react";
 import { createStaffUser, setUserRole, setUserActive } from "@/lib/actions/admin/users";
 import { ROLES, type Role } from "@/lib/db/schema";
 
@@ -23,9 +24,13 @@ export function UsersPanel({ users, currentUserId }: { users: StaffUser[]; curre
       <div className="mb-4 flex justify-end">
         <button
           onClick={() => setCreating((v) => !v)}
-          className="rounded-full bg-[#1a3d69] px-4 py-2 text-[13px] font-medium text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+          className="inline-flex items-center gap-1.5 rounded-full bg-[#1a3d69] px-4 py-2 text-[13px] font-medium text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
         >
-          {creating ? "Cancel" : "+ Add staff"}
+          {creating ? "Cancel" : (
+            <>
+              <PlusIcon className="size-3.5" aria-hidden /> Add staff
+            </>
+          )}
         </button>
       </div>
 

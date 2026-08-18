@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { LockIcon } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -16,7 +17,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { fmtDate } from "@/lib/dates";
 import { DEFAULT_STATUS_KEY } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
-import { SiteField, StatusPicker, useSiteField } from "./booking-fields";
+import { useTagCatalog } from "./tag-context";
+import { SiteField, StatusPicker, TagPicker, useSiteField } from "./booking-fields";
 import { updateBookings, type BulkEditTarget } from "@/lib/actions/bookings";
 
 export type BulkEditRow = BulkEditTarget & { unitLabel: string };
@@ -37,15 +39,19 @@ export function BulkEditDrawer({
   companyId,
   targets,
   lockedCount,
+  pastCount,
   onClose,
   onMutated,
 }: {
   open: boolean;
   companyId: number;
-  /** The unpublished, unlocked bookings the drawer will act on. Never empty when `open`. */
+  /** The unpublished, unlocked, non-past bookings the drawer will act on. Never empty when `open`. */
   targets: BulkEditRow[];
   /** Selected bookings excluded because they're already published — reported, not silently dropped. */
   lockedCount: number;
+  /** Selected bookings excluded because their date has passed — a separate reason from
+   * `lockedCount`, reported separately so the banner can say which applies. */
+  pastCount: number;
   onClose: () => void;
   onMutated: (batchId: string) => void;
 }) {
@@ -59,6 +65,7 @@ export function BulkEditDrawer({
             companyId={companyId}
             targets={targets}
             lockedCount={lockedCount}
+            pastCount={pastCount}
             onClose={onClose}
             onMutated={onMutated}
           />
@@ -101,25 +108,30 @@ function BulkEditBody({
   companyId,
   targets,
   lockedCount,
+  pastCount,
   onClose,
   onMutated,
 }: {
   companyId: number;
   targets: BulkEditRow[];
   lockedCount: number;
+  pastCount: number;
   onClose: () => void;
   onMutated: (batchId: string) => void;
 }) {
   const catalog = useStatusCatalog();
   const editableStatuses = catalog.all.filter((s) => s.editable && s.active);
+  const tagCatalog = useTagCatalog();
 
   const [editSite, setEditSite] = useState(false);
   const [editStatus, setEditStatus] = useState(false);
   const [editNotes, setEditNotes] = useState(false);
+  const [editTags, setEditTags] = useState(false);
 
   const siteField = useSiteField(companyId, null);
   const [status, setStatus] = useState<string>(DEFAULT_STATUS_KEY);
   const [notes, setNotes] = useState("");
+  const [tagIds, setTagIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const router = useRouter();
 
@@ -130,7 +142,7 @@ function BulkEditBody({
       ? fmtDate(dates[0])
       : `${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])}`;
 
-  const anyFieldChosen = editSite || editStatus || editNotes;
+  const anyFieldChosen = editSite || editStatus || editNotes || editTags;
   const canSave = anyFieldChosen && !(editSite && !siteField.query.trim());
 
   async function handleSave() {
@@ -140,6 +152,7 @@ function BulkEditBody({
       site: editSite ? siteField.siteInput : undefined,
       status: editStatus ? status : undefined,
       notes: editNotes ? notes : undefined,
+      tagIds: editTags ? tagIds : undefined,
     });
     setSaving(false);
     if (!result.ok) {
@@ -165,9 +178,17 @@ function BulkEditBody({
 
       {lockedCount > 0 && (
         <div className="mx-5.5 mt-3.5 rounded-lg border border-[#dcdcdc] bg-[#f7f9fc] p-3 text-xs leading-[17px] text-[#757575]">
-          🔒 {lockedCount} published booking{lockedCount === 1 ? "" : "s"} in the selection{" "}
+          <LockIcon className="mr-1 inline size-3 -translate-y-px" aria-hidden />
+          {lockedCount} published booking{lockedCount === 1 ? "" : "s"} in the selection{" "}
           {lockedCount === 1 ? "is" : "are"} locked and won&apos;t be changed — unlock{" "}
           {lockedCount === 1 ? "it" : "them"} first to edit.
+        </div>
+      )}
+
+      {pastCount > 0 && (
+        <div className="mx-5.5 mt-3.5 rounded-lg border border-[#dcdcdc] bg-[#f7f9fc] p-3 text-xs leading-[17px] text-[#757575]">
+          {pastCount} booking{pastCount === 1 ? "" : "s"} in the selection{" "}
+          {pastCount === 1 ? "is" : "are"} on a date that&apos;s passed and won&apos;t be changed.
         </div>
       )}
 
@@ -193,6 +214,10 @@ function BulkEditBody({
               rows={3}
               placeholder="Replaces existing notes on every selected booking"
             />
+          </BulkField>
+
+          <BulkField checked={editTags} onToggle={setEditTags} title="Replace tags">
+            <TagPicker tags={tagCatalog.all} value={tagIds} onChange={setTagIds} />
           </BulkField>
         </div>
       </div>

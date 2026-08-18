@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { LockIcon } from "lucide-react";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { fmtDate, type DayInfo } from "@/lib/dates";
 import { PublishBreakdown, type PublishExclusion } from "./publish-breakdown";
@@ -18,6 +19,7 @@ export function PublishRangeDialog({
   preflight,
   onConfirm,
   onClose,
+  onJumpToCell,
 }: {
   open: boolean;
   days: DayInfo[];
@@ -26,15 +28,27 @@ export function PublishRangeDialog({
   // Classifies every unpublished PLANNER CHANGE in [from, to] — computed by the grid, which
   // holds the booking data (Stage D1: docs/OVERLAY_BUILD_PLAN.md). An untouched TMS booking
   // is neither eligible nor excluded; it's already scoped out before this is called
-  // (docs/DECISIONS.md #29). Kept as a callback so the preview updates as the range changes
-  // without threading all bookings into this component.
+  // (docs/DECISIONS.md #29). Kept as a callback so the preview updates as the range changes,
+  // and — since it's called live in render, not snapshotted — as the underlying bookings
+  // change too, without threading all bookings into this component.
   preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
+  onJumpToCell: (target: { unitId: number; date: string }) => void;
 }) {
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent showCloseButton={false} className="max-w-[440px] gap-0 p-0">
+    // Right-side, not bottom (docs/DECISIONS.md #49 amended) — same width/side convention as
+    // booking-drawer.tsx. A bottom sheet eats vertical (date-ROW) space, which is exactly the
+    // wrong axis for a feature about reviewing a date RANGE: goToCell's row centering
+    // (planner-grid.tsx) has no idea the sheet is covering the bottom of the viewport, so a
+    // centered row landed behind it almost every time. A right panel only costs unit-COLUMN
+    // width, so vertical centering stays accurate.
+    <Sheet open={open} onOpenChange={(o) => !o && onClose()} modal={false}>
+      <SheetContent
+        showCloseButton
+        onInteractOutside={(e) => e.preventDefault()}
+        className="flex w-full flex-col gap-0 p-0 sm:max-w-[420px]"
+      >
         {open && (
           <PublishRangeBody
             key={`${defaultFrom}|${defaultTo}`}
@@ -44,10 +58,11 @@ export function PublishRangeDialog({
             preflight={preflight}
             onConfirm={onConfirm}
             onClose={onClose}
+            onJumpToCell={onJumpToCell}
           />
         )}
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -58,6 +73,7 @@ function PublishRangeBody({
   preflight,
   onConfirm,
   onClose,
+  onJumpToCell,
 }: {
   days: DayInfo[];
   defaultFrom: string;
@@ -65,6 +81,7 @@ function PublishRangeBody({
   preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
+  onJumpToCell: (target: { unitId: number; date: string }) => void;
 }) {
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(defaultTo);
@@ -93,45 +110,51 @@ function PublishRangeBody({
         </p>
       </div>
 
-      <div className="flex gap-3 px-6 py-4.5">
-        <div className="flex-1">
-          <label className="mb-1.5 block text-xs font-medium text-[#333333]">From</label>
-          <select className={selectClass} value={from} onChange={(e) => setFrom(e.target.value)}>
-            {days.map((d) => (
-              <option key={d.date} value={d.date}>
-                {fmtDate(d.date)} ({d.dow})
-              </option>
-            ))}
-          </select>
+      {/* Scrollable middle section, header and footer pinned — same shape as booking-drawer's
+          body, and needed here since a long breakdown list plus a short viewport could
+          otherwise push the buttons off-screen in a full-height side panel. */}
+      <div className="flex-1 overflow-y-auto px-6 py-4.5">
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="mb-1.5 block text-xs font-medium text-[#333333]">From</label>
+            <select className={selectClass} value={from} onChange={(e) => setFrom(e.target.value)}>
+              {days.map((d) => (
+                <option key={d.date} value={d.date}>
+                  {fmtDate(d.date)} ({d.dow})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex-1">
+            <label className="mb-1.5 block text-xs font-medium text-[#333333]">To</label>
+            <select className={selectClass} value={to} onChange={(e) => setTo(e.target.value)}>
+              {days.map((d) => (
+                <option key={d.date} value={d.date}>
+                  {fmtDate(d.date)} ({d.dow})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-        <div className="flex-1">
-          <label className="mb-1.5 block text-xs font-medium text-[#333333]">To</label>
-          <select className={selectClass} value={to} onChange={(e) => setTo(e.target.value)}>
-            {days.map((d) => (
-              <option key={d.date} value={d.date}>
-                {fmtDate(d.date)} ({d.dow})
-              </option>
-            ))}
-          </select>
+
+        <div className="mt-4">
+          {invalidRange ? (
+            <div className="rounded-[10px] bg-[#f7f9fc] px-3.5 py-2.5 text-[13px] text-[#333333]">
+              Pick a &apos;From&apos; date on or before &apos;To&apos;.
+            </div>
+          ) : (
+            <PublishBreakdown eligibleSummary={eligibleSummary} excluded={excluded} onJump={onJumpToCell} />
+          )}
         </div>
       </div>
 
-      {invalidRange ? (
-        <div className="px-6 pb-2.5">
-          <div className="rounded-[10px] bg-[#f7f9fc] px-3.5 py-2.5 text-[13px] text-[#333333]">
-            Pick a &apos;From&apos; date on or before &apos;To&apos;.
-          </div>
-        </div>
-      ) : (
-        <PublishBreakdown eligibleSummary={eligibleSummary} excluded={excluded} />
-      )}
-
-      <div className="flex gap-2.5 px-6 pt-3.5 pb-5">
-        <Button className="flex-1" disabled={disabled} onClick={() => onConfirm(from, to)}>
-          {excluded.length > 0 ? `🔒 Publish ${eligible.length}` : "🔒 Publish range"}
-        </Button>
+      <div className="flex justify-end gap-2.5 border-t px-6 pt-3.5 pb-5">
         <Button variant="outline" onClick={onClose}>
           {excluded.length > 0 ? "Cancel and fix" : "Cancel"}
+        </Button>
+        <Button disabled={disabled} onClick={() => onConfirm(from, to)}>
+          <LockIcon aria-hidden />
+          {excluded.length > 0 ? `Publish ${eligible.length}` : "Publish range"}
         </Button>
       </div>
     </>

@@ -64,6 +64,11 @@ type Snapshot = {
   // not the old fixed enum.
   status: string;
   notes: string | null;
+  // Generator tracking (docs/DECISIONS.md) — must round-trip through undo like every other
+  // booking field, or undoing an unrelated later edit leaves a stale generator selection in
+  // place instead of reverting to what this snapshot actually had.
+  generatorProviderKey: string | null;
+  generatorProviderOther: string | null;
   updatedAt: string;
   publishedAt: string | null;
   publishedBy: number | null;
@@ -187,6 +192,8 @@ export async function undoBatchWithinTx(tx: Tx, batchId: string, actor: AuthedUs
           site_id = (CASE id ${col("siteId")} END)::int,
           status = CASE id ${col("status")} END,
           notes = CASE id ${col("notes")} END,
+          generator_provider_key = CASE id ${col("generatorProviderKey")} END,
+          generator_provider_other = CASE id ${col("generatorProviderOther")} END,
           published_at = (CASE id ${col("publishedAt")} END)::timestamptz,
           published_by = (CASE id ${col("publishedBy")} END)::int,
           deleted_at = (CASE id ${col("deletedAt")} END)::timestamptz,

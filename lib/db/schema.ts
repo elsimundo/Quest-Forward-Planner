@@ -279,6 +279,32 @@ export const bookingStatuses = pgTable("booking_statuses", {
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
+// Tag categories (docs/DECISIONS.md, supersedes the standalone `generator_providers`
+// catalogue) — TMS's own `booking_tags` already carries supplier/facility-shaped tags
+// ("Quest Generator", a future parking tag, etc, docs/DECISIONS.md #51), so rather than a
+// second parallel catalogue per concept, admins just designate a SUBSET of the live tag
+// catalogue as meaning something structural. Generic over category from day one: generator
+// was the first, parking is the second (planned — data destined for a downstream app), and
+// the shape adds a new category with no schema change, just a new entry in TAG_CATEGORIES.
+export const TAG_CATEGORIES = ["generator", "parking"] as const;
+export type TagCategory = (typeof TAG_CATEGORIES)[number];
+
+// No local tags table to FK against (same reasoning as `bookings.tag_ids`) — this just
+// flags a TMS `booking_tags.id` as belonging to a category; the tag's own name/colour
+// (fetched live) drive the label and swatch everywhere this renders. A tag can belong to
+// more than one category (unique per tag+category pair, not per tag).
+export const tagCategoryAssignments = pgTable(
+  "tag_category_assignments",
+  {
+    id: serial("id").primaryKey(),
+    tmsTagId: integer("tms_tag_id").notNull(),
+    category: text("category", { enum: TAG_CATEGORIES }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdBy: integer("created_by").references(() => users.id),
+  },
+  (table) => [uniqueIndex("tag_category_assignments_tag_category_unique").on(table.tmsTagId, table.category)],
+);
+
 // Backs bookings.booking_ref ("FP-000123") — a single global, never-reset sequence
 // (docs/TMS_INTEGRATION_PLAN.md §4.3: "FP-000123", decided over a per-year reset because
 // that just buys ambiguity across years for no benefit). Every booking gets one, whether
@@ -320,6 +346,12 @@ export const bookings = pgTable(
       .notNull()
       .references(() => bookingStatuses.key),
     notes: text("notes"),
+    // TMS booking_tags.id values selected for this booking (docs/DECISIONS.md #51). No
+    // local tags table to FK against — the catalogue is queried live from TMS
+    // (lib/db/tms/queries.ts:listTmsBookingTags), company-scoped, same convention as
+    // listTmsUnits/listTmsLocations. A flat array, mirroring TMS's own flat
+    // booking_tag_ids array on `bookings`.
+    tagIds: integer("tag_ids").array().notNull().default(sql`'{}'::integer[]`),
     // Not in SPEC §2's table, but §11 explicitly requires optimistic-lock reconciliation
     // against updated_at — added because the mechanism it describes needs somewhere to
     // live. See docs/DECISIONS.md.

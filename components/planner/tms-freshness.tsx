@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { CircleIcon } from "lucide-react";
 
 // Stage E1: makes the 5-minute TMS refresh cycle visible, so "why hasn't my colleague's TMS
 // change appeared yet?" has a visible answer instead of feeling like a bug
@@ -35,8 +36,8 @@ export function TmsFreshness({ fetchedAtIso }: { fetchedAtIso: string }) {
       className="inline-flex items-center gap-1.5 text-[11px] whitespace-nowrap text-[#9a9a9a]"
       title="When the planner last read the live schedule from TMS. TMS data refreshes every 5 minutes; your own unpublished changes update immediately."
     >
-      <span aria-hidden className="text-[9px] leading-none">
-        ●
+      <span aria-hidden>
+        <CircleIcon className="size-2" fill="currentColor" stroke="none" />
       </span>
       TMS {label ?? "—"}
     </span>

@@ -2,11 +2,14 @@ import { redirect } from "next/navigation";
 import {
   getActiveUnits,
   getBookingStatuses,
+  getTagIdsByCategory,
   getAllUnitSpecs,
   getAllSiteCapabilityRequirements,
   getModalitiesForCompany,
   listCompaniesForPicker,
+  getTmsCompanyId,
 } from "@/lib/db/queries";
+import { listTmsBookingTags } from "@/lib/db/tms/queries";
 import { getOverlayBookings, getOverlayDateRange } from "@/lib/db/tms/overlay";
 import { TmsUnavailableError } from "@/lib/db/tms/booking-cache";
 import { enumerateDays } from "@/lib/dates";
@@ -153,11 +156,16 @@ async function PlannerBody({
     throw err;
   }
 
-  const [statuses, unitSpecs, siteCapabilityRequirements] = await Promise.all([
+  const [statuses, generatorTagIds, unitSpecs, siteCapabilityRequirements, tmsCompanyId] = await Promise.all([
     getBookingStatuses(),
+    getTagIdsByCategory("generator"),
     getAllUnitSpecs(companyId),
     getAllSiteCapabilityRequirements(companyId),
+    getTmsCompanyId(companyId),
   ]);
+  // A company the reference sync has never linked has no TMS side at all — no tags to
+  // offer, same as the overlay's own !tmsCompanyId branch (lib/db/tms/overlay.ts).
+  const tags = tmsCompanyId ? await listTmsBookingTags(tmsCompanyId) : [];
   const days = enumerateDays(range.from, range.to);
 
   return (
@@ -171,6 +179,8 @@ async function PlannerBody({
         bookings={overlay.bookings}
         tmsFetchedAtIso={overlay.fetchedAt.toISOString()}
         statuses={statuses}
+        generatorTagIds={generatorTagIds}
+        tags={tags}
         unitSpecs={unitSpecs}
         siteCapabilityRequirements={siteCapabilityRequirements}
         role={role}

@@ -1,6 +1,7 @@
 import { and, eq, isNull, isNotNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { bookings, companies, sites, units, unitModalities } from "@/lib/db/schema";
+import { bookings, sites, units, unitModalities } from "@/lib/db/schema";
+import { getTmsCompanyId } from "@/lib/db/queries";
 import { getTmsBookings } from "./booking-cache";
 import { localStatusKeyForTmsStatus } from "./status-map";
 import type { BookingOrigin } from "@/lib/planner-changes";
@@ -32,6 +33,14 @@ export type OverlayBooking = {
   siteName: string;
   status: string;
   notes: string | null;
+  /**
+   * TMS `booking_tags.id` values selected for this booking. For an untouched TMS booking
+   * this is inherited straight from TMS's own `booking_tag_ids` (docs/DECISIONS.md #51) —
+   * consistent with how site/status/notes already render TMS's live value on an unamended
+   * row. Resolved to name/colour client-side against a live `listTmsBookingTags` fetch, not
+   * stored here.
+   */
+  tagIds: number[];
   publishedAt: Date | null;
   updatedAt: Date;
   tmsConflictAt: Date | null;
@@ -112,16 +121,12 @@ export async function getOverlayBookings(
   from: string,
   to: string,
 ): Promise<OverlayResult> {
-  const [company] = await db
-    .select({ tmsCompanyId: companies.tmsCompanyId })
-    .from(companies)
-    .where(eq(companies.id, companyId))
-    .limit(1);
+  const tmsCompanyId = await getTmsCompanyId(companyId);
 
   // A company the reference sync has never linked has no TMS side at all. That's a real
   // state (a locally-created company), not an error — it just means the grid is amendments
   // only. `fetchedAt` is now because there was nothing to fetch.
-  if (!company?.tmsCompanyId) {
+  if (!tmsCompanyId) {
     const amendmentsOnly = await loadAmendments(companyId, modalityId);
     return {
       bookings: amendmentsOnly
@@ -132,7 +137,7 @@ export async function getOverlayBookings(
     };
   }
 
-  const { bookings: tmsBookings, statusNameById, fetchedAt } = await getTmsBookings(company.tmsCompanyId);
+  const { bookings: tmsBookings, statusNameById, fetchedAt } = await getTmsBookings(tmsCompanyId);
 
   // Reference data, loaded once per request rather than per booking.
   const localUnits = await db
@@ -221,6 +226,7 @@ export async function getOverlayBookings(
           siteName: siteNameById.get(siteId) ?? "?",
           status: key,
           notes: tb.notes,
+          tagIds: tb.tagIds,
           publishedAt: null,
           updatedAt: tb.updatedAt,
           tmsConflictAt: null,
@@ -272,6 +278,7 @@ export async function getOverlayBookings(
         siteName: siteNameById.get(siteId) ?? "?",
         status: key,
         notes: tb.notes,
+        tagIds: tb.tagIds,
         publishedAt: null,
         // TMS's own updated_at — the grid uses this for optimistic-lock display only; a TMS
         // row isn't ours to lock.
@@ -303,6 +310,7 @@ export async function getOverlayBookings(
         siteName: siteNameById.get(siteId) ?? "?",
         status: key,
         notes: tb.notes,
+        tagIds: tb.tagIds,
         publishedAt: null,
         updatedAt: tb.updatedAt,
         tmsConflictAt: null,
@@ -368,6 +376,7 @@ export type TmsCell = {
   siteId: number;
   status: string;
   notes: string | null;
+  tagIds: number[];
 };
 
 export const tmsCellKey = (unitId: number, date: string) => `${unitId}|${date}`;
@@ -386,12 +395,8 @@ export async function resolveTmsCells(
   const out = new Map<string, TmsCell>();
   if (!slots.length) return out;
 
-  const [company] = await db
-    .select({ tmsCompanyId: companies.tmsCompanyId })
-    .from(companies)
-    .where(eq(companies.id, companyId))
-    .limit(1);
-  if (!company?.tmsCompanyId) return out;
+  const tmsCompanyId = await getTmsCompanyId(companyId);
+  if (!tmsCompanyId) return out;
 
   const localUnits = await db
     .select({ id: units.id, tmsUnitId: units.tmsUnitId })
@@ -405,7 +410,7 @@ export async function resolveTmsCells(
     .where(and(eq(sites.companyId, companyId), isNull(sites.deletedAt), isNotNull(sites.tmsLocationId)));
   const siteIdByTmsLocationId = new Map(localSites.map((s) => [s.tmsLocationId as number, s.id]));
 
-  const { bookings: tmsBookings, statusNameById } = await getTmsBookings(company.tmsCompanyId);
+  const { bookings: tmsBookings, statusNameById } = await getTmsBookings(tmsCompanyId);
   const byTmsSlot = new Map(tmsBookings.map((b) => [`${b.unitId}|${b.date}`, b]));
 
   for (const s of slots) {
@@ -421,6 +426,7 @@ export async function resolveTmsCells(
       siteId,
       status: localStatusKeyForTmsStatus(hit.statusId, statusNameById).key,
       notes: hit.notes,
+      tagIds: hit.tagIds,
     });
   }
   return out;
@@ -450,16 +456,12 @@ export async function getOverlayDateRange(
   companyId: number,
   modalityId: number,
 ): Promise<{ from: string; to: string } | null> {
-  const [company] = await db
-    .select({ tmsCompanyId: companies.tmsCompanyId })
-    .from(companies)
-    .where(eq(companies.id, companyId))
-    .limit(1);
+  const tmsCompanyId = await getTmsCompanyId(companyId);
 
   const dates: string[] = [];
 
-  if (company?.tmsCompanyId) {
-    const { bookings: tmsBookings } = await getTmsBookings(company.tmsCompanyId);
+  if (tmsCompanyId) {
+    const { bookings: tmsBookings } = await getTmsBookings(tmsCompanyId);
     const unitIds = new Set(
       (
         await db
@@ -511,6 +513,7 @@ type AmendmentRow = {
   siteName: string;
   status: string;
   notes: string | null;
+  tagIds: number[];
   publishedAt: Date | null;
   updatedAt: Date;
   tmsConflictAt: Date | null;
@@ -550,6 +553,7 @@ async function loadAmendments(companyId: number, modalityId: number): Promise<Am
       siteName: sites.name,
       status: bookings.status,
       notes: bookings.notes,
+      tagIds: bookings.tagIds,
       publishedAt: bookings.publishedAt,
       updatedAt: bookings.updatedAt,
       tmsConflictAt: bookings.tmsConflictAt,
@@ -591,6 +595,7 @@ function toOverlay(
     siteName: a.siteName,
     status: a.status,
     notes: a.notes,
+    tagIds: a.tagIds,
     publishedAt: a.publishedAt,
     updatedAt: a.updatedAt,
     tmsConflictAt: a.tmsConflictAt,

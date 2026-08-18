@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
+import { todayIso } from "@/lib/dates";
 import { bookings, bookingEvents, units, unitModalities, type BookingAction } from "@/lib/db/schema";
 import { requireRole } from "@/lib/auth/require-role";
 import { companyAllowed } from "@/lib/auth/company-access";
@@ -19,7 +20,7 @@ export type MoveMode = "move" | "swap" | "overwrite";
 
 export type MoveBookingsResult =
   | { ok: true; message: string; batchId: string }
-  | { ok: false; error: string; code: "PERMISSION" | "VALIDATION" | "LOCKED" | "CONFLICT" };
+  | { ok: false; error: string; code: "PERMISSION" | "VALIDATION" | "LOCKED" | "CONFLICT" | "PAST_DATE" };
 
 type BookingRow = typeof bookings.$inferSelect;
 
@@ -115,6 +116,7 @@ async function materialiseTmsSlots(
         siteId: cell.siteId,
         status: cell.status,
         notes: cell.notes,
+        tagIds: cell.tagIds,
         createdBy: actorId,
         updatedBy: actorId,
         tmsBookingId: cell.tmsBookingId,
@@ -261,6 +263,14 @@ export async function moveBookings(moves: MoveSpec[], mode: MoveMode): Promise<M
     }
     if (sources.some((s) => s!.publishedAt)) {
       throw new MoveRejected({ ok: false, error: "Can't move a published/locked booking. Unlock it first.", code: "LOCKED" });
+    }
+    // Enforced server-side, always (CLAUDE.md). Checked on BOTH ends: a past booking
+    // shouldn't move at all (source), and nothing should land in a past slot regardless of
+    // where it came from (destination) — symmetric with the client-side drag-preview and
+    // resize-boundary checks in components/planner/planner-grid.tsx.
+    const today = todayIso();
+    if (moves.some((m) => m.fromDate < today || m.toDate < today)) {
+      throw new MoveRejected({ ok: false, error: "Can't move a booking to or from a date that's passed.", code: "PAST_DATE" });
     }
 
     // Targets that are occupied by something *outside* the moving set are real clashes

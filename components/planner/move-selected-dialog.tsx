@@ -2,6 +2,7 @@
 
 import type * as React from "react";
 import { useMemo, useState } from "react";
+import { ArrowRightIcon } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { fmtDate } from "@/lib/dates";
@@ -183,7 +184,7 @@ function MoveSelectedBody({
                     <span className={moving ? "line-through" : undefined}>{r.unitLabel}</span>
                     {moving && (
                       <>
-                        <span aria-hidden>→</span>
+                        <ArrowRightIcon className="size-3" aria-hidden />
                         <span className="font-medium text-[#1a3d69]">
                           {units.find((u) => u.id === Number(value))?.registration}
                         </span>

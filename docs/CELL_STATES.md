@@ -113,6 +113,8 @@ These layer on top of a base state rather than replacing it. More than one can a
 | Red border | whole cell | This drop isn't a clean fit. Painted across every target in the set, not just the colliding ones (`docs/DECISIONS.md` #44); dropping anyway still offers swap/overwrite. |
 | Tan dashed + 50% opacity | whole cell | A run's edge is being dragged inward past this day — it's about to be given up. Not red: nothing is clashing. |
 | 22% opacity | whole cell | Dimmed by the status filter. |
+| Small colour dots (up to 3) | bottom-right | TMS `booking_tags` the scheduler picked (`docs/DECISIONS.md` #51), minus whichever one is already shown as the `⚡` badge below — that tag doesn't need to say the same thing twice on one chip. One dot per remaining tag, capped at three with no overflow marker — the full list (generator tag included) is still in the tooltip. A tag id TMS no longer returns (deactivated/removed since it was picked) renders as a neutral grey dot rather than silently vanishing. This corner held a 6px blue "sync state" dot until #43 retired it as clutter shown on every changed cell; it's reoccupied here deliberately — a tag dot only appears on a cell that actually carries tags, not on every changed cell, so it isn't the same blanket-clutter problem #43 fixed. See [Sync state](#sync-state-the-second-axis) below for that history. |
+| `⚡` | top-left | Generator required (`docs/DECISIONS.md`) — the booking carries a TMS tag an admin has designated a generator tag (`/admin/tag-categories`), not a field of its own. Colour and name come straight from that tag, same source as the tag dots below. Can appear on any base state that carries tags, including untouched TMS bookings — unlike the old provider design, this isn't planner-only. |
 
 **Green is a statement about the set, not the cell.** Dragging nine bookings into a gap that
 fits six used to show six green cells and three red ones, which reads as "mostly fine" — the
@@ -156,6 +158,15 @@ a grid where a busy week shows it on forty cells at once, and the client asked f
 (`docs/DECISIONS.md` #43). The legend swatch lost its dot to match. The drawer's inline sync
 line keeps one, because there it sits beside a written explanation rather than standing
 alone.
+
+That corner didn't stay empty forever: `docs/DECISIONS.md` #51 puts a *different* dot there —
+up to three small colour dots naming a booking's TMS tags. Worth being explicit about why
+this isn't the same mistake reappearing: the retired dot answered "has this changed?", which
+the wash already answers for every changed cell — pure duplication. The tag dots answer "what
+tags does this have?", a question nothing else on the chip answers, and they only render on a
+cell that actually carries tags rather than on every changed cell. If a future change makes
+tag dots appear on cells without tags, or duplicates information the tooltip already carries
+cheaply, that's #43 happening again and worth removing the same way.
 
 **This is what caps the status fills' saturation.** The wash is a 14% blend *into* `st.bg`, so
 the more saturated the base colour, the less of a shift it produces — which is why #38 settled
@@ -210,6 +221,47 @@ sweep to find and the two counts would disagree (`docs/DECISIONS.md` #29).
 
 ---
 
+## Timing — the third axis
+
+A third question, independent of both above: *"is this day still open for scheduling?"* Base
+state answers what's scheduled; sync state answers whether TMS has it; timing answers whether
+the day itself can still be touched at all.
+
+Derived from `DayInfo.isPast`/`isToday` (`lib/dates.ts`, `enumerateDays`) — a plain
+`date < todayIso()` string comparison, recomputed on every load. It cuts across every base
+state: a past cell can be Available, Booked, a ghost, pending removal, or Published/locked, and
+each still looks like itself underneath — a wash on top, not a replacement.
+
+**Deliberately NOT the same visual treatment as Published/locked (state 5)**, even though both
+are read-only — they're different reasons, and conflating them would make an unpublished
+six-month-old booking look like it had been deliberately forwarded to TMS when it never was.
+Past cells get a flat neutral grey wash (`PAST_COLOR` in `cell-chip.tsx`) with no 🔒, and the
+tooltip says "date has passed — view only" rather than "published & locked". Where both apply —
+a published booking on a past day — the published/locked look wins on screen (it's the more
+specific state), but the server-side past-date guard still applies underneath regardless of
+what's shown (`lib/actions/bookings.ts`, `lib/actions/booking-moves.ts`).
+
+**Today gets a marker of its own** — a blue border-top on that row (reusing the Monday
+week-divider mechanism) plus a small "Today" label, absolutely positioned in the top-right
+corner of the sticky date cell rather than inline with the date/day-name/year text, which is
+already tight against `DATE_COL_WIDTH` and wraps (and covers the availability count under it)
+if a fourth item is added to that flex row.
+
+**Past days are collapsed out of the loaded row list by default, not just styled read-only.**
+History isn't part of day-to-day scheduling (`docs/DECISIONS.md` #55), so the grid opens
+scrolled to today with nothing before it in the virtualised list at all — a **"Click to view
+previous bookings" banner** takes their place as the first row. Clicking it reveals the full
+past back to the start of the loaded window and lands the scroll position back on today (now
+with everything above it scrollable), rather than leaving the view pointing at whatever row
+happens to now sit at the old scroll index.
+
+An empty past cell (once revealed) drops the dashed "available" affordance entirely and isn't
+clickable — there's nothing to view for a slot that was never booked. A booked past cell still
+opens the drawer on click, read-only, for audit/cross-reference (the same click behaviour
+Published/locked already has, just with different banner copy).
+
+---
+
 ## What you can do in each state
 
 | | Click to book | Click to edit | Drag | Select | Resize | Publish |
@@ -219,6 +271,11 @@ sweep to find and the two counts would disagree (`docs/DECISIONS.md` #29).
 | Booked | — | ✅ | ✅ | ✅ | ✅ (run ends) | ✅ |
 | Moved-away ghost | ✅ (body) | ❌ | ❌ | ✅ (as free) | — | ❌ |
 | Published / locked | — | admin unlock | ❌ | ✅ | ❌ | already |
+
+**Every row above is additionally gated by timing** (see the axis above): once a day is in the
+past, "click to book"/"click to edit" degrades to "click to view" (or nothing, for an empty
+cell), and drag/select/resize all become ❌ regardless of base state — except Publish, which is
+deliberately **not** gated by timing (see [Publish eligibility](#publish-eligibility) below).
 
 **Selecting a free cell** books it as part of a set: the selection bar offers "Book N days",
 which writes them all with one site and status under one `batch_id` (`docs/DECISIONS.md` #46).
@@ -251,12 +308,18 @@ A remaining candidate still won't publish if any of these apply (`lib/publish-el
 shared by the pre-flight preview and the server gate so they can't disagree):
 
 1. **Already published** — routine, not reported as an exception.
-2. **Unresolved TMS conflict** (`⇄`) — legacy.
-3. **TMS collision** (`⨯`) — a different, unlinked TMS booking sits on this unit+date. No
+2. **Changed since you opened this** — the server re-read the row at publish time and its
+   `updated_at` no longer matches what the pre-flight sweep last saw (`lib/actions/publish.ts`,
+   an `expectedUpdatedAt` captured per target when the sheet's pre-flight last ran). Checked
+   this early because every reason below it is re-derived fresh from the DB/TMS cache at publish
+   time and is still *correct* even for a stale row — this one exists purely so a scheduler
+   isn't told to go fix a field based on a version of the booking they never actually reviewed.
+3. **Unresolved TMS conflict** (`⇄`) — legacy.
+4. **TMS collision** (`⨯`) — a different, unlinked TMS booking sits on this unit+date. No
    shared lineage to reconcile, just a slot both sides claim — move or clear one first
    (Stage B4, `docs/DECISIONS.md` #36).
-4. **TMS supersedes** (`↻`) — someone must decide whose version wins first.
-5. **Status isn't publishable** — out of the box that's anything other than Confirmed,
+5. **TMS supersedes** (`↻`) — someone must decide whose version wins first.
+6. **Status isn't publishable** — out of the box that's anything other than Confirmed,
    Weekend Confirmed, or Bank Holiday. Admin-editable at `/admin/booking-statuses`.
 
 Checked in that order, so a booking failing more than one test reports the most actionable
@@ -267,8 +330,22 @@ two.
 
 One more reason exists (`not-a-planner-change`) but only ever surfaces from an explicit
 multi-select of an untouched TMS booking — the range sweep never reaches it, having already
-filtered the booking out. It's deliberately calmer than the four above: nothing is wrong,
+filtered the booking out. It's deliberately calmer than the reasons above: nothing is wrong,
 there's just nothing here for the planner to send.
+
+**None of this list checks timing.** A never-published booking on a past date is still a
+legitimate publish candidate — someone forgot to send it, and blocking publish on top of that
+would strand it permanently. Publish/unpublish (`lib/actions/publish.ts`) and TMS-conflict
+resolution (`lib/actions/tms-resolve.ts`) are the only mutation entry points deliberately left
+ungated by the [Timing axis](#timing-the-third-axis) above (`docs/DECISIONS.md`).
+
+**The publish sheet itself** (`publish-range-dialog.tsx` / `publish-selected-dialog.tsx`) is a
+non-modal bottom sheet, not a blocking dialog (`docs/DECISIONS.md` #49) — the grid stays fully
+interactive behind/above it. Each row in the "needs attention" list is clickable: it scrolls the
+grid to and highlights that booking (`goToCell`, the same mechanism undo/redo uses), leaving the
+sheet open so it can be resolved via the normal right-click menu. The pre-flight re-runs live as
+the underlying bookings change, so a row disappears the moment its booking becomes eligible —
+no need to close and reopen the sheet.
 
 ---
 

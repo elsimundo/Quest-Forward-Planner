@@ -6,19 +6,25 @@ export type DayInfo = {
   dow: DowName;
   isWeekend: boolean;
   isMonday: boolean;
+  isPast: boolean;
+  isToday: boolean;
 };
 
 export function enumerateDays(from: string, to: string): DayInfo[] {
   const days: DayInfo[] = [];
   const cursor = new Date(`${from}T00:00:00Z`);
   const end = new Date(`${to}T00:00:00Z`);
+  const today = todayIso();
   while (cursor <= end) {
     const dowIndex = cursor.getUTCDay();
+    const date = cursor.toISOString().slice(0, 10);
     days.push({
-      date: cursor.toISOString().slice(0, 10),
+      date,
       dow: DOW_NAMES[dowIndex],
       isWeekend: dowIndex === 0 || dowIndex === 6,
       isMonday: dowIndex === 1,
+      isPast: date < today,
+      isToday: date === today,
     });
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }

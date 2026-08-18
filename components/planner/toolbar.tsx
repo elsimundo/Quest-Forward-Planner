@@ -1,5 +1,6 @@
 "use client";
 
+import { LockIcon, Redo2Icon, Undo2Icon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useStatusCatalog } from "./status-context";
@@ -173,7 +174,7 @@ export function PlannerToolbar({
             cursor: canUndo ? "pointer" : "not-allowed",
           }}
         >
-          <span aria-hidden className="text-sm leading-none">↺</span> Undo
+          <Undo2Icon className="size-3.5" aria-hidden /> Undo
         </button>
         <button
           onClick={onRedo}
@@ -187,7 +188,7 @@ export function PlannerToolbar({
             cursor: canRedo ? "pointer" : "not-allowed",
           }}
         >
-          Redo <span aria-hidden className="text-sm leading-none">↻</span>
+          Redo <Redo2Icon className="size-3.5" aria-hidden />
         </button>
       </div>
       <span className="h-6 w-px bg-[#e6e6e6]" />
@@ -199,7 +200,7 @@ export function PlannerToolbar({
           onClick={onPublishUpcoming}
           className="inline-flex items-center gap-1.5 rounded-full border border-[#1a3d69] bg-[#1a3d69] px-3.5 py-1.5 text-[13px] text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
         >
-          🔒 Publish upcoming…
+          <LockIcon className="size-3.5" aria-hidden /> Publish upcoming…
         </button>
       )}
       <Button variant="outline" size="sm" onClick={onJumpToday}>

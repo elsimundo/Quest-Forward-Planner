@@ -1,3 +1,4 @@
+import { LockIcon } from "lucide-react";
 import { CHANGE_KIND_NOUN, type ChangeSummary } from "@/lib/planner-changes";
 
 // Shown while the changes view is on — the client's "see at a glance what we are planning to
@@ -68,9 +69,9 @@ export function ChangesBar({
       {canPublish && summary.total > 0 && (
         <button
           onClick={onReviewPublish}
-          className="rounded-full border border-[#1a3d69] bg-[#1a3d69] px-3.5 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
+          className="inline-flex items-center gap-1.5 rounded-full border border-[#1a3d69] bg-[#1a3d69] px-3.5 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
         >
-          🔒 Review &amp; publish…
+          <LockIcon className="size-3" aria-hidden /> Review &amp; publish…
         </button>
       )}
       <button

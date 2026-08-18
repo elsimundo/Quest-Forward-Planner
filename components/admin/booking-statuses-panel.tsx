@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { ChevronDownIcon, ChevronUpIcon, PlusIcon } from "lucide-react";
 import type { AdminBookingStatus } from "@/lib/db/admin-queries";
 import {
   createBookingStatus,
@@ -297,9 +298,9 @@ export function BookingStatusesPanel({ statuses }: { statuses: AdminBookingStatu
       {!creating && (
         <button
           onClick={startCreate}
-          className="mb-4 rounded-full border border-[#1a3d69] bg-[#1a3d69] px-4 py-1.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
+          className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-[#1a3d69] bg-[#1a3d69] px-4 py-1.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#e88f8f]"
         >
-          + Add status
+          <PlusIcon className="size-3.5" aria-hidden /> Add status
         </button>
       )}
 
@@ -326,17 +327,17 @@ export function BookingStatusesPanel({ statuses }: { statuses: AdminBookingStatu
                   onClick={() => void move(i, -1)}
                   disabled={i === 0 || saving}
                   aria-label="Move up"
-                  className="text-[10px] leading-none text-[#9a9a9a] hover:text-[#333333] disabled:opacity-30"
+                  className="text-[#9a9a9a] hover:text-[#333333] disabled:opacity-30"
                 >
-                  ▲
+                  <ChevronUpIcon className="size-3" />
                 </button>
                 <button
                   onClick={() => void move(i, 1)}
                   disabled={i === statuses.length - 1 || saving}
                   aria-label="Move down"
-                  className="text-[10px] leading-none text-[#9a9a9a] hover:text-[#333333] disabled:opacity-30"
+                  className="text-[#9a9a9a] hover:text-[#333333] disabled:opacity-30"
                 >
-                  ▼
+                  <ChevronDownIcon className="size-3" />
                 </button>
               </div>
 

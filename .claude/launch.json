@@ -7,6 +7,10 @@
       "runtimeArgs": ["next", "dev", "-p", "3002"],
       "port": 3002,
       "autoPort": false
+    },
+    {
+      "name": "quest-planner-dev-3000",
+      "url": "http://localhost:3000"
     }
   ]
 }

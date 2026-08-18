@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { ArrowLeftIcon, ArrowRightIcon } from "lucide-react";
 import { getAuditLog } from "@/lib/db/admin-queries";
 import { BOOKING_ACTIONS, type BookingAction } from "@/lib/db/schema";
 import { fmtDateLong } from "@/lib/dates";
@@ -151,13 +152,13 @@ export default async function AuditLogPage({
 
       <div className="mt-4 flex items-center gap-2.5">
         {page > 0 && (
-          <a href={qs({ page: String(page - 1) })} className="rounded-full border border-[#e6e6e6] px-3.5 py-1.5 text-[13px]">
-            ← Newer
+          <a href={qs({ page: String(page - 1) })} className="inline-flex items-center gap-1 rounded-full border border-[#e6e6e6] px-3.5 py-1.5 text-[13px]">
+            <ArrowLeftIcon className="size-3.5" aria-hidden /> Newer
           </a>
         )}
         {hasMore && (
-          <a href={qs({ page: String(page + 1) })} className="rounded-full border border-[#e6e6e6] px-3.5 py-1.5 text-[13px]">
-            Older →
+          <a href={qs({ page: String(page + 1) })} className="inline-flex items-center gap-1 rounded-full border border-[#e6e6e6] px-3.5 py-1.5 text-[13px]">
+            Older <ArrowRightIcon className="size-3.5" aria-hidden />
           </a>
         )}
       </div>

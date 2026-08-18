@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { TriangleAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 // Stage E1 (docs/OVERLAY_BUILD_PLAN.md). Under the overlay model the planner holds no copy of
@@ -18,8 +19,8 @@ export function TmsUnavailable({ detail }: { detail?: string }) {
   return (
     <main className="flex flex-1 items-center justify-center bg-[var(--quest-surface-alt)] p-8">
       <div className="max-w-[460px] text-center">
-        <div className="text-3xl" aria-hidden>
-          ⚠
+        <div className="flex justify-center text-[#e0a826]" aria-hidden>
+          <TriangleAlertIcon className="size-9" />
         </div>
         <h1 className="mt-3 text-lg font-bold text-[#333333]">Can&apos;t reach TMS</h1>
         <p className="mt-2 text-[13px] leading-[19px] text-[#757575]">

@@ -1,3 +1,4 @@
+import { ArrowLeftRightIcon } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useStatusCatalog } from "./status-context";
@@ -57,7 +58,7 @@ export function ClashDialog({
 
         <div className="flex flex-wrap gap-2.5 px-6 pt-3.5 pb-5">
           <Button className="min-w-[140px] flex-1" onClick={() => onResolve("swap")}>
-            ⇄ Swap bookings
+            <ArrowLeftRightIcon aria-hidden /> Swap bookings
           </Button>
           <Button
             variant="destructive"

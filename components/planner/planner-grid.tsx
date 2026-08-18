@@ -8,14 +8,17 @@ import type { DayInfo } from "@/lib/dates";
 import { fmtDate, DOW_FULL, todayIso } from "@/lib/dates";
 import type { OverlayBooking } from "@/lib/db/tms/overlay";
 import type { StatusView } from "@/lib/statuses";
+import type { TmsBookingTag } from "@/lib/db/tms/queries";
 import { StatusCatalogProvider } from "./status-context";
+import { GeneratorTagIdsProvider } from "./generator-tag-context";
+import { TagCatalogProvider } from "./tag-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { moveBookings, type MoveMode, type MoveSpec } from "@/lib/actions/booking-moves";
 import { undoBatch } from "@/lib/actions/undo";
 import { publishBookings, type PublishTarget } from "@/lib/actions/publish";
 import { discardUnpublishedChanges } from "@/lib/actions/discard-changes";
 import { classifyForPublish } from "@/lib/publish-eligibility";
-import { changeKindFor, summariseChanges, type ChangeSummary } from "@/lib/planner-changes";
+import { changeKindFor, summariseChanges } from "@/lib/planner-changes";
 import type { Role } from "@/lib/db/schema";
 import { AvailabilityBar } from "./availability-bar";
 import { CellChip, GhostChip } from "./cell-chip";
@@ -118,40 +121,6 @@ function writeOpenCell(value: StoredOpenCell | null) {
   }
 }
 
-// Same idea, for the date the grid is currently scrolled to — see the mount-restore effect
-// near `jumpToday` for how this and OPEN_CELL_KEY are used together.
-const SCROLL_DATE_KEY = "planner-scroll-date";
-
-function readScrollDate(): { companyId: number; modalityId: number; date: string } | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.sessionStorage.getItem(SCROLL_DATE_KEY);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      typeof (parsed as { companyId: unknown }).companyId === "number" &&
-      typeof (parsed as { modalityId: unknown }).modalityId === "number" &&
-      typeof (parsed as { date: unknown }).date === "string"
-    ) {
-      return parsed as { companyId: number; modalityId: number; date: string };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function writeScrollDate(value: { companyId: number; modalityId: number; date: string }) {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.setItem(SCROLL_DATE_KEY, JSON.stringify(value));
-  } catch {
-    // ignore quota/privacy-mode errors — worst case a remount lands on today, as before
-  }
-}
-
 type Unit = { id: number; registration: string; description: string | null; displayOrder: number };
 type CapabilityRequirement = { requirementKey: string; required: boolean };
 const cellKey = (date: string, unitId: number) => `${date}|${unitId}`;
@@ -226,6 +195,8 @@ type DragPreview = {
   moves: MoveSpec[];
   clashes: Clash[];
   oob: boolean;
+  /** Count of targets that land on a past day — a real cell, unlike `oob`, so it gets its own count rather than being silently skipped. */
+  pastCount: number;
   dDelta: number;
   uDelta: number;
 };
@@ -239,6 +210,8 @@ export function PlannerGrid({
   bookings,
   tmsFetchedAtIso,
   statuses,
+  generatorTagIds,
+  tags,
   unitSpecs,
   siteCapabilityRequirements,
   role,
@@ -253,6 +226,10 @@ export function PlannerGrid({
   /** When the TMS half of the overlay was last read — surfaced in the toolbar (Stage E1). */
   tmsFetchedAtIso: string;
   statuses: StatusView[];
+  /** TMS `booking_tags.id` values an admin has designated as generator tags. */
+  generatorTagIds: number[];
+  /** TMS's live `booking_tags` catalogue for this company (docs/DECISIONS.md #51). */
+  tags: TmsBookingTag[];
   unitSpecs: Record<number, Record<string, string>>;
   siteCapabilityRequirements: Record<number, CapabilityRequirement[]>;
   role: Role;
@@ -295,6 +272,7 @@ export function PlannerGrid({
       date: stored.date,
       unitDescription: unit.description,
       modalityId: activeModalityId,
+      isPast: stored.date < todayIso(),
     });
     // Deliberately mount-only — see the comment above for why this must not re-fire on a
     // later company/modality change on a live instance.
@@ -327,11 +305,12 @@ export function PlannerGrid({
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [publishRange, setPublishRange] = useState<{ from: string; to: string } | null>(null);
   const [discardMode, setDiscardMode] = useState<"mine" | "everyone" | null>(null);
-  const [selectedPreflight, setSelectedPreflight] = useState<{
-    eligible: PublishTarget[];
-    eligibleSummary: ChangeSummary;
-    excluded: PublishExclusion[];
-  } | null>(null);
+  // The keys "Publish selected" opened on, frozen at click time — not the live `checked` set.
+  // With the sheet non-modal and the grid interactive behind it, the scheduler could otherwise
+  // change their selection while the sheet is open; freezing which rows the sheet is ABOUT
+  // (their eligibility still re-derives live via preflightForKeys) is less disorienting than a
+  // row list that silently grows or shrinks underneath a half-read sheet.
+  const [selectedSheetKeys, setSelectedSheetKeys] = useState<string[] | null>(null);
   const [pending, setPending] = useState(false);
   const dragRef = useRef<{ origin: { date: string; unitId: number }; keys: string[] } | null>(null);
   // Both stacks START EMPTY and are restored in the effect below — deliberately NOT read in a
@@ -513,64 +492,77 @@ export function PlannerGrid({
     units.forEach((u, i) => m.set(u.id, i));
     return m;
   }, [units]);
+  // Cheap date -> isPast lookup for the selection-count memos below, so they don't need to
+  // re-derive "is this booking's date before today" from scratch.
+  const isPastByDate = useMemo(() => {
+    const m = new Map<string, boolean>();
+    days.forEach((d) => m.set(d.date, d.isPast));
+    return m;
+  }, [days]);
+
+  // History isn't part of day-to-day scheduling (docs/DECISIONS.md #54) — the grid opens with
+  // past days collapsed out of the loaded row list entirely, rather than merely styled
+  // read-only, so a scheduler never has to scroll past months of it to get to today. A banner
+  // takes their place at the top of the list; clicking it is the deliberate "I want to check
+  // something from the past" action that brings them back.
+  const hasPastDays = useMemo(() => days.some((d) => d.isPast), [days]);
+  const [pastRevealed, setPastRevealed] = useState(false);
+  const renderDays = useMemo(
+    () => (pastRevealed ? days : days.filter((d) => !d.isPast)),
+    [days, pastRevealed],
+  );
+  // One extra virtual row for the banner, only while there's something for it to reveal and
+  // it hasn't been clicked yet.
+  const bannerOffset = !pastRevealed && hasPastDays ? 1 : 0;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
-    count: days.length,
+    count: renderDays.length + bannerOffset,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
   });
 
   const jumpToday = () => {
-    const idx = days.findIndex((d) => d.date === todayIso());
-    if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "center" });
+    const idx = renderDays.findIndex((d) => d.date === todayIso());
+    // `align: "start"`, not "center" — today is meant to be the top row a scheduler sees, with
+    // the reveal banner sitting just above it, scrolled out of view until they deliberately
+    // scroll up for it. Centering left the banner visible immediately on every load (there's
+    // rarely enough content above today to push it off-screen when centred), which made the
+    // "day to day, no clutter" point of collapsing history in the first place moot.
+    if (idx >= 0) virtualizer.scrollToIndex(idx + bannerOffset, { align: "start" });
   };
 
-  // Persists roughly where the grid is scrolled to, on the same sessionStorage precedent as
-  // OPEN_CELL_KEY above — so a remount (see there for why this component isn't guaranteed to
-  // stay mounted) lands back near where the scheduler was, rather than snapping to today via
-  // the mount branch of the effect below. Debounced: this only needs to be fresh enough to
-  // survive a remount, not live-updated on every pixel of a drag-scroll.
-  const scrollDateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (scrollDateTimer.current) clearTimeout(scrollDateTimer.current); }, []);
-  const handleGridScroll = useCallback(() => {
-    if (scrollDateTimer.current) clearTimeout(scrollDateTimer.current);
-    scrollDateTimer.current = setTimeout(() => {
-      const items = virtualizer.getVirtualItems();
-      if (!items.length) return;
-      const centreDate = days[items[Math.floor(items.length / 2)].index]?.date;
-      if (centreDate) writeScrollDate({ companyId, modalityId: activeModalityId, date: centreDate });
-    }, 300);
-  }, [virtualizer, days, companyId, activeModalityId]);
-
-  // Land on today whenever the sheet being viewed changes (first mount, or switching
-  // modality pills). `days` now spans a full ±1yr planning window regardless of where actual
-  // bookings fall (app/(planner)/page.tsx), so row 0 is frequently a stretch of genuinely
-  // empty future/past dates — opening there reads as "the schedule is empty" even when the
-  // real data is just scrolled out of view. Keyed on `activeModalityId` rather than `days`
-  // itself so the ~10s poll's router.refresh() (same modality, new `days` reference) doesn't
-  // re-snap the view and fight a scheduler who has since scrolled elsewhere on purpose.
-  //
-  // The very first run of this effect is special-cased to prefer a persisted scroll position
-  // (same company+modality) over today, via `hasMountedRef`: it's the only run that could be a
-  // remount rather than a deliberate switch, and a remount should put the scheduler back where
-  // they were, not reset them to today out from under an edit. Every later run of this effect
-  // IS a deliberate modality switch (the id actually changed on a live instance), which should
-  // still land on today as before.
-  const hasMountedRef = useRef(false);
+  // Revealing swaps `renderDays` from the collapsed (future-only) list to the full range,
+  // which shifts every index below it — today moves from "row 1" (right after the banner) to
+  // wherever it actually falls in the full ±1yr window. Without this the scroll position would
+  // hold steady in INDEX terms and land on whatever now-different day that index maps to,
+  // which reads as the grid randomly jumping. Landing back on today with `align: "start"`
+  // instead puts the newly-revealed history directly above the fold, scrollable immediately —
+  // which is the whole point of having just asked to see it.
   useEffect(() => {
-    if (!hasMountedRef.current) {
-      hasMountedRef.current = true;
-      const stored = readScrollDate();
-      if (stored && stored.companyId === companyId && stored.modalityId === activeModalityId) {
-        const idx = days.findIndex((d) => d.date === stored.date);
-        if (idx >= 0) {
-          virtualizer.scrollToIndex(idx, { align: "center" });
-          return;
-        }
-      }
-    }
+    if (!pastRevealed) return;
+    const idx = days.findIndex((d) => d.date === todayIso());
+    if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "start" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pastRevealed]);
+
+  // Land on today whenever the sheet being viewed changes — first mount, switching modality
+  // pills, or a remount (see OPEN_CELL_KEY above for why this component isn't guaranteed to
+  // stay mounted). `days` spans a full ±1yr planning window regardless of where actual
+  // bookings fall (app/(planner)/page.tsx), so row 0 is frequently a stretch of genuinely
+  // empty future dates — opening there reads as "the schedule is empty" even when the real
+  // data is just scrolled out of view.
+  //
+  // Deliberately always today, on every run, with no "restore the last scroll position"
+  // branch (docs/DECISIONS.md #55) — day-to-day scheduling has one obvious home row, and a
+  // scheduler who deliberately scrolled ahead or revealed the past shouldn't be dropped back
+  // there invisibly by an unrelated background poll's remount; they land on today and, if
+  // they want history again, the reveal banner is one click away, same as it always is.
+  // Keyed on `activeModalityId` rather than `days` itself so the ~10s poll's
+  // `router.refresh()` (same modality, new `days` reference) doesn't re-snap the view and
+  // fight a scheduler who has since scrolled elsewhere on purpose mid-session.
+  useEffect(() => {
     jumpToday();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeModalityId]);
@@ -661,21 +653,26 @@ export function PlannerGrid({
     [checked, bookingLookup],
   );
 
-  // Of the booked selection, how many are unpublished (and therefore editable). Same gate
-  // as "Publish selected" uses: published bookings are locked until an admin unlocks them,
-  // so the "Bulk edit" button is disabled when this is zero.
+  // Of the booked selection, how many are unpublished (and therefore editable/publishable).
+  // Deliberately NOT also gated on past-ness: this feeds "Publish selected" too, and
+  // publishing a forgotten, never-published past booking must keep working (docs/DECISIONS.md)
+  // — only Bulk edit excludes past bookings, via `bulkEditTargets`/`bulkEditableCount` below.
   const editableSelectedCount = useMemo(
     () => selectedBookingKeys.filter((k) => !bookingLookup.get(k)!.publishedAt).length,
     [selectedBookingKeys, bookingLookup],
   );
 
-  // The actual rows the BulkEditDrawer will act on: unpublished, unlocked bookings only.
-  // Published bookings in the selection are reported as `lockedCount` rather than silently
-  // dropped — same reasoning as the publish preflight's excluded list.
+  // The actual rows the BulkEditDrawer will act on: unpublished, unlocked, non-past bookings
+  // only. Excluded bookings are reported back as `bulkEditLockedCount`/`bulkEditPastCount`
+  // rather than silently dropped — same reasoning as the publish preflight's excluded list,
+  // split by reason so the drawer can say *why* rather than just how many.
   const bulkEditTargets = useMemo<BulkEditRow[]>(
     () =>
       selectedBookingKeys
-        .filter((k) => !bookingLookup.get(k)!.publishedAt)
+        .filter((k) => {
+          const b = bookingLookup.get(k)!;
+          return !b.publishedAt && !isPastByDate.get(b.date);
+        })
         .map((k) => {
           const b = bookingLookup.get(k)!;
           const [date, unitStr] = k.split("|");
@@ -686,9 +683,15 @@ export function PlannerGrid({
             unitLabel: unitById.get(b.unitId)?.registration ?? "?",
           };
         }),
-    [selectedBookingKeys, bookingLookup, unitById],
+    [selectedBookingKeys, bookingLookup, isPastByDate, unitById],
   );
-  const bulkEditLockedCount = selectedBookingKeys.length - editableSelectedCount;
+  const bulkEditLockedCount = selectedBookingKeys.filter((k) => bookingLookup.get(k)!.publishedAt).length;
+  // Past but NOT published — published already gets counted (and explained) as "locked", and
+  // combined past+published shouldn't be double-counted across the two reasons.
+  const bulkEditPastCount = selectedBookingKeys.filter((k) => {
+    const b = bookingLookup.get(k)!;
+    return !b.publishedAt && isPastByDate.get(b.date);
+  }).length;
 
   const clearSelection = useCallback(() => {
     setChecked(new Set());
@@ -703,6 +706,7 @@ export function PlannerGrid({
         date: day.date,
         unitDescription: unit.description,
         modalityId: activeModalityId,
+        isPast: day.isPast,
       });
       writeOpenCell({ companyId, modalityId: activeModalityId, unitId: unit.id, date: day.date });
     },
@@ -725,6 +729,11 @@ export function PlannerGrid({
   // one cell, which is the common case and shouldn't need a modifier.
   const handleCellClick = (e: React.MouseEvent, day: DayInfo, unit: Unit, booking: OverlayBooking | null) => {
     if (booking?.publishedAt) return openCell(day, unit);
+    // A past day is read-only for scheduling but still worth opening for audit — same
+    // read-only drawer a locked booking gets, just a different reason. An EMPTY past cell has
+    // nothing to show, so it's simply inert rather than opening a "book this" form for a slot
+    // that can no longer be booked.
+    if (day.isPast) return booking ? openCell(day, unit) : undefined;
     const k = cellKey(day.date, unit.id);
     if (checked.has(k)) return toggleCheck(day.date, unit.id);
     if (e.shiftKey) return rangeCheck(day.date, unit.id);
@@ -745,7 +754,7 @@ export function PlannerGrid({
     }
     const origin = { date: day.date, unitId: unit.id };
     dragRef.current = { origin, keys };
-    setDrag({ origin, keys, single: false, preview: new Map(), valid: false, moves: [], clashes: [], oob: false, dDelta: 0, uDelta: 0 });
+    setDrag({ origin, keys, single: false, preview: new Map(), valid: false, moves: [], clashes: [], oob: false, pastCount: 0, dDelta: 0, uDelta: 0 });
     e.dataTransfer.effectAllowed = "move";
     try {
       e.dataTransfer.setData("text/plain", "quest-move");
@@ -763,6 +772,7 @@ export function PlannerGrid({
       const moves: MoveSpec[] = [];
       const clashes: Clash[] = [];
       let oob = false;
+      let pastCount = 0;
       for (const k of st.keys) {
         const [srcDate, srcUnitStr] = k.split("|");
         const srcUnit = Number(srcUnitStr);
@@ -775,6 +785,15 @@ export function PlannerGrid({
         const tDate = days[di].date;
         const tUnit = units[ui].id;
         const tKey = cellKey(tDate, tUnit);
+        // A past target is a real cell, unlike an out-of-bounds index — it can't be silently
+        // skipped the way `oob` is, or the block-level "valid" verdict below would say ok for
+        // a drop that the server will reject. Treated like a clash: painted bad, counted, and
+        // reported to the scheduler (see selection-bar.tsx's dragMessage).
+        if (days[di].isPast) {
+          preview.set(tKey, "bad");
+          pastCount++;
+          continue;
+        }
         const occupant = bookingLookup.get(tKey);
         const occupied = !!occupant && !moving.has(tKey);
         preview.set(tKey, occupied ? "bad" : "ok");
@@ -783,7 +802,7 @@ export function PlannerGrid({
         }
         moves.push({ fromUnitId: srcUnit, fromDate: srcDate, toUnitId: tUnit, toDate: tDate });
       }
-      const valid = !oob && clashes.length === 0;
+      const valid = !oob && clashes.length === 0 && pastCount === 0;
       // One block, one verdict. Painting each target cell on its own merits meant dragging
       // nine bookings into a gap that fits six showed six green cells and three red ones —
       // which the client read as "this will work", because green is the go-ahead colour and
@@ -796,7 +815,7 @@ export function PlannerGrid({
       // most for: without the sweep a block hanging off the end of the calendar showed its
       // remaining members in green with nothing to indicate the rest had nowhere to go.
       if (!valid) for (const k of preview.keys()) preview.set(k, "bad");
-      return { preview, valid, moves, clashes, oob, dDelta, uDelta };
+      return { preview, valid, moves, clashes, oob, pastCount, dDelta, uDelta };
     },
     [dateIdx, unitIdx, days, units, bookingLookup],
   );
@@ -870,11 +889,12 @@ export function PlannerGrid({
       return !!n && !n.publishedAt && n.siteId === siteId;
     };
     // A handle is pointless if there's no room to grow into: the neighbouring day is either
-    // off the grid or already held by some other booking (bookingLookup excludes ghosts, so a
-    // moved-away ghost's slot still counts as free — a run may grow over it, same as the
-    // actual clamp in beginResize below).
+    // off the grid, in the past (can't extend a run backward into history), or already held
+    // by some other booking (bookingLookup excludes ghosts, so a moved-away ghost's slot
+    // still counts as free — a run may grow over it, same as the actual clamp in beginResize
+    // below).
     const free = (unitId: number, idx: number) =>
-      idx >= 0 && idx < days.length && !bookingLookup.has(cellKey(days[idx].date, unitId));
+      idx >= 0 && idx < days.length && !days[idx].isPast && !bookingLookup.has(cellKey(days[idx].date, unitId));
     for (const [k, b] of bookingLookup) {
       if (b.publishedAt) continue;
       const i = dateIdx.get(b.date);
@@ -949,7 +969,9 @@ export function PlannerGrid({
 
     // How far this edge can grow before it hits something. `bookingLookup` excludes ghosts,
     // which is right: a moved-away ghost's slot is genuinely free and a run may grow over it.
-    const free = (j: number) => j >= 0 && j < days.length && !bookingLookup.has(cellKey(days[j].date, unit.id));
+    // Also stops at the past/future boundary — a run can never grow backward into history.
+    const free = (j: number) =>
+      j >= 0 && j < days.length && !days[j].isPast && !bookingLookup.has(cellKey(days[j].date, unit.id));
     let limit = edge === "bottom" ? endIdx : startIdx;
     while (free(edge === "bottom" ? limit + 1 : limit - 1)) limit += edge === "bottom" ? 1 : -1;
 
@@ -1072,6 +1094,10 @@ export function PlannerGrid({
     if (res.dDelta === 0 && res.uDelta === 0) return;
     if (res.oob) {
       toast.error("Can't move there — part of the selection would fall outside the planner range");
+      return;
+    }
+    if (res.pastCount > 0) {
+      toast.error("Can't move there — part of the selection would land on a date that's passed");
       return;
     }
     if (res.clashes.length > 0) {
@@ -1278,7 +1304,9 @@ export function PlannerGrid({
   // actually does. Ghosts are never candidates — bookingLookup already excludes them, and
   // the range sweep below reads from `bookings` directly so it must skip them explicitly.
   const classify = useCallback(
-    (b: OverlayBooking) => classifyForPublish({ ...b, tmsCollision: !!b.tmsCollision }, publishableKeys),
+    // staleSincePreflight only exists server-side (lib/actions/publish.ts, comparing against a
+    // later DB read) — this client-side preview has no "expected vs. actual" gap to detect.
+    (b: OverlayBooking) => classifyForPublish({ ...b, tmsCollision: !!b.tmsCollision, staleSincePreflight: false }, publishableKeys),
     [publishableKeys],
   );
 
@@ -1301,10 +1329,10 @@ export function PlannerGrid({
         if (b.isGhost || b.date < from || b.date > to || b.publishedAt || b.origin === "tms") continue;
         const result = classify(b);
         if (result.eligible) eligibleBookings.push(b);
-        else excluded.push({ key: cellKey(b.date, b.unitId), label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
+        else excluded.push({ key: cellKey(b.date, b.unitId), unitId: b.unitId, date: b.date, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
       }
       return {
-        eligible: eligibleBookings.map((b) => ({ unitId: b.unitId, date: b.date })),
+        eligible: eligibleBookings.map((b) => ({ unitId: b.unitId, date: b.date, expectedUpdatedAt: b.updatedAt.toISOString() })),
         eligibleSummary: summariseChanges(eligibleBookings),
         excluded,
       };
@@ -1312,30 +1340,38 @@ export function PlannerGrid({
     [bookings, classify, unitById],
   );
 
-  // Same split, but over the current multi-select rather than a date range. Unlike the range
-  // sweep, an untouched TMS booking reached this way was chosen deliberately — a scheduler
-  // ctrl-clicked it — so it's reported rather than silently dropped, just with a calm reason
-  // ("already matches TMS") rather than the alarming "needs attention" ones.
-  const preflightForSelection = useCallback(() => {
-    const eligibleBookings: OverlayBooking[] = [];
-    const excluded: PublishExclusion[] = [];
-    for (const k of checked) {
-      const b = bookingLookup.get(k);
-      if (!b || b.publishedAt) continue;
-      if (b.origin === "tms") {
-        excluded.push({ key: k, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: "not-a-planner-change" });
-        continue;
+  // Same split, but over an explicit key list rather than the live multi-select — shared by
+  // preflightForSelection (below) and by the "Publish selected" sheet, which freezes the key
+  // list at open time (planner-grid.tsx's publishSelected) so the set of rows it's discussing
+  // doesn't silently grow/shrink if the scheduler changes their selection while it's open.
+  // Unlike the range sweep, an untouched TMS booking reached this way was chosen deliberately —
+  // a scheduler ctrl-clicked it — so it's reported rather than silently dropped, just with a
+  // calm reason ("already matches TMS") rather than the alarming "needs attention" ones.
+  const preflightForKeys = useCallback(
+    (keys: Iterable<string>) => {
+      const eligibleBookings: OverlayBooking[] = [];
+      const excluded: PublishExclusion[] = [];
+      for (const k of keys) {
+        const b = bookingLookup.get(k);
+        if (!b || b.publishedAt) continue;
+        if (b.origin === "tms") {
+          excluded.push({ key: k, unitId: b.unitId, date: b.date, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: "not-a-planner-change" });
+          continue;
+        }
+        const result = classify(b);
+        if (result.eligible) eligibleBookings.push(b);
+        else excluded.push({ key: k, unitId: b.unitId, date: b.date, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
       }
-      const result = classify(b);
-      if (result.eligible) eligibleBookings.push(b);
-      else excluded.push({ key: k, label: `${unitById.get(b.unitId)?.registration ?? "?"} · ${fmtDate(b.date)}`, siteName: b.siteName, reason: result.reason });
-    }
-    return {
-      eligible: eligibleBookings.map((b) => ({ unitId: b.unitId, date: b.date })),
-      eligibleSummary: summariseChanges(eligibleBookings),
-      excluded,
-    };
-  }, [checked, bookingLookup, classify, unitById]);
+      return {
+        eligible: eligibleBookings.map((b) => ({ unitId: b.unitId, date: b.date, expectedUpdatedAt: b.updatedAt.toISOString() })),
+        eligibleSummary: summariseChanges(eligibleBookings),
+        excluded,
+      };
+    },
+    [bookingLookup, classify, unitById],
+  );
+
+  const preflightForSelection = useCallback(() => preflightForKeys(checked), [checked, preflightForKeys]);
 
   // Just the count, for the selection bar's button label/disabled state — recomputed from
   // the same preflight so it can never disagree with what clicking the button actually does.
@@ -1364,19 +1400,21 @@ export function PlannerGrid({
   // Only open the pre-flight when the selection actually contains an exception, which is
   // exactly the situation the old silent-skip behaviour used to hide.
   function publishSelected() {
-    const { eligible, eligibleSummary, excluded } = preflightForSelection();
+    const { eligible, excluded } = preflightForSelection();
     if (excluded.length === 0) {
       void applyPublish(eligible).then(clearSelection);
       return;
     }
-    setSelectedPreflight({ eligible, eligibleSummary, excluded });
+    setSelectedSheetKeys([...checked]);
   }
 
   async function confirmPublishSelected() {
-    if (!selectedPreflight) return;
-    const targets = selectedPreflight.eligible;
-    setSelectedPreflight(null);
-    await applyPublish(targets);
+    if (!selectedSheetKeys) return;
+    // Re-run at click time, not from a stale closure — picks up anything resolved live while
+    // the sheet was open.
+    const { eligible } = preflightForKeys(selectedSheetKeys);
+    setSelectedSheetKeys(null);
+    await applyPublish(eligible);
     clearSelection();
   }
 
@@ -1534,6 +1572,7 @@ export function PlannerGrid({
         endResize();
         setConflict(null);
         setPublishRange(null);
+        setSelectedSheetKeys(null);
         return;
       }
       if (typing || pending) return;
@@ -1572,6 +1611,8 @@ export function PlannerGrid({
 
   return (
     <StatusCatalogProvider statuses={statuses}>
+    <GeneratorTagIdsProvider tagIds={generatorTagIds}>
+    <TagCatalogProvider tags={tags}>
     <div className="flex h-full flex-col">
       <PlannerToolbar
         tmsFetchedAtIso={tmsFetchedAtIso}
@@ -1635,11 +1676,12 @@ export function PlannerGrid({
         bookingCount={selectedBookingKeys.length}
         emptyCount={selectedEmptySlots.length}
         editableCount={editableSelectedCount}
+        bulkEditableCount={bulkEditTargets.length}
         publishableCount={publishableSelected}
         canPublish={canPublish}
         dragSummary={
           drag?.target
-            ? { total: drag.keys.length, clashes: drag.clashes.length, oob: drag.oob, valid: drag.valid }
+            ? { total: drag.keys.length, clashes: drag.clashes.length, oob: drag.oob, pastCount: drag.pastCount, valid: drag.valid }
             : null
         }
         onPublish={() => void publishSelected()}
@@ -1656,7 +1698,6 @@ export function PlannerGrid({
           actually happens. */}
       <div
         ref={scrollRef}
-        onScroll={handleGridScroll}
         className="min-h-0 flex-1 overflow-auto overscroll-contain bg-white"
       >
         <div style={{ minWidth: "max-content" }}>
@@ -1685,7 +1726,38 @@ export function PlannerGrid({
 
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
-              const day = days[virtualRow.index];
+              if (bannerOffset && virtualRow.index === 0) {
+                // The row itself spans the full grid width (all unit columns included) so the
+                // grey bar reads as a proper row, same as every day row below it — but the
+                // grid can run to 30+ unit columns wide, far past one screen. Centering the
+                // clickable text in THAT full width, rather than pinning it to the visible
+                // left edge the way the date column does, put it off-screen unless a scheduler
+                // happened to have scrolled horizontally to the middle of the sheet — it read
+                // as an unlabelled grey bar from anywhere else. `sticky left-0` is the same fix
+                // the date column already relies on for the same reason.
+                return (
+                  <div
+                    key="past-reveal-banner"
+                    className="absolute top-0 left-0 w-full border-b"
+                    style={{
+                      transform: `translateY(${virtualRow.start}px)`,
+                      height: ROW_HEIGHT,
+                      background: "#f7f9fc",
+                      borderColor: "#e4e9f0",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setPastRevealed(true)}
+                      title="Show every day before today, for audit or cross-reference"
+                      className="sticky left-0 flex h-full cursor-pointer items-center gap-1.5 px-3.5 text-[13px] font-medium text-[#2b7bb9] transition-colors hover:bg-[#f0f7ff] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+                    >
+                      ↑ Click to view previous bookings
+                    </button>
+                  </div>
+                );
+              }
+              const day = renderDays[virtualRow.index - bannerOffset];
               const free = availabilityByDate.get(day.date) ?? 0;
               return (
                 <div
@@ -1695,22 +1767,42 @@ export function PlannerGrid({
                     gridTemplateColumns,
                     transform: `translateY(${virtualRow.start}px)`,
                     height: ROW_HEIGHT,
-                    background: day.isWeekend ? "#fafbfd" : "#fff",
-                    borderTop: day.isMonday ? "2px solid #e4e9f0" : undefined,
+                    background: day.isPast ? "#f3f4f6" : day.isWeekend ? "#fafbfd" : "#fff",
+                    // Today outranks the Monday week-divider: the past/future boundary is the
+                    // more important line to see while scrolling, and the two would otherwise
+                    // collide on a Monday.
+                    borderTop: day.isToday ? "2px solid #2b7bb9" : day.isMonday ? "2px solid #e4e9f0" : undefined,
                     borderBottom: "1px solid #f7f9fc",
                   }}
                 >
                   <div
                     className="sticky left-0 z-10 flex flex-col justify-center border-r px-3.5"
                     style={{
-                      background: day.isWeekend ? "#f1f3f7" : "#f7f9fc",
+                      background: day.isPast ? "#eef0f3" : day.isWeekend ? "#f1f3f7" : "#f7f9fc",
+                      // NOT day.isToday here, deliberately — the row div above already draws
+                      // its own 2px top border spanning the full row width, including behind
+                      // this sticky column. Adding a second border-top on this child stacked
+                      // it directly beneath the row's, doubling the visible line's thickness
+                      // over the date column specifically (the one place both elements'
+                      // borders render). The Monday divider still does this (kept, unrequested
+                      // scope), which is why it uses a deliberately different, darker colour —
+                      // the flat "#2b7bb9" for Today made the doubled strip obvious instead.
                       borderTop: day.isMonday ? "2px solid #cdd6e2" : undefined,
                     }}
                   >
+                    {/* Absolutely positioned rather than a fourth item in the flex row below:
+                        that row is already tight at DATE_COL_WIDTH (190px) with the date, day
+                        name and year on it, and "TODAY" pushed it over — the date text wrapped
+                        onto a second line and covered the availability bar underneath it. */}
+                    {day.isToday && (
+                      <span className="absolute top-1.5 right-2.5 text-[9px] font-bold text-[#2b7bb9] uppercase">
+                        Today
+                      </span>
+                    )}
                     <div className="flex items-baseline gap-2">
                       <span
                         className="text-sm font-bold tabular-nums"
-                        style={{ color: day.isWeekend ? "#6a7488" : "#333333" }}
+                        style={{ color: day.isPast ? "#9aa1ad" : day.isWeekend ? "#6a7488" : "#333333" }}
                       >
                         {fmtDate(day.date)}
                       </span>
@@ -1751,8 +1843,8 @@ export function PlannerGrid({
                     const isChange = changeCell ? changeKindFor(changeCell) !== null : false;
                     const dimmed =
                       (!!statusFilter && booking?.status !== statusFilter) || (changesOnly && !isChange);
-                    // Handles only on the outermost days of an unpublished run — see runEdges.
-                    const edges = booking && !booking.publishedAt ? runEdges.get(k) : null;
+                    // Handles only on the outermost days of an unpublished, non-past run — see runEdges.
+                    const edges = booking && !booking.publishedAt && !day.isPast ? runEdges.get(k) : null;
                     const warning = booking
                       ? computeCapabilityWarnings(
                           siteCapabilityRequirements[booking.siteId] ?? [],
@@ -1805,6 +1897,7 @@ export function PlannerGrid({
                               checked={checked.has(k)}
                               isOpen={drawerTarget?.unitId === u.id && drawerTarget?.date === day.date}
                               draggable={!!booking}
+                              isPast={day.isPast}
                               preview={drag?.preview.get(k) ?? resizePreview.get(k) ?? null}
                               flash={flashKeys.has(k)}
                               pendingRemoval={pendingRemoval?.siteName ?? null}
@@ -1830,10 +1923,10 @@ export function PlannerGrid({
                             }
                             return chip;
                           }
-                          // Only booked, unpublished cells get the move menu — same rule that
-                          // already gates dragging (published bookings are locked until an
-                          // admin unlocks them).
-                          if (booking.publishedAt) return chip;
+                          // Only booked, unpublished, non-past cells get the move menu — same
+                          // rule that already gates dragging (published bookings are locked
+                          // until an admin unlocks them; past bookings can't move at all).
+                          if (booking.publishedAt || day.isPast) return chip;
                           const tmsReturnLabel = booking.movedFrom
                             ? `${unitById.get(booking.movedFrom.unitId)?.registration ?? "?"} · ${fmtDate(booking.movedFrom.date)}`
                             : null;
@@ -1903,6 +1996,7 @@ export function PlannerGrid({
         companyId={companyId}
         targets={bulkEditTargets}
         lockedCount={bulkEditLockedCount}
+        pastCount={bulkEditPastCount}
         onClose={() => setBulkEditOpen(false)}
         onMutated={pushUndo}
       />
@@ -1929,14 +2023,15 @@ export function PlannerGrid({
         preflight={preflightForRange}
         onConfirm={(from, to) => void confirmPublishRange(from, to)}
         onClose={() => setPublishRange(null)}
+        onJumpToCell={(t) => goToCell(t)}
       />
 
       <PublishSelectedDialog
-        open={!!selectedPreflight}
-        eligibleSummary={selectedPreflight?.eligibleSummary ?? { total: 0, breakdown: [] }}
-        excluded={selectedPreflight?.excluded ?? []}
+        open={selectedSheetKeys !== null}
+        preflight={() => preflightForKeys(selectedSheetKeys ?? [])}
         onConfirm={() => void confirmPublishSelected()}
-        onClose={() => setSelectedPreflight(null)}
+        onClose={() => setSelectedSheetKeys(null)}
+        onJumpToCell={(t) => goToCell(t)}
       />
 
       <DiscardChangesDialog
@@ -1948,6 +2043,8 @@ export function PlannerGrid({
         onClose={() => setDiscardMode(null)}
       />
     </div>
+    </TagCatalogProvider>
+    </GeneratorTagIdsProvider>
     </StatusCatalogProvider>
   );
 }

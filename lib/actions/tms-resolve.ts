@@ -108,7 +108,7 @@ export async function resolveTmsSupersede(input: ResolveTmsSupersedeInput): Prom
       return { ok: true, message: "Kept your version.", batchId };
     }
 
-    // accept-tms — adopt TMS's current site, status, notes, and position wholesale.
+    // accept-tms — adopt TMS's current site, status, notes, tags, and position wholesale.
     const [tmsUnitLocal] = await tx
       .select({ id: units.id, registration: units.registration })
       .from(units)
@@ -156,6 +156,7 @@ export async function resolveTmsSupersede(input: ResolveTmsSupersedeInput): Prom
         siteId: site.id,
         status: statusKey,
         notes: tmsBooking.notes,
+        tagIds: tmsBooking.tagIds,
         tmsUpdatedAt: tmsBooking.updatedAt,
         updatedBy: actor.id,
         updatedAt: now,

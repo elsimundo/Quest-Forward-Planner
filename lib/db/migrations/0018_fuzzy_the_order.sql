@@ -1,0 +1,1 @@
+ALTER TABLE "bookings" ADD COLUMN "tag_ids" integer[] DEFAULT '{}'::integer[] NOT NULL;

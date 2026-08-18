@@ -1687,6 +1687,397 @@ could be occupied by another amendment, so going through `attemptMove`'s clash d
 correct. Not chosen: showing the item in the multi-select case — returning a block to
 different TMS positions is a per-booking operation, not a uniform delta shift.
 
+### 49. Publish to TMS becomes a non-modal bottom sheet with click-to-jump rows
+
+**Decided:** `PublishRangeDialog` and `PublishSelectedDialog` move from a centered, blocking
+Radix `Dialog` to a bottom-docked `Sheet` (`side="bottom"`, `modal={false}`,
+`onInteractOutside` prevented). The grid stays fully interactive behind/above it — dragging,
+right-clicking, opening the drawer all still work with the sheet open, and clicking the grid no
+longer dismisses it (only Cancel, Publish, the sheet's `X`, or Esc do). Each row in the "needs
+attention" breakdown (`PublishBreakdown`) is now a clickable button wired to the grid's existing
+`goToCell`, scrolling to and flashing the flagged booking without closing the sheet. Both
+dialogs' pre-flight is called live in render (`PublishSelectedDialog` previously snapshotted it
+once at open time — this stopped being true of the range dialog only), so a fix made via the
+grid's right-click menu while the sheet stays open makes the row disappear and the count update
+with no reopen needed. `PublishSelectedDialog`'s target set is a key list frozen at the moment
+"Publish selected" is clicked, not the live checkbox selection — its *contents* update live via
+that same pre-flight, but the *set of rows it's discussing* doesn't silently change if the
+scheduler alters their selection elsewhere while the sheet is open.
+
+**Why:** a scheduler could see a flagged booking but had no way to act on it without closing the
+dialog, hunting for the cell on the grid, fixing it, then reopening Publish and re-checking their
+range from scratch. Reused rather than rebuilt: `components/ui/sheet.tsx` already plumbs Radix's
+`modal` prop straight through (Radix's own `Dialog.Overlay`/`Dialog.Content` already no-op the
+overlay and disable the focus trap when `modal={false}` — no new primitive needed), and
+`goToCell`/`flashKeys` (`planner-grid.tsx`) already existed for the undo/redo "jump to what
+changed" links.
+
+**Not chosen:** a right-side panel — this grid's columns are dates, so a full-width bottom dock
+keeps the entire range being published visible/scrollable, where a side panel risks covering the
+very date columns near the end of the range. Not chosen: inline quick-fix action buttons on each
+row (e.g. an inline "Return to TMS") — that would duplicate the grid's existing right-click menu
+in a second place and keep it in sync; jump-to-cell reuses the one menu that already exists.
+Also not chosen: tracking the live checkbox selection for `PublishSelectedDialog` instead of
+freezing the key list at open — a sheet whose row *count* silently changes underneath a
+half-read list seemed more disorienting than one whose row *contents* update in place; revisit
+if this reads wrong in practice.
+
+### 50. Publish gets a per-booking optimistic-lock check, not a global "someone is publishing" lock
+
+**Decided:** `PublishTarget` gains a required `expectedUpdatedAt`, captured from each booking's
+`updatedAt` at pre-flight time. `publishBookings` (`lib/actions/publish.ts`) compares it against
+a fresh DB read inside the transaction and, on mismatch, excludes that one row with a new
+`changed-since-preflight` reason (`lib/publish-eligibility.ts`) rather than publishing it
+silently — following the same skip-and-continue pattern every other exclusion reason already
+uses (`skippedByReason`), not `updateBookings`'s whole-batch-reject model
+(`lib/actions/bookings.ts`). `unpublishBooking` is unaffected — it took a new
+`UnpublishTarget` (`{ unitId, date }`, no `expectedUpdatedAt`) since it's a direct single-row
+admin action with no pre-flighted batch to go stale.
+
+**Why:** every other mutation in `lib/actions/bookings.ts` already does this `expectedUpdatedAt`
+check (SPEC.md §11's optimistic-lock rule), but `publishBookings` never had it — a booking
+edited moments before a publish sweep was simply forwarded as-is, with no signal that what got
+sent might not be what was reviewed. This was a pre-existing gap being closed, not new scope:
+SPEC.md §11's rule already reads broadly enough to cover publish in principle. Explicitly
+**not** a global lock — this app is a small pilot scheduling team, deliberately built around
+polling + optimistic-lock concurrency rather than real-time collaborative locking
+(`docs/ARCHITECTURE.md:153-156`); a global "someone else is publishing, please wait" would block
+an unrelated date range or modality tab for no reason a small team would find worthwhile.
+
+**Not chosen:** a global publish lock. Not chosen: rejecting the whole batch on any single stale
+row (`updateBookings`'s pattern) — a bulk publish sweep should still publish everything it
+safely can, same as every other exclusion reason already does.
+
+### 51. Booking tags are read live from TMS, never mirrored locally
+
+**Decided:** TMS has its own live, company-scoped `booking_tags` catalogue (confirmed by a
+one-off read-only introspection query against the real TMS dev database — not previously
+documented anywhere in this codebase; every prior "tag" reference here was actually about
+`unit_modalities`, an unrelated concept). Schedulers can now pick from that catalogue in the
+booking drawer and the bulk-edit drawer. Three things were decided about how:
+
+- **No local mirror or sync table for the tag catalogue.** `lib/db/tms/queries.ts`'s
+  `listTmsBookingTags(tmsCompanyId)` reads TMS's `booking_tags` fresh on every page load,
+  same convention (company-scoped, `SELECT`-only) as `listTmsUnits`/`listTmsLocations`. No
+  nightly sync job, no admin diff view, no staleness window.
+- **Storage on `bookings` is a flat `tag_ids integer[]`** holding TMS `booking_tags.id`
+  values directly (migration `0018`) — no join table, no local FK, since there's no local
+  tags row to join against. Mirrors TMS's own flat `booking_tag_ids` array on its own
+  `bookings` table (a Rails multi-select serialized as YAML there; parsed with a small
+  hand-rolled regex, not a real YAML dependency, since the shape is fixed and simple).
+- **An untouched TMS booking inherits TMS's own existing tag selection** — `listTmsBookings`
+  now also selects and parses `booking_tag_ids`, and the overlay (`lib/db/tms/overlay.ts`)
+  carries it through on every untouched-TMS-booking, suppressed-ghost, and moved-ghost path,
+  same as site/status/notes already do. The booking-move path (`materialiseTmsSlots` in
+  `lib/actions/booking-moves.ts`) and the TMS-supersede "accept TMS's version" path
+  (`lib/actions/tms-resolve.ts`) both carry tags along for the same reason — a scheduler
+  dragging or resolving a tagged TMS booking shouldn't silently lose its tags.
+- **`tagIds` is never re-validated against a live TMS re-fetch on save** (`lib/actions/bookings.ts`).
+  The picker only ever offers ids TMS just returned in the same request; a dedupe-and-integer
+  filter is enough. TMS ids are inert integers with no privilege implication (unlike `siteId`,
+  which is company-scoped for a real security reason), so a round-trip to TMS to validate them
+  on every save isn't worth the added latency/TMS load.
+- **The grid cell's bottom-right corner — retired by #43 — is reused** for up to 3 small
+  tag-colour dots (`components/planner/cell-chip.tsx`, `docs/CELL_STATES.md`). Deliberately
+  distinct from the dot #43 removed: that one duplicated what the background wash already
+  said on *every* changed cell; a tag dot answers a question nothing else on the chip
+  answers, and only appears on a cell that actually carries tags.
+
+**Why:** matches the direction `docs/OVERLAY_BUILD_PLAN.md` already takes with bookings
+themselves — a live read merged at request time, not a copy — so a tag's name or colour
+changing in TMS shows up on the very next grid load with zero sync code to go stale. Storing
+raw TMS ids rather than a local join keeps the write path simple (one array column) and keeps
+TMS as the single source of truth for what a tag *means*; resolving id → name/colour happens
+client-side against the same live fetch the picker uses.
+
+**Not chosen:** a local `tags` mirror table synced nightly like units/sites/modalities —
+rejected as unnecessary sync/staleness overhead for a small (~26-row), rarely-changing,
+TMS-owned catalogue with no local admin override need (unlike `booking_statuses`, whose TMS
+table was dead — see #18 — this one is alive and actively maintained in TMS). A join table for
+the selection — rejected, since there's no local catalogue row to join against; a flat array
+mirrors TMS's own storage shape. Validating `tagIds` against TMS on every save — rejected as
+added latency for a check that only ever catches a garbled or stale client payload, not a
+security boundary.
+
+---
+
+### 52. Generator tracking is per-booking, admin-catalogue-backed, with a free-text escape hatch
+
+**Superseded by #53** — it turned out TMS's own live `booking_tags` catalogue already
+carries supplier-shaped tags ("Quest Generator", etc), so the standalone
+`generator_providers` catalogue and the two `bookings` columns described below were
+removed in favour of designating existing tags as generator tags. Kept here, unedited, for
+the record of what was tried first and why — see #53 for the current design.
+
+**Decided:** Some units need a generator on site, and the supplier varies per booking. Added
+an admin-managed `generator_providers` catalogue (same shape as `booking_statuses` — stable
+`key`, editable `label`/`color`/`display_order`/`active`, soft delete) seeded with Quest
+Power, Hunts and HSS, managed at `/admin/generator-providers`. `bookings` gets two nullable
+columns: `generator_provider_key` (FK into the catalogue) and `generator_provider_other`
+(free text), mutually exclusive, enforced in `lib/actions/bookings.ts`
+(`resolveGeneratorFields`) rather than a DB constraint — mirrors how status validity is
+enforced above the DB layer via `isSettableStatus`. Neither set means no generator needed.
+Rendered on the grid cell as a colour-coded ⚡ in the (now free) top-left corner — bottom-right
+was already reoccupied by tag dots (#51), top-right by ⚠/✓, bottom-left by ⇄/⨯/↻.
+
+Two scope questions were asked and answered rather than guessed (`CLAUDE.md`'s "ask, don't
+assume" rule):
+
+- **Per-booking only, not per-unit or per-site.** The client's own read is that it's really
+  *sites* that tend to need a generator, and a site-level default (pre-filling the drawer for
+  a given site/pad) was raised as a genuinely useful future idea — but explicitly deferred,
+  not built now. No `units`/`sites` schema change accompanies this entry.
+- **A free-typed "Other" provider is plain text on the booking, not promoted into the
+  catalogue.** It renders in a neutral fallback colour (`FALLBACK_PROVIDER_COLOR`,
+  `lib/generator-providers.ts`) with the typed name in the tooltip. It does **not** create a
+  new `generator_providers` row the way a free-typed site creates a `pending_review` site
+  (SPEC §5) — the client's ask was a lightweight one-off escape hatch ("in case we need
+  another supplier"), not a growing catalogue needing admin review.
+
+Purely a planner-side field: TMS has no concept of a generator requirement, so both columns
+are null on every TMS-sourced overlay row (untouched bookings, ghosts, collisions,
+`lib/db/tms/overlay.ts`) and only ever set on an amendment. Not inherited when extending a
+run via the drag-resize gesture (§6) — treated like notes, not like site/status, since
+generator need can vary day to day within a visit and the client never asked for it to
+travel with a resize.
+
+**Why:** the client explicitly asked for the same admin-settings pattern already proven by
+`booking_statuses` ("we could probably set these in settings too"), so reusing that
+architecture end-to-end (catalogue table, admin CRUD trio, React context, drawer picker) was
+both the fastest path and the one requiring no new conventions for a future maintainer to
+learn.
+
+**Not chosen:** a boolean `generator_required` flag alongside a nullable provider FK —
+rejected as redundant state that could drift from the FK's own null-ness; "one of these two
+columns is set" already answers "is a generator needed" unambiguously. A per-unit or
+per-site default flag — deferred per the client's own steer above, not rejected outright.
+Promoting a free-typed "Other" into the catalogue (mirroring the site free-text/
+`pending_review` pattern) — rejected for now as more moving parts than the client's stated
+need; worth revisiting if "Other" turns out to be picked often enough that admins want it
+promoted.
+
+---
+
+### 53. Generator (and future) tracking rides on TMS tags via a generic tag-category flag, not a standalone catalogue
+
+**Decided:** #52's standalone `generator_providers` catalogue is removed. TMS's own live
+`booking_tags` catalogue (#51) already carries supplier/facility-shaped tags — "Quest
+Generator" being the confirmed example — so a generator requirement is now just an
+admin-designated SUBSET of that live catalogue, not a second parallel one. Generalised over
+category from the start, because parking was already known to be coming next and shaping
+the same way: a new `tag_category_assignments` table (`tms_tag_id`, `category`, unique per
+pair) flags a TMS tag id as belonging to a category; `TAG_CATEGORIES = ["generator",
+"parking"]` in `lib/db/schema.ts` is the extension point — a third category is a one-line
+code change, not a migration.
+
+Consequences, working outward from the schema:
+
+- **`bookings.generator_provider_key`/`generator_provider_other` are dropped entirely.**
+  There is no generator field on a booking anymore — "needs a generator" is derived at
+  render/query time as `booking.tagIds ∩ generatorTagIds ≠ ∅`. Picking a generator tag is
+  just picking a tag; the booking drawer's separate "Requires generator" section and
+  `GeneratorPicker` component (#52) are gone, since the existing `TagPicker` already covers
+  it.
+- **The grid's ⚡ badge now reads its colour/name from the live tag catalogue** (the same
+  `useTagCatalog()` the tag dots use), not from a catalogue row of our own — so it can
+  render on ANY base state that carries the tag, including an untouched TMS booking, unlike
+  #52's design which was planner-side-only by construction.
+- **The admin page becomes `/admin/tag-categories`**, replacing `/admin/generator-providers`
+  — one page, a checkbox column per category, listing whatever TMS tags exist for a chosen
+  company (tags are company-scoped in TMS, so unlike most admin pages here this one needs a
+  company picker even for a company-locked admin's own view). No colour/label fields to
+  manage — those belong to the tag in TMS.
+- **Toggling a tag's category is a real `DELETE`/insert on `tag_category_assignments`, not a
+  soft delete** — this table is an admin preference about what a tag *means*, not booking
+  data, so CLAUDE.md's soft-delete rule (scoped to `bookings`/`units`/`sites`/`companies`)
+  doesn't apply.
+- Two migrations (`0020`/`0021` dropped `generator_providers` and the two `bookings`
+  columns; `0022`/`0023` dropped the short-lived single-purpose `generator_tags` table this
+  entry's design went through en route to the generic `tag_category_assignments` shape)
+  landed and were applied directly via `psql`, not `drizzle-kit migrate` — its CLI silently
+  failed to execute or track migrations correctly in this environment (recorded a migration
+  as applied without running its SQL). Applying by hand and hand-inserting the correct
+  `drizzle.__drizzle_migrations` tracking row (hash = sha256 of the migration file,
+  `created_at` = the journal's `when` for that entry) is the reliable path here until that's
+  root-caused.
+
+**Why:** the client's own correction — "generators are tags in the tag system" — and an
+immediate, concrete second use case (parking, "we will be passing this data over to another
+app later down the line") arriving in the same breath. Building `generator_tags` as a
+one-off and then rebuilding it for parking days later would have meant redoing the same
+admin CRUD/query/context plumbing twice; generalising immediately, while both requirements
+were in view, cost nothing extra and removes that repeat work for whatever category comes
+after parking.
+
+**Not chosen:** keeping `generator_providers` as a *cache* of tag data, refreshed from TMS
+— rejected as an unneeded second source of truth for something the live tag catalogue
+already answers, same reasoning #51 gave for not mirroring tags locally at all. A
+`generator_tags` table scoped to just generators (this entry's own first draft, migrations
+`0022`/`0023`) — rejected in favour of the generic `tag_category_assignments` once parking
+confirmed the pattern needed to repeat. A single JSON/array column on some settings table
+listing categorised tag ids — rejected as harder to query ("which tags are generator tags"
+becomes a JSON scan, not an indexed `WHERE category = ?`) and harder to extend safely under
+concurrent admin edits than a normal join-shaped table with a unique constraint.
+
+### 54. Past-day editability is date-based, independent of publish-lock
+
+**Decided:** a booking on a day before today becomes read-only in the grid — no drag, no edit,
+no move, no resize, no bulk-edit — gated purely on `date < todayIso()` (`lib/dates.ts`'s
+`DayInfo.isPast`, computed in `enumerateDays`). This is a new, third axis alongside base state
+and sync state (`docs/CELL_STATES.md`), layered alongside the existing `publishedAt`-based
+"locked" concept, never merged into it — see below for why the two stay separate. Enforced both
+in the grid (`components/planner/cell-chip.tsx`, `planner-grid.tsx`, `booking-drawer.tsx`) and
+server-side (`PAST_DATE` result code in `lib/actions/bookings.ts`,
+`lib/actions/booking-moves.ts`) — CLAUDE.md's "permissions are enforced server-side, always"
+applies here exactly as it does to role checks.
+
+The forward planner's editable-source-of-truth boundary (`SPEC.md` §2b) was previously keyed
+only on an explicit publish action. This adds a second, automatic boundary: a booking nobody
+ever got around to publishing still stops being editable once its date passes, so history can't
+silently drift after the fact just because no one clicked "Publish".
+
+Past days remain available for audit/cross-reference (the full ±1yr window is still loaded —
+`app/(planner)/page.tsx` — nothing here changes what data is fetched), but they're no longer
+part of the default view a scheduler scrolls through — see #55 for that half of the change.
+
+**Combined-state precedence, where a booking is both past and published:** the published/locked
+look and copy win on screen (🔒, "Published & locked") rather than the past-day grey wash — it's
+the more specific, already-understood state, and the server-side past-date guard still applies
+underneath regardless of what's shown, so nothing is lost by not also surfacing the grey wash.
+The one visible wrinkle: an admin who unlocks a published-and-past booking sees it immediately
+re-render read-only for the *other* reason (a `PAST_DATE` rejection would fire if they then
+tried to edit it) — accepted rather than suppressing the unlock button in that case, since
+recording an unpublish is still a legitimate, audit-relevant action even when the booking can't
+become editable as a result.
+
+**Deliberately NOT gated by this axis** — each is a separate, considered exclusion, not an
+oversight:
+- **`lib/actions/publish.ts` (`publishBookings`, `unpublishBooking`)** — a booking made today
+  that a scheduler forgets to publish becomes, by tomorrow, a legitimate unpublished-but-past
+  booking that still needs to reach TMS. Blocking publish on past dates would permanently
+  strand it. Unpublish is a distinct admin safety-valve action (§2b), left ungated for the same
+  reason.
+- **`lib/actions/tms-resolve.ts` (`resolveTmsSupersede`)** — reconciles an existing local
+  booking against a TMS-side change; it's reconciliation/audit-accuracy machinery, not new
+  scheduling, and gating it would block keeping the historical record accurate with TMS. The
+  one server-side call site here where reasonable people could disagree — flagged rather than
+  treated as obvious.
+- **`lib/actions/undo.ts`** — undo is reversing something that was valid when it happened, not
+  a fresh mutation. Left unguarded; the narrow edge case (undoing an edit made just before
+  midnight rolled its date into the past) is a known, accepted gap, not something worth a
+  special-cased guard.
+- **Bulk edit (`updateBookings`/`bulk-edit-drawer.tsx`) DOES gate on this axis**, unlike
+  publish — bulk-editing a past booking's status/notes/tags is still a scheduling edit, not an
+  audit-accuracy operation, so it's excluded from the selection the same way a locked booking
+  is (reported back as a separate `pastCount`, not folded into the published-count banner).
+
+**Staleness is a non-issue in practice:** `enumerateDays` becomes time-dependent as a result
+(it wasn't before), but `app/(planner)/page.tsx` is `force-dynamic` and the grid already
+`router.refresh()`es roughly every 10s (the live-update poll) and after every mutation — so a
+tab left open across midnight self-corrects within one poll interval, the same staleness
+profile `jumpToday()` already had (it also only ever runs once per mount/modality-switch).
+
+**Why:** closes a real gap — nothing previously stopped a scheduler from rearranging a booking
+from six months ago as long as no one had published it, which is not what "forward planner"
+should allow, while still needing history visible for audit.
+
+**Not chosen:** folding past-ness into the existing `locked` boolean — rejected, because it
+would make an unpublished old booking look like it had been deliberately forwarded to TMS when
+it never was, and would make the drawer's "Unlock to edit" offer something (editability) that
+unlocking a past booking can't actually deliver. Blocking publish/unpublish for past dates too
+— rejected, because it would permanently strand a forgotten-to-publish booking with no path to
+ever reach TMS.
+
+### 55. Past days are collapsed out of the default view, not merely styled read-only
+
+**Decided:** the grid opens scrolled to today with every day before it removed from the loaded
+row list entirely — not present, not scrolled-past, not just greyed. A **"Click to view
+previous bookings" banner** renders as the first row in their place. Clicking it swaps in the
+full history back to the start of the loaded ±1yr window and lands the scroll position back on
+today (`align: "start"`), so the newly-revealed past is immediately scrollable just above the
+fold.
+
+Implemented as a second derived array, `renderDays` (`components/planner/planner-grid.tsx`),
+sitting between `days` (the full range, unchanged, still what every business-logic computation
+— `dateIdx`, `computePreview`, `runEdges`, publish-range defaults — reads) and what the
+`useVirtualizer` instance actually renders: `pastRevealed ? days : days.filter(d => !d.isPast)`,
+with one extra virtual row (`bannerOffset`) for the banner while collapsed. Business logic
+staying on the full `days` array is safe specifically because collapsing only ever removes a
+*contiguous prefix* (every day strictly before today) — it can never open a gap between two
+future dates, so a drag's index-delta math (which only ever touches non-past cells in the first
+place, per #54) comes out identical whether computed against the full array or the filtered
+one.
+
+**Why:** #54 made past days read-only, but scrolling through months of frozen history to reach
+today on every normal load defeats the "forward planner" framing just as much as leaving them
+editable would — a scheduler doing day-to-day work has no reason to pass through it, and
+"day to day, we shouldn't need to see them, only if we want to check something from the past"
+was the explicit ask. A banner makes checking history one click away rather than removing it.
+
+**Consequences worth recording:**
+- **The pre-existing "restore last scroll position" mechanism (`planner-scroll-date`
+  sessionStorage key, `readScrollDate`/`writeScrollDate`, `handleGridScroll`) is removed
+  entirely**, not adapted to this feature. It predates this change and existed to stop a
+  background-poll-triggered remount from silently resetting a scheduler's scroll position —
+  but combined with collapse-by-default it produced the opposite of the intended UX: a
+  scheduler scrolled ahead into the future, or mid-way through a revealed past, would reopen
+  on refresh at that same arbitrary day rather than today, which read as "landing on random
+  dates" (direct scheduler feedback during this change). The grid now **always** lands on
+  today on every mount, remount, and modality switch, full stop — `jumpToday()` runs
+  unconditionally, no stored-position branch. One obvious home row beats a remembered one; the
+  reveal banner is one click away regardless.
+- `jumpToday()` and the mount/modality-switch effect both had to move from indexing `days`
+  directly to indexing `renderDays` (+ `bannerOffset`) — anywhere still reading
+  `days[someIndex]` for scroll positioning after this change is very likely a bug
+  reintroducing pre-collapse assumptions.
+- The banner's clickable text is `sticky left-0` inside a full-width row, not centred in it —
+  the row spans every unit column (30+, often several thousand px wide), and centring within
+  *that* rather than the visible viewport put the text off-screen unless a scheduler had
+  already scrolled horizontally to roughly the middle of the sheet; from anywhere else it read
+  as an unlabelled grey bar (direct scheduler feedback during this change). `sticky left-0` is
+  the exact mechanism the date column already uses for the same reason, applied here too.
+- The "Today" row's own label moved from an inline flex item (alongside the date/day-name/year
+  text) to an absolutely-positioned badge in the sticky date cell's corner — the inline version
+  wrapped onto a second line inside `DATE_COL_WIDTH` (190px) and covered the availability count
+  sitting underneath it (also direct scheduler feedback). Found and fixed in the same pass as
+  this change, not a pre-existing bug — the wrapping only started once "Today" became a fourth
+  item on that row (#54).
+
+**Not chosen:** keeping the full range loaded and just letting the read-only styling from #54
+do the work of discouraging scrolling into it — rejected per the explicit ask above: styling
+alone doesn't stop a scheduler from having to scroll past it to reach today, which is the actual
+day-to-day friction being removed here. Hiding past rows via CSS (e.g. `display: none`) instead
+of excluding them from the virtualiser's `count` — rejected: the virtualiser positions rows by
+index arithmetic, so a hidden-but-still-counted row would leave a blank gap in the scroll rather
+than actually closing it up. Keeping the scroll-restore mechanism but only for future/present
+dates (still blocking restore into the past) — rejected as unnecessary complexity once "always
+land on today" was the actual ask; nothing currently needs a scroll position to survive a
+remount now that history isn't loaded by default in the first place.
+
+**Two more fixes landed in the same pass, both from direct scheduler feedback on the first cut
+of this feature:**
+
+- **`jumpToday()` uses `align: "start"`, not `"center"`.** Centring today in the viewport left
+  the banner visible immediately on every load — there's rarely enough content above today for
+  centring to push it off-screen, so it just sat there uninvited. The ask was for the banner to
+  reveal only once a scheduler deliberately scrolls up and reaches the top, not to be part of
+  the default view at all. `align: "start"` puts today's row flush against the top on load,
+  scrolling the banner fully out of view above it; it can only ever come into view by scrolling
+  up far enough to reach it, never by scrolling around lower in the future range, because it's
+  structurally the topmost row in the list — there's nothing special to wire up here beyond the
+  alignment fix.
+- **The Today divider's border no longer doubles up over the date column.** The row `div` draws
+  its own 2px top border spanning the full row width; the sticky date-column `div` nested
+  inside it was ALSO drawing its own 2px top border in the same colour. Borders don't overlap
+  their own children's content box, so the child's border rendered as a second 2px stripe
+  immediately below the parent's — 4px total, only over the date column (the one place both
+  elements' borders land), reading as a visibly thicker/doubled line there than across the rest
+  of the row. Removed the sticky column's copy for the Today case; the row's own border already
+  covers the full width, including behind the sticky column, with no separate copy needed. The
+  pre-existing Monday week-divider has the same two-border structure and wasn't touched
+  (unrequested scope) — it's far less noticeable with its deliberately muted, DIFFERENT
+  colours (`#e4e9f0`/`#cdd6e2`) than Today's flat, saturated `#2b7bb9` made it.
+
 <!--
 Template for new entries:
 

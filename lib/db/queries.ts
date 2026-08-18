@@ -8,8 +8,10 @@ import {
   unitSpecs,
   bookings,
   bookingStatuses,
+  tagCategoryAssignments,
   sites,
   siteCapabilityRequirements,
+  type TagCategory,
 } from "./schema";
 import type { StatusView } from "@/lib/statuses";
 
@@ -37,6 +39,17 @@ export async function getBookingStatuses(): Promise<StatusView[]> {
   return rows;
 }
 
+// TMS `booking_tags.id` values admins have designated as belonging to a category
+// (docs/DECISIONS.md — generator was the first, parking the second). Cheap and small by
+// construction — this is a handful of flagged tags, not a copy of the tag catalogue itself.
+export async function getTagIdsByCategory(category: TagCategory): Promise<number[]> {
+  const rows = await db
+    .select({ tmsTagId: tagCategoryAssignments.tmsTagId })
+    .from(tagCategoryAssignments)
+    .where(eq(tagCategoryAssignments.category, category));
+  return rows.map((r) => r.tmsTagId);
+}
+
 export async function getActiveModalities() {
   return db
     .select({ id: modalities.id, name: modalities.name, displayOrder: modalities.displayOrder })
@@ -62,6 +75,18 @@ export async function getModalitiesForCompany(companyId: number) {
 // (docs/DECISIONS.md #22's company picker); everyone else is hard-locked to their own.
 export async function listCompaniesForPicker() {
   return db.select({ id: companies.id, name: companies.name }).from(companies).orderBy(asc(companies.name));
+}
+
+// The one place this three-line lookup lives — lib/db/tms/overlay.ts had it inlined twice
+// (getOverlayBookings, getOverlayDateRange, resolveTmsCells) before this was extracted.
+// Null for a company the reference sync has never linked (a locally-created company).
+export async function getTmsCompanyId(companyId: number): Promise<number | null> {
+  const [row] = await db
+    .select({ tmsCompanyId: companies.tmsCompanyId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1);
+  return row?.tmsCompanyId ?? null;
 }
 
 // Units belong to a modality via unit_modalities now, not a direct column — a unit can

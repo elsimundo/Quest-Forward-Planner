@@ -1,8 +1,22 @@
 "use client";
 
 import { forwardRef } from "react";
+import {
+  ArrowRightIcon,
+  ArrowLeftRightIcon,
+  CheckIcon,
+  EraserIcon,
+  LockIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  TriangleAlertIcon,
+  XIcon,
+  ZapIcon,
+} from "lucide-react";
 import { mixHex, tintBorder } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
+import { useGeneratorTagIds } from "./generator-tag-context";
+import { useTagCatalog } from "./tag-context";
 import { CHANGE_KIND_LABEL, changeKindFor } from "@/lib/planner-changes";
 import type { OverlayBooking } from "@/lib/db/tms/overlay";
 
@@ -21,6 +35,25 @@ import type { OverlayBooking } from "@/lib/db/tms/overlay";
 // nothing was lost but clutter on every changed cell in the grid.
 const CHANGE_COLOR = "#2b7bb9";
 const CHANGE_WASH_RATIO = 0.14;
+
+// The "this day has already happened" wash — deliberately NOT the padlock's opacity/
+// saturate/icon treatment (that's reserved for an explicitly published booking, a different
+// reason for read-only). A flat neutral grey, same family as the past-row background in
+// planner-grid.tsx, mixed in stronger than the change-wash so it reads clearly while still
+// letting the underlying status colour show through — an auditor scrolling back needs to
+// see what was booked, not just that it's old.
+const PAST_COLOR = "#9aa1ad";
+const PAST_WASH_RATIO = 0.3;
+
+// The bottom-right corner the sync dot used to occupy (docs/DECISIONS.md #43) — reused here
+// for tag dots. Different from that dot in the way that matters: this one only appears on a
+// cell that actually carries tags, not on every changed cell, so it isn't the same clutter
+// the client asked to remove. See the "Decorations" table in docs/CELL_STATES.md.
+const MAX_TAG_DOTS = 3;
+// A tag id a booking still carries that TMS no longer returns (deactivated/removed since it
+// was picked) — render *something* rather than silently dropping a scheduler's earlier
+// choice. Same muted grey used for the year label in planner-grid.tsx.
+const UNKNOWN_TAG_COLOUR = "#c2c7d1";
 
 // The faded original left behind when a scheduler moves a TMS booking — the client's own
 // ask: "I'd like for that original TMS booking to stay where it is, but be made slightly
@@ -98,9 +131,9 @@ export function GhostChip({
           onClick={onGoTo}
           title={`Jump to where this booking now sits${toLabel ? ` — ${toLabel}` : ""}`}
           aria-label={`Jump to where this booking now sits${toLabel ? `, ${toLabel}` : ""}`}
-          className="flex h-full shrink-0 cursor-pointer items-center px-1.5 text-[11px] leading-none text-[#5a6472] opacity-55 transition-opacity duration-150 hover:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+          className="flex h-full shrink-0 cursor-pointer items-center px-1.5 text-[#5a6472] opacity-55 transition-opacity duration-150 hover:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
         >
-          ↷
+          <ArrowRightIcon className="size-3" aria-hidden />
         </button>
       )}
     </div>
@@ -114,6 +147,13 @@ type CellChipProps = {
   checked?: boolean;
   isOpen?: boolean;
   draggable?: boolean;
+  /**
+   * This cell's day is before today — read-only for scheduling but still shown, for audit/
+   * cross-reference. Independent of `booking.publishedAt`/`locked`: a past booking that was
+   * never published is still past, and the two reasons get distinct treatment (see
+   * docs/CELL_STATES.md) rather than being folded into one "locked" concept.
+   */
+  isPast?: boolean;
   /**
    * Live drag feedback. `ok`/`bad` come from a move — green when the whole set lands cleanly,
    * red when it doesn't. `remove` comes from dragging a run's edge INWARD: this day is about
@@ -147,6 +187,7 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
   checked,
   isOpen,
   draggable,
+  isPast,
   preview,
   flash,
   pendingRemoval,
@@ -159,6 +200,8 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
   // Read the catalogue unconditionally (before the no-booking early return) so hook order
   // stays stable across renders where the cell flips between empty and booked.
   const catalog = useStatusCatalog();
+  const generatorTagIds = useGeneratorTagIds();
+  const tagCatalog = useTagCatalog();
 
   // Longhand only — the base styles below set `borderColor`, so mixing in the `border`
   // shorthand here makes React warn when the preview clears (shorthand removed while the
@@ -185,13 +228,13 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
         ref={ref}
         type="button"
         onClick={onClick}
-        title={
+        title={isPast ? "Date has passed" : (
           checked
             ? "Selected — book this and the rest of the selection in one go, or click to unselect"
             : pendingRemoval
               ? `Free — you've cleared "${pendingRemoval}" here. TMS still shows it until that's published. Click to book something else.`
               : "Available — click to assign · Ctrl-click or Shift-click to select several"
-        }
+        )}
         className="relative flex h-10 w-full items-center justify-center rounded-md border border-dashed text-xs transition-[opacity,border-color,background,box-shadow] duration-150 select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
         style={{
           ...injectedStyle,
@@ -202,36 +245,41 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
           // An empty cell can be selected now (to book a run of free days in one go), so it
           // needs the same blue border-and-ring the booked chip uses — the ✓ badge alone,
           // floating in an otherwise-unchanged dashed outline, didn't read as "picked".
-          borderColor: flash ? "#f17f42" : checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : pendingRemoval ? "#d8c5b4" : "#e6e6e6",
-          borderStyle: flash || checked ? "solid" : "dashed",
+          borderColor: isPast
+            ? "#e2e4e8"
+            : flash ? "#f17f42" : checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : pendingRemoval ? "#d8c5b4" : "#e6e6e6",
+          // A dashed border reads as "click to book" — a past empty cell never was booked and
+          // never can be, so it drops the dashed "available" affordance entirely.
+          borderStyle: isPast ? "solid" : flash || checked ? "solid" : "dashed",
+          cursor: isPast ? "default" : "pointer",
           boxShadow: flash
             ? "0 0 0 3px rgba(241,127,66,0.45)"
             : checked
               ? "0 0 0 2px rgba(43,123,185,0.28)"
               : "none",
-          background: isOpen ? "#f0f7ff" : checked ? "#f0f7ff" : "transparent",
+          background: isPast ? "#eef0f3" : isOpen ? "#f0f7ff" : checked ? "#f0f7ff" : "transparent",
           opacity: dimmed && !preview ? 0.22 : 1,
           ...(previewStyle ?? {}),
         }}
         {...rest}
       >
-        {isOpen ? "+" : ""}
+        {isOpen && <PlusIcon className="size-3.5" aria-hidden />}
         {checked && (
           <span
-            className="absolute top-[3px] right-[3px] flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2b7bb9] text-[9px] leading-none font-bold text-white"
+            className="absolute top-[3px] right-[3px] flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2b7bb9] text-white"
             aria-hidden
           >
-            ✓
+            <CheckIcon className="size-2.5" strokeWidth={3} />
           </span>
         )}
         {pendingRemoval && !isOpen && (
           // Small enough to read as "free with a note", not as an occupied cell — the whole
           // reason this isn't rendered as a struck-through booking chip.
           <span
-            className="absolute bottom-[3px] left-[4px] text-[9px] leading-none text-[#b8865c]"
+            className="absolute bottom-[3px] left-[4px] text-[#b8865c]"
             aria-hidden
           >
-            ⌫
+            <EraserIcon className="size-2.5" />
           </span>
         )}
       </button>
@@ -264,6 +312,26 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
   // already visually distinct (desaturated, padlocked), and by definition nothing published
   // still has a changeKind anyway.
   const fill = changeKind ? mixHex(st.bg, CHANGE_COLOR, CHANGE_WASH_RATIO) : st.bg;
+  // Layered on top of (not instead of) the change-wash: a past, unpublished, changed booking
+  // should still show both — an auditor needs to see "this was a pending TMS change that
+  // never got sent" on old rows, not just "this is old". Skipped when `locked`: the padlock
+  // look already answers the read-only question more specifically, see docs/CELL_STATES.md.
+  const pastFill = isPast && !locked ? mixHex(fill, PAST_COLOR, PAST_WASH_RATIO) : fill;
+
+  const tagNames = booking.tagIds.map((id) => tagCatalog.get(id)?.name ?? "Unknown tag");
+
+  // Generator tracking (docs/DECISIONS.md): a booking "needs a generator" when any of its
+  // tags is one an admin has designated as a generator tag (/admin/tag-categories) — no
+  // separate field of our own. Colour/label come straight from the live tag catalogue, same
+  // as the tag dots below; a tag id that's both a generator tag and deactivated/removed in
+  // TMS since falls back the same way a tag dot does.
+  const generatorTagId = booking.tagIds.find((id) => generatorTagIds.has(id));
+  const generator = generatorTagId !== undefined ? tagCatalog.get(generatorTagId) : undefined;
+
+  // The generator tag already gets its own ⚡ badge (top-left) — repeating it as a dot down
+  // here just says the same thing twice on one chip. Every other tag still gets a dot.
+  const dotTagIds =
+    generatorTagId !== undefined ? booking.tagIds.filter((id) => id !== generatorTagId) : booking.tagIds;
 
   // `select-none` below matters for more than tidiness: this chip is draggable AND renders the
   // site name as real text, so shift+mousedown extended the document's text selection instead of
@@ -275,10 +343,10 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
       ref={ref}
       type="button"
       onClick={onClick}
-      draggable={draggable && !locked}
+      draggable={draggable && !locked && !isPast}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : ""}${changeKind ? ` · ${CHANGE_KIND_LABEL[changeKind]}` : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${collision ? ` · ⨯ TMS also has ${booking.tmsCollision!.siteName} here — move or clear one` : ""}${supersedes ? " · ↻ TMS has updated this booking since — open it to resolve" : ""}${locked ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
+      title={`${booking.siteName} · ${st.label}${locked ? " · published & locked" : isPast ? " · date has passed — view only" : ""}${changeKind ? ` · ${CHANGE_KIND_LABEL[changeKind]}` : ""}${warning ? " · ⚠ capability mismatch" : ""}${hasTmsConflict ? " · ⇄ TMS also changed this booking — edit and save to resolve" : ""}${collision ? ` · ⨯ TMS also has ${booking.tmsCollision!.siteName} here — move or clear one` : ""}${supersedes ? " · ↻ TMS has updated this booking since — open it to resolve" : ""}${generatorTagId !== undefined ? ` · ⚡ Generator: ${generator?.name ?? "Unknown tag"}` : ""}${tagNames.length ? ` · Tags: ${tagNames.join(", ")}` : ""}${locked || isPast ? "" : " · Drag to move · Ctrl-click to multi-select"}`}
       className="relative flex h-10 w-full items-center overflow-hidden rounded-md border text-left transition-[box-shadow,border-color,opacity] duration-150 select-none focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2b7bb9]"
       style={{
         // `injectedStyle` first, lowest priority: Radix's `ContextMenuTrigger asChild`
@@ -290,7 +358,7 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
         // merge order bug. Spreading it here instead keeps Radix's touch behaviour on the
         // properties below that we actually set.
         ...injectedStyle,
-        cursor: locked ? "pointer" : "grab",
+        cursor: locked || isPast ? "pointer" : "grab",
         borderColor: flash ? "#f17f42" : checked ? "#2b7bb9" : isOpen ? "#2b7bb9" : borderColour,
         boxShadow: flash
           ? "0 0 0 3px rgba(241,127,66,0.45)"
@@ -299,59 +367,80 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
             : isOpen
               ? "0 0 0 2px #f0f7ff"
               : "none",
-        background: fill,
+        background: pastFill,
         opacity: dimmed && !preview ? 0.22 : locked ? 0.72 : 1,
         filter: locked ? "saturate(0.55)" : "none",
         ...(previewStyle ?? {}),
       }}
       {...rest}
     >
+      {generatorTagId !== undefined && (
+        <span
+          className="absolute top-1 right-1"
+          aria-hidden
+          title={`Generator: ${generator?.name ?? "Unknown tag"}`}
+          style={{ color: generator?.hexColour ?? UNKNOWN_TAG_COLOUR }}
+        >
+          <ZapIcon className="size-2.5" fill="currentColor" />
+        </span>
+      )}
       {locked && (
-        <span className="shrink-0 pl-1.5 text-[11px] leading-none text-[#9a9a9a]" aria-hidden>
-          🔒
+        <span className="shrink-0 pl-1.5 text-[#9a9a9a]" aria-hidden>
+          <LockIcon className="size-3" />
         </span>
       )}
       <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px]" style={{ color: "#333333" }}>
         {booking.siteName}
       </span>
       {warning && (
-        <span className="absolute top-0.5 right-0.5 text-[10px] leading-none" aria-hidden title="Capability mismatch">
-          ⚠
+        <span className="absolute top-0.5 right-0.5" aria-hidden title="Capability mismatch">
+          <TriangleAlertIcon className="size-2.5" style={{ color: "#f17f42" }} />
         </span>
       )}
       {hasTmsConflict && (
         <span
-          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#f17f42] text-[9px] leading-none font-bold text-white"
+          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#f17f42] text-white"
           aria-hidden
           title="TMS also changed this booking — edit and save to resolve"
         >
-          ⇄
+          <ArrowLeftRightIcon className="size-2.5" strokeWidth={3} />
         </span>
       )}
       {collision && (
         <span
-          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#c0392b] text-[9px] leading-none font-bold text-white"
+          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#c0392b] text-white"
           aria-hidden
           title={`TMS also has ${booking.tmsCollision!.siteName} here — move or clear one to publish`}
         >
-          ⨯
+          <XIcon className="size-2.5" strokeWidth={3} />
         </span>
       )}
       {supersedes && (
         <span
-          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#8a3ffc] text-[9px] leading-none font-bold text-white"
+          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#8a3ffc] text-white"
           aria-hidden
           title="TMS has updated this booking since — open it to resolve"
         >
-          ↻
+          <RefreshCwIcon className="size-2.5" strokeWidth={3} />
         </span>
       )}
       {checked && (
         <span
-          className="absolute top-[3px] right-[3px] flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2b7bb9] text-[9px] leading-none font-bold text-white"
+          className="absolute top-[3px] right-[3px] flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2b7bb9] text-white"
           aria-hidden
         >
-          ✓
+          <CheckIcon className="size-2.5" strokeWidth={3} />
+        </span>
+      )}
+      {dotTagIds.length > 0 && (
+        <span className="absolute right-1 bottom-1 flex gap-[2px]" aria-hidden>
+          {dotTagIds.slice(0, MAX_TAG_DOTS).map((id) => (
+            <span
+              key={id}
+              className="h-[5px] w-[5px] rounded-full"
+              style={{ background: tagCatalog.get(id)?.hexColour ?? UNKNOWN_TAG_COLOUR }}
+            />
+          ))}
         </span>
       )}
     </button>

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { ArrowRightIcon, LockIcon, RefreshCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -13,10 +14,11 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { SiteField, StatusPicker, useSiteField } from "./booking-fields";
+import { SiteField, StatusPicker, TagPicker, useSiteField } from "./booking-fields";
 import { fmtDateLong } from "@/lib/dates";
 import { DEFAULT_STATUS_KEY } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
+import { useTagCatalog } from "./tag-context";
 import { computeCapabilityWarnings } from "@/lib/capability-matching";
 import { CHANGE_KIND_LABEL, changeKindFor } from "@/lib/planner-changes";
 import { PUBLISH_EXCLUSION_LABEL } from "@/lib/publish-eligibility";
@@ -35,6 +37,12 @@ export type DrawerTarget = {
   // The active sheet's modality — threaded through to saveBooking so a newly-created
   // booking gets stamped with the right modality_id (§4.3); re-validated server-side.
   modalityId: number;
+  // Sourced from the grid's own `DayInfo.isPast` rather than recomputed here against
+  // `todayIso()` — a single source of truth that can't drift from the grid by even a poll
+  // interval. Independent of `booking.publishedAt` (see `publishLocked` below): a past date
+  // is read-only for a different reason than an explicit publish, and the two get distinct
+  // banner copy rather than being folded into one "locked" concept.
+  isPast: boolean;
 };
 
 export function BookingDrawer({
@@ -119,6 +127,7 @@ function BookingDrawerBody({
   onMutated: (batchId: string) => void;
 }) {
   const catalog = useStatusCatalog();
+  const tagCatalog = useTagCatalog();
   // The user-pickable statuses (active, not calendar-derived), in display order.
   const editableStatuses = catalog.all.filter((s) => s.editable && s.active);
 
@@ -127,6 +136,10 @@ function BookingDrawerBody({
     booking && editableStatuses.some((s) => s.key === booking.status) ? booking.status : DEFAULT_STATUS_KEY,
   );
   const [notes, setNotes] = useState(booking?.notes ?? "");
+  // Pre-filled from whatever the cell currently shows, same as site/status/notes — for an
+  // untouched TMS booking that's TMS's own existing tag selection (docs/DECISIONS.md #51),
+  // so an inherited tag arrives pre-checked and round-trips through a save unchanged.
+  const [tagIds, setTagIds] = useState<number[]>(booking?.tagIds ?? []);
   const [saving, setSaving] = useState(false);
   const [confirmingUnlock, setConfirmingUnlock] = useState(false);
   const router = useRouter();
@@ -140,7 +153,12 @@ function BookingDrawerBody({
   // actually saw when they opened the drawer.
   const [initialUpdatedAt] = useState(() => booking?.updatedAt ?? null);
 
-  const locked = !!booking?.publishedAt;
+  const publishLocked = !!booking?.publishedAt;
+  const isPast = target.isPast;
+  // Either reason makes the drawer read-only; the header/footer below still name which one,
+  // since they're different situations (SPEC.md §2b vs. the past-date boundary,
+  // docs/DECISIONS.md) and an admin can only ever act on the publish-lock half.
+  const readOnly = publishLocked || isPast;
   // Says in words what the dot on the chip says as a mark — "Confirmed" on its own doesn't
   // tell you whether TMS has it (docs/DECISIONS.md #29). Only for an existing booking: the
   // moved/cleared cases have their own banner below, which explains far more than a line.
@@ -164,6 +182,7 @@ function BookingDrawerBody({
       site: siteField.siteInput,
       status,
       notes,
+      tagIds,
       modalityId: target.modalityId,
       expectedUpdatedAt: initialUpdatedAt ? initialUpdatedAt.toISOString() : null,
     });
@@ -246,18 +265,25 @@ function BookingDrawerBody({
     <>
       <SheetHeader className="border-b px-5.5 py-4.5">
         <SheetDescription
-          className="text-[11px] font-medium tracking-wider uppercase"
-          style={{ color: locked ? "#9a9a9a" : "#2b7bb9" }}
+          className="inline-flex items-center gap-1 text-[11px] font-medium tracking-wider uppercase"
+          style={{ color: readOnly ? "#9a9a9a" : "#2b7bb9" }}
         >
-          {locked ? "🔒 Published & locked" : booking ? "Edit booking" : "New booking"}
+          {publishLocked && <LockIcon className="size-3" aria-hidden />}
+          {publishLocked
+            ? "Published & locked"
+            : isPast
+              ? "Date has passed"
+              : booking
+                ? "Edit booking"
+                : "New booking"}
         </SheetDescription>
         <SheetTitle className="text-lg font-bold text-[#333333]">{target.unitRegistration}</SheetTitle>
         <p className="text-[13px] text-[#757575]">{fmtDateLong(target.date)}</p>
         {/* Always says which side has this, not just when they disagree — a silent drawer on
             an untouched TMS booking read as "no answer" (docs/DECISIONS.md #33), the same
-            gap #29/#31 already closed on the chip itself. Skipped once locked: the
-            "Published & locked" line above already says it. */}
-        {booking && !locked && (
+            gap #29/#31 already closed on the chip itself. Skipped once read-only: the
+            banner above already says it. */}
+        {booking && !readOnly && (
           changeKind ? (
             <p className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-[#2b7bb9]">
               <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[#2b7bb9]" aria-hidden />
@@ -272,16 +298,38 @@ function BookingDrawerBody({
         )}
       </SheetHeader>
 
-      {locked ? (
+      {readOnly ? (
         <div className="flex-1 px-5.5 py-4.5">
           <div className="rounded-[10px] bg-[#f7f9fc] p-3.5 text-[13px] leading-[19px] text-[#757575]">
-            This booking has been forwarded to TMS and is locked for editing. Unlocking will
-            make it editable again here, but won&apos;t notify TMS.
+            {publishLocked
+              ? "This booking has been forwarded to TMS and is locked for editing. Unlocking will make it editable again here, but won't notify TMS."
+              : "This date has passed, so it's shown for reference but can't be edited here."}
           </div>
-          <div className="mt-4">
-            <div className="text-[13px] font-medium text-[#333333]">{booking?.siteName}</div>
-            <div className="mt-0.5 text-xs text-[#757575]">{catalog.get(booking!.status).label}</div>
-          </div>
+          {/* A past, never-booked slot (e.g. a moved-away ghost's original day) has nothing
+              further to show — this block is skipped rather than dereferencing a null booking. */}
+          {booking && (
+            <div className="mt-4">
+              <div className="text-[13px] font-medium text-[#333333]">{booking.siteName}</div>
+              <div className="mt-0.5 text-xs text-[#757575]">{catalog.get(booking.status).label}</div>
+              {!!booking.tagIds.length && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {booking.tagIds.map((id) => {
+                    const tag = tagCatalog.get(id);
+                    return (
+                      <span
+                        key={id}
+                        className="flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs"
+                        style={{ borderColor: tag?.hexColour ?? "#c2c7d1" }}
+                      >
+                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: tag?.hexColour ?? "#c2c7d1" }} />
+                        <span style={{ color: "#333333" }}>{tag?.name ?? "Unknown tag"}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -311,9 +359,9 @@ function BookingDrawerBody({
                 <button
                   type="button"
                   onClick={onGoToGhost}
-                  className="mt-1.5 cursor-pointer text-[#8a6642] underline underline-offset-2 hover:text-[#6b4e33]"
+                  className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[#8a6642] underline underline-offset-2 hover:text-[#6b4e33]"
                 >
-                  Jump to where it went ↷
+                  Jump to where it went <ArrowRightIcon className="size-3" aria-hidden />
                 </button>
               )}
             </div>
@@ -329,7 +377,8 @@ function BookingDrawerBody({
           {booking?.tmsCollision && (
             <div className="mx-5.5 mt-3.5 rounded-lg border border-[#f0c4bb] bg-[#fdedea] p-3 text-xs leading-[17px] text-[#8a2f20]">
               <p className="font-medium">
-                ⨯ TMS also has <span className="font-semibold">{booking.tmsCollision.siteName}</span> booked here
+                <XIcon className="mr-1 inline size-3 -translate-y-px" aria-hidden />
+                TMS also has <span className="font-semibold">{booking.tmsCollision.siteName}</span> booked here
                 {booking.tmsCollision.status ? ` (${catalog.get(booking.tmsCollision.status).label})` : ""}.
               </p>
               <p className="mt-1 text-[#a8503d]">
@@ -341,7 +390,10 @@ function BookingDrawerBody({
 
           {booking?.tmsSupersedes && (
             <div className="mx-5.5 mt-3.5 rounded-lg border border-[#dccbf7] bg-[#f4edfd] p-3 text-xs leading-[17px] text-[#5a2d9c]">
-              <p className="font-medium">↻ TMS has updated this booking since it was last changed here.</p>
+              <p className="font-medium">
+                <RefreshCwIcon className="mr-1 inline size-3 -translate-y-px" aria-hidden />
+                TMS has updated this booking since it was last changed here.
+              </p>
               <p className="mt-1 text-[#7c5aa8]">
                 Someone needs to decide which version to keep — TMS won&apos;t be overridden
                 silently.
@@ -373,12 +425,17 @@ function BookingDrawerBody({
             {warnings.length > 0 && (
               <div className="mt-3 rounded-lg border border-[#f6ddc8] bg-[#fdf1e7] p-3 text-xs leading-[17px] text-[#9a4d1e]">
                 {warnings.map((w) => (
-                  <div key={w.requirementKey}>⚠ {w.message}</div>
+                  <div key={w.requirementKey} className="flex items-center gap-1">
+                    <TriangleAlertIcon className="size-3 shrink-0" aria-hidden />
+                    {w.message}
+                  </div>
                 ))}
               </div>
             )}
 
             <StatusPicker statuses={editableStatuses} value={status} onChange={setStatus} />
+
+            <TagPicker tags={tagCatalog.all} value={tagIds} onChange={setTagIds} />
 
             <label className="mt-5 mb-1.5 block text-[13px] font-medium text-[#333333]">Notes</label>
             <Textarea
@@ -392,26 +449,35 @@ function BookingDrawerBody({
       )}
 
       <SheetFooter className="flex-col items-stretch border-t p-4">
-        {locked ? (
-          canUnlock ? (
-            <>
-              {confirmingUnlock && (
-                <p className="mb-2 text-center text-xs text-[#9a4d1e]">
-                  This unlocks the booking for editing here. It won&apos;t un-forward it from TMS.
-                </p>
-              )}
-              <Button
-                variant="destructive"
-                className="w-full"
-                disabled={saving}
-                onClick={handleUnlock}
-              >
-                {confirmingUnlock ? "Confirm unlock" : "Unlock to edit"}
-              </Button>
-            </>
+        {readOnly ? (
+          publishLocked ? (
+            canUnlock ? (
+              <>
+                {confirmingUnlock && (
+                  <p className="mb-2 text-center text-xs text-[#9a4d1e]">
+                    This unlocks the booking for editing here. It won&apos;t un-forward it from TMS.
+                    {isPast && " This date has passed, though, so it still won't become editable here."}
+                  </p>
+                )}
+                <Button
+                  variant="destructive"
+                  className="w-full"
+                  disabled={saving}
+                  onClick={handleUnlock}
+                >
+                  {/* "…to edit" would be a false promise once the date has also passed —
+                      unlocking still won't make the form editable, see the confirm copy above. */}
+                  {confirmingUnlock ? "Confirm unlock" : isPast ? "Unlock" : "Unlock to edit"}
+                </Button>
+              </>
+            ) : (
+              <p className="text-center text-[13px] text-[#757575]">
+                Only an admin can unlock a published booking.
+              </p>
+            )
           ) : (
             <p className="text-center text-[13px] text-[#757575]">
-              Only an admin can unlock a published booking.
+              Past dates can&apos;t be edited.
             </p>
           )
         ) : (

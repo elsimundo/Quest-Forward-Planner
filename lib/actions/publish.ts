@@ -19,7 +19,7 @@ const UNLOCK_ROLES = ["admin", "super_admin"] as const;
 
 type BookingRow = typeof bookings.$inferSelect;
 
-export type PublishTarget = { unitId: number; date: string };
+export type PublishTarget = { unitId: number; date: string; expectedUpdatedAt: string };
 
 export type PublishResult =
   | { ok: true; count: number; batchId: string | null; message: string }
@@ -50,6 +50,9 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
     );
 
     const candidateRows: BookingRow[] = [];
+    // Keyed by row id, not unit/date — a target's expectation is only meaningful once matched
+    // to the actual row it was preflighted against.
+    const expectedUpdatedAtById = new Map<number, string>();
     for (const t of targets) {
       const [row] = await tx
         .select()
@@ -65,6 +68,7 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
         continue;
       }
       candidateRows.push(row);
+      expectedUpdatedAtById.set(row.id, t.expectedUpdatedAt);
     }
 
     // TMS-supersede check (docs/OVERLAY_BUILD_PLAN.md C3/D1) — a booking TMS has changed
@@ -137,6 +141,7 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
           tmsConflictAt: row.tmsConflictAt,
           tmsSupersedes: tmsSupersedesById.get(row.id) ?? false,
           tmsCollision: tmsCollisionById.get(row.id) ?? false,
+          staleSincePreflight: expectedUpdatedAtById.get(row.id) !== row.updatedAt.toISOString(),
         },
         publishableKeys,
       );
@@ -152,6 +157,7 @@ export async function publishBookings(targets: PublishTarget[]): Promise<Publish
 
     if (!rows.length) {
       const parts: string[] = [];
+      if (skippedByReason["changed-since-preflight"]) parts.push(`${skippedByReason["changed-since-preflight"]} changed since you opened the publish sheet`);
       if (skippedByReason["tms-supersedes"]) parts.push(`${skippedByReason["tms-supersedes"]} need a TMS update resolved`);
       if (skippedByReason["tms-collision"]) parts.push(`${skippedByReason["tms-collision"]} clash with a different TMS booking`);
       if (skippedByReason["tms-conflict"]) parts.push(`${skippedByReason["tms-conflict"]} have an unresolved TMS conflict`);
@@ -197,10 +203,15 @@ export type UnpublishResult =
   | { ok: true; batchId: string; message: string }
   | { ok: false; error: string; code: "PERMISSION" | "NOT_FOUND" | "VALIDATION" };
 
+// Single-cell target for the admin unlock action — no expectedUpdatedAt, unlike PublishTarget:
+// this isn't a sweep of a preflighted batch, it's a direct "unlock this one row" click from the
+// drawer, with no staleness gap to guard against.
+export type UnpublishTarget = { unitId: number; date: string };
+
 // Unlock a single published booking — the admin override for "TMS already has the old
 // version, we need to fix a mistake" (SPEC.md §2b). Clears published_at/by and logs an
 // `unpublish` event; it does NOT notify TMS (that's the separate write-integration, §13.1).
-export async function unpublishBooking(target: PublishTarget): Promise<UnpublishResult> {
+export async function unpublishBooking(target: UnpublishTarget): Promise<UnpublishResult> {
   const actor = await requireRole([...UNLOCK_ROLES]);
   if (!actor) return { ok: false, error: "Only an admin can unlock a published booking.", code: "PERMISSION" };
 

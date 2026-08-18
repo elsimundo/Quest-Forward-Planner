@@ -1,5 +1,6 @@
 "use client";
 
+import { EraserIcon, LockIcon } from "lucide-react";
 import { mixHex, tintBorder } from "@/lib/statuses";
 import { useStatusCatalog } from "./status-context";
 
@@ -8,6 +9,9 @@ import { useStatusCatalog } from "./status-context";
 // cells actually look like.
 const CHANGE_COLOR = "#2b7bb9";
 const CHANGE_WASH_RATIO = 0.14;
+// Same colour/ratio as the grid's past-day wash (components/planner/cell-chip.tsx).
+const PAST_COLOR = "#9aa1ad";
+const PAST_WASH_RATIO = 0.3;
 
 // Two rows, because a cell says two independent things and the legend used to cover only one.
 // A booking's STATUS is what kind of work it is; its TMS STATE is whether TMS has it yet.
@@ -76,8 +80,8 @@ export function StatusLegend() {
         </Item>
         <Item
           swatch={
-            <span className="flex h-3.5 w-3.5 items-center justify-center rounded border-[1.5px] border-[#e6e6e6] bg-white text-[8px] leading-none opacity-70 saturate-50">
-              🔒
+            <span className="flex h-3.5 w-3.5 items-center justify-center rounded border-[1.5px] border-[#e6e6e6] bg-white opacity-70 saturate-50">
+              <LockIcon className="size-2.5" />
             </span>
           }
         >
@@ -93,11 +97,26 @@ export function StatusLegend() {
         <Item
           swatch={
             <span className="relative h-3.5 w-3.5 rounded border border-dashed border-[#d8c5b4]">
-              <span className="absolute bottom-[0px] left-[1px] text-[7px] leading-none text-[#b8865c]">⌫</span>
+              <span className="absolute bottom-[0px] left-[1px] text-[#b8865c]">
+                <EraserIcon className="size-2" />
+              </span>
             </span>
           }
         >
           Cleared — TMS still has it until you publish
+        </Item>
+      </Row>
+
+      <Row label="Timing">
+        <Item
+          swatch={
+            <span
+              className="h-3.5 w-3.5 rounded border-[1.5px] border-[#e6e6e6]"
+              style={{ background: mixHex("#ffffff", PAST_COLOR, PAST_WASH_RATIO) }}
+            />
+          }
+        >
+          Past — view only
         </Item>
       </Row>
     </div>

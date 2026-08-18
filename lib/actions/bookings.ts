@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, ilike, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
+import { todayIso } from "@/lib/dates";
 import {
   bookings,
   bookingEvents,
@@ -123,7 +124,17 @@ async function warningsFor(
   return computeCapabilityWarnings(reqRows, specMap, unit.registration, site.name);
 }
 
-type SlotWriteResult = { ok: true } | { ok: false; error: string; code: "CONFLICT" | "LOCKED" };
+// TMS booking_tags ids aren't re-validated against a live TMS re-fetch here — the picker
+// only ever offers ids TMS returned moments earlier in the same request, and an id is an
+// inert integer with no privilege implication (unlike siteId, which is company-scoped for
+// a real security reason). A round-trip to TMS to validate every id on every save isn't
+// worth the added latency/TMS load for that; this dedupe-and-filter pass is enough to guard
+// against a garbled payload.
+function sanitizeTagIds(tagIds: number[]): number[] {
+  return [...new Set(tagIds.filter((id) => Number.isInteger(id)))];
+}
+
+type SlotWriteResult = { ok: true } | { ok: false; error: string; code: "CONFLICT" | "LOCKED" | "PAST_DATE" };
 
 /**
  * Write one unit+date slot, and log the matching audit event under `batchId`.
@@ -152,6 +163,9 @@ async function writeBookingAtSlot(
     site: { id: number; name: string };
     status: string;
     notes: string | null;
+    /** Defaults to unchanged/empty so callers that don't deal in tags (createBookings)
+     * aren't forced to think about them. */
+    tagIds?: number[];
     modalityId: number;
     actor: { id: number };
     batchId: string;
@@ -160,6 +174,7 @@ async function writeBookingAtSlot(
   },
 ): Promise<SlotWriteResult> {
   const { unit, date, site, status, notes, modalityId, actor, batchId, warnings } = opts;
+  const tagIds = sanitizeTagIds(opts.tagIds ?? []);
 
   const [existingBooking] = await tx
     .select()
@@ -175,6 +190,16 @@ async function writeBookingAtSlot(
 
   if (existingBooking?.publishedAt) {
     return { ok: false, error: "This booking is published and locked. Unlock it first.", code: "LOCKED" };
+  }
+
+  // Enforced server-side, always (CLAUDE.md) — the grid's own read-only treatment for past
+  // days is a convenience, never the boundary. Checked against the slot being written to
+  // (not any pre-existing booking's date, which is always the same value anyway): nothing
+  // should land in a past slot, whether that's a create or an edit. Deliberately NOT checked
+  // in publish/unpublish (lib/actions/publish.ts) or undo (lib/actions/undo.ts) —
+  // docs/DECISIONS.md.
+  if (date < todayIso()) {
+    return { ok: false, error: "This date has passed and can't be booked or edited.", code: "PAST_DATE" };
   }
 
   if (existingBooking && opts.expectedUpdatedAt !== existingBooking.updatedAt.toISOString()) {
@@ -198,7 +223,7 @@ async function writeBookingAtSlot(
     const now = new Date();
     const [updated] = await tx
       .update(bookings)
-      .set({ siteId: site.id, status, notes, updatedBy: actor.id, updatedAt: now, tmsConflictAt: null, tmsImportedAt: existingBooking.tmsConflictAt ? now : existingBooking.tmsImportedAt })
+      .set({ siteId: site.id, status, notes, tagIds, updatedBy: actor.id, updatedAt: now, tmsConflictAt: null, tmsImportedAt: existingBooking.tmsConflictAt ? now : existingBooking.tmsImportedAt })
       .where(eq(bookings.id, existingBooking.id))
       .returning();
     await tx.insert(bookingEvents).values({
@@ -221,6 +246,7 @@ async function writeBookingAtSlot(
         siteId: site.id,
         status,
         notes,
+        tagIds,
         deletedAt: null,
         deletedBy: null,
         updatedBy: actor.id,
@@ -248,6 +274,7 @@ async function writeBookingAtSlot(
         siteId: site.id,
         status,
         notes,
+        tagIds,
         createdBy: actor.id,
         updatedBy: actor.id,
         // Claims the TMS booking this cell is showing, when there is one — see above.
@@ -309,6 +336,9 @@ export type SaveBookingInput = {
   // table inside the transaction, not a fixed enum.
   status: string;
   notes: string;
+  // TMS booking_tags.id values picked in the drawer (docs/DECISIONS.md #51). Always sent —
+  // the drawer's picker starts from whatever the cell currently shows, same as status/notes.
+  tagIds: number[];
   // The active sheet's modality — only load-bearing when CREATING a booking (it stamps
   // bookings.modalityId, docs/TMS_INTEGRATION_PLAN.md §4.3). Always validated server-side
   // against the unit's actual unit_modalities tags, never trusted as-is — a unit can carry
@@ -322,7 +352,7 @@ export type SaveBookingInput = {
 
 export type SaveBookingResult =
   | { ok: true; message: string; warnings: CapabilityWarning[]; batchId: string }
-  | { ok: false; error: string; code: "PERMISSION" | "CONFLICT" | "LOCKED" | "VALIDATION" };
+  | { ok: false; error: string; code: "PERMISSION" | "CONFLICT" | "LOCKED" | "VALIDATION" | "PAST_DATE" };
 
 export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingResult> {
   const actor = await requireRole([...EDITOR_ROLES]);
@@ -350,6 +380,7 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
       site,
       status: input.status,
       notes: input.notes.trim() || null,
+      tagIds: input.tagIds,
       modalityId: input.modalityId,
       actor,
       batchId,
@@ -366,7 +397,7 @@ export async function saveBooking(input: SaveBookingInput): Promise<SaveBookingR
 export type ClearBookingInput = { unitId: number; date: string; expectedUpdatedAt: string };
 export type ClearBookingResult =
   | { ok: true; message: string; batchId: string }
-  | { ok: false; error: string; code: "PERMISSION" | "CONFLICT" | "LOCKED" | "NOT_FOUND" };
+  | { ok: false; error: string; code: "PERMISSION" | "CONFLICT" | "LOCKED" | "NOT_FOUND" | "PAST_DATE" };
 
 export async function clearBooking(input: ClearBookingInput): Promise<ClearBookingResult> {
   const actor = await requireRole([...EDITOR_ROLES]);
@@ -395,6 +426,12 @@ export async function clearBooking(input: ClearBookingInput): Promise<ClearBooki
       }
       const tms = await resolveTmsBookingAt(unitRow.companyId, input.unitId, input.date);
       if (!tms) return { ok: false, error: "Nothing to clear.", code: "NOT_FOUND" };
+
+      // Same server-side boundary as writeBookingAtSlot — clearing a TMS-only slot still
+      // writes a row (a suppression), so it's still a scheduling mutation past-day covers.
+      if (input.date < todayIso()) {
+        return { ok: false, error: "This date has passed and can't be cleared.", code: "PAST_DATE" };
+      }
 
       const [tag] = await tx
         .select({ modalityId: unitModalities.modalityId })
@@ -452,6 +489,9 @@ export async function clearBooking(input: ClearBookingInput): Promise<ClearBooki
     if (existing.publishedAt) {
       return { ok: false, error: "This booking is published and locked. Unlock it first.", code: "LOCKED" };
     }
+    if (existing.date < todayIso()) {
+      return { ok: false, error: "This date has passed and can't be cleared.", code: "PAST_DATE" };
+    }
     if (input.expectedUpdatedAt !== existing.updatedAt.toISOString()) {
       const name = await nameOfEditor(tx, existing.updatedBy);
       return {
@@ -501,7 +541,7 @@ export type BookingSlot = { unitId: number; date: string };
 
 export type BulkWriteResult =
   | { ok: true; message: string; batchId: string; warnings: CapabilityWarning[] }
-  | { ok: false; error: string; code: "PERMISSION" | "VALIDATION" | "CONFLICT" | "LOCKED" };
+  | { ok: false; error: string; code: "PERMISSION" | "VALIDATION" | "CONFLICT" | "LOCKED" | "PAST_DATE" };
 
 // Rejecting by RETURNING from inside db.transaction commits whatever has already been written
 // — and these loops write row by row. Throwing is what rolls that back. Same pattern, and the
@@ -620,12 +660,13 @@ export type BulkEditTarget = { unitId: number; date: string; expectedUpdatedAt: 
 
 export type BulkEditInput = {
   targets: BulkEditTarget[];
-  /** `undefined` on any of these three means "leave unchanged" — only the fields the
+  /** `undefined` on any of these four means "leave unchanged" — only the fields the
    * scheduler explicitly opted into (via the Bulk edit drawer's per-field toggles) are
    * written; the rest keep whatever each individual booking already had. */
   site?: SiteInput;
   status?: string;
   notes?: string;
+  tagIds?: number[];
 };
 
 /**
@@ -640,7 +681,12 @@ export async function updateBookings(input: BulkEditInput): Promise<BulkWriteRes
   const actor = await requireRole([...EDITOR_ROLES]);
   if (!actor) return { ok: false, error: "You don't have permission to edit bookings.", code: "PERMISSION" };
   if (!input.targets.length) return { ok: false, error: "Nothing to edit.", code: "VALIDATION" };
-  if (input.site === undefined && input.status === undefined && input.notes === undefined) {
+  if (
+    input.site === undefined &&
+    input.status === undefined &&
+    input.notes === undefined &&
+    input.tagIds === undefined
+  ) {
     return { ok: false, error: "Choose at least one field to change.", code: "VALIDATION" };
   }
 
@@ -690,6 +736,9 @@ export async function updateBookings(input: BulkEditInput): Promise<BulkWriteRes
         if (existing.publishedAt) {
           throw new BulkRejected({ ok: false, error: "One of those bookings is published and locked. Unlock it first.", code: "LOCKED" });
         }
+        if (existing.date < todayIso()) {
+          throw new BulkRejected({ ok: false, error: "One of those bookings is on a date that's passed and can't be edited.", code: "PAST_DATE" });
+        }
         if (target.expectedUpdatedAt !== existing.updatedAt.toISOString()) {
           const name = await nameOfEditor(tx, existing.updatedBy);
           throw new BulkRejected({
@@ -705,6 +754,7 @@ export async function updateBookings(input: BulkEditInput): Promise<BulkWriteRes
           siteId: number;
           status: string;
           notes: string | null;
+          tagIds: number[];
           updatedBy: number;
           updatedAt: Date;
           tmsConflictAt: Date | null;
@@ -722,6 +772,7 @@ export async function updateBookings(input: BulkEditInput): Promise<BulkWriteRes
         }
         if (input.status !== undefined) patch.status = input.status;
         if (notes !== undefined) patch.notes = notes;
+        if (input.tagIds !== undefined) patch.tagIds = sanitizeTagIds(input.tagIds);
 
         const now = new Date();
         patch.updatedBy = actor.id;
@@ -794,6 +845,9 @@ export async function clearBookings(input: ClearBookingsInput): Promise<BulkWrit
         }
         if (existing.publishedAt) {
           throw new BulkRejected({ ok: false, error: "One of those bookings is published and locked. Unlock it first.", code: "LOCKED" });
+        }
+        if (existing.date < todayIso()) {
+          throw new BulkRejected({ ok: false, error: "One of those bookings is on a date that's passed and can't be cleared.", code: "PAST_DATE" });
         }
         if (slot.expectedUpdatedAt !== existing.updatedAt.toISOString()) {
           const name = await nameOfEditor(tx, existing.updatedBy);

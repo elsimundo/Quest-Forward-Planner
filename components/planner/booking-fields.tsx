@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ArrowLeftIcon, XIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { searchSites, getSiteChildren } from "@/lib/actions/sites";
 import type { SiteMatch } from "@/lib/db/queries";
 import type { SiteInput } from "@/lib/actions/bookings";
 import type { StatusView } from "@/lib/statuses";
+import type { TmsBookingTag } from "@/lib/db/tms/queries";
 
 // The two fields shared by every form that writes a booking: the site type-ahead and the
 // status picker. Extracted when bulk booking arrived and needed exactly the same two fields
@@ -115,9 +117,9 @@ export function SiteField({ field, label = "Site location" }: { field: SiteField
                   e.preventDefault();
                   field.setPadPrompt(null);
                 }}
-                className="block w-full border-b bg-[#f7f9fc] px-3.5 py-2 text-left text-xs text-[#757575] hover:bg-[#eef2f7] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+                className="flex w-full items-center gap-1 border-b bg-[#f7f9fc] px-3.5 py-2 text-left text-xs text-[#757575] hover:bg-[#eef2f7] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
               >
-                ← Back — which pad at {field.padPrompt.parentName}?
+                <ArrowLeftIcon className="size-3" aria-hidden /> Back — which pad at {field.padPrompt.parentName}?
               </button>
               {field.padPrompt.children.map((m) => {
                 const isBooked = booked?.has(m.id) ?? false;
@@ -199,6 +201,107 @@ export function StatusPicker({
           );
         })}
       </div>
+    </>
+  );
+}
+
+// Multi-select, unlike StatusPicker — a booking can carry several TMS tags at once, and
+// TMS's catalogue runs to two dozen-plus, too many to lay out as an always-visible wall of
+// chips (that was the first version of this — a scheduler had to scan the whole catalogue
+// to find one tag). Selected tags show as small removable chips; adding one is a type-to-
+// filter combobox, same interaction shape as SiteField above (query text, a dropdown of
+// matches, click or Enter to pick) but filtered client-side against the already-loaded
+// catalogue rather than a server round trip — 26 rows is nothing to filter in JS.
+export function TagPicker({
+  tags,
+  value,
+  onChange,
+}: {
+  tags: TmsBookingTag[];
+  value: number[];
+  onChange: (ids: number[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const selected = value.map((id) => tags.find((t) => t.id === id)).filter((t): t is TmsBookingTag => !!t);
+  const available = tags.filter((t) => !value.includes(t.id));
+  const matches =
+    query.trim().length === 0
+      ? available
+      : available.filter((t) => t.name.toLowerCase().includes(query.trim().toLowerCase()));
+
+  function add(id: number) {
+    onChange([...value, id]);
+    setQuery("");
+  }
+  function remove(id: number) {
+    onChange(value.filter((v) => v !== id));
+  }
+
+  return (
+    <>
+      <label className="mt-5 mb-1.5 block text-[13px] font-medium text-[#333333]">Tags</label>
+
+      {selected.length > 0 && (
+        <div className="mb-1.5 flex flex-wrap gap-1.5">
+          {selected.map((t) => (
+            <span
+              key={t.id}
+              className="flex items-center gap-1.5 rounded-full border py-1 pr-1.5 pl-2.5 text-xs"
+              style={{ borderColor: t.hexColour, background: `${t.hexColour}22` }}
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.hexColour }} />
+              <span style={{ color: "#333333" }}>{t.name}</span>
+              <button
+                type="button"
+                onClick={() => remove(t.id)}
+                aria-label={`Remove tag ${t.name}`}
+                className="ml-0.5 flex h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#757575] hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2b7bb9]"
+              >
+                <XIcon className="size-2.5" aria-hidden />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {tags.length === 0 ? (
+        <span className="text-xs text-[#9a9a9a]">No tags configured in TMS for this company.</span>
+      ) : (
+        <div className="relative">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => setOpen(true)}
+            onBlur={() => setOpen(false)}
+            placeholder={available.length > 0 ? "Add a tag…" : "All tags added"}
+            disabled={available.length === 0}
+          />
+          {open && matches.length > 0 && (
+            <div className="absolute z-10 mt-1.5 max-h-48 w-full overflow-y-auto rounded-xl border bg-white shadow-md">
+              {matches.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  // preventDefault keeps focus on the Input so a run of clicks can add
+                  // several tags without the dropdown closing after each one — same
+                  // reasoning as SiteField's pad-prompt buttons above.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    add(t.id);
+                  }}
+                  title={t.description ?? t.name}
+                  className="flex w-full items-center gap-1.5 border-b px-3.5 py-2 text-left text-[13px] last:border-b-0 hover:bg-[#f7f9fc] focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#2b7bb9]"
+                >
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.hexColour }} />
+                  <span style={{ color: "#333333" }}>{t.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

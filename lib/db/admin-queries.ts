@@ -4,6 +4,7 @@ import {
   bookingEvents,
   bookings,
   bookingStatuses,
+  tagCategoryAssignments,
   sites,
   users,
   userRoleEvents,
@@ -14,6 +15,7 @@ import {
   securityEvents,
   type BookingAction,
   type Role,
+  type TagCategory,
   type TmsSyncStatus,
   type SecurityEventAction,
   type SecurityEventStatus,
@@ -341,6 +343,16 @@ export async function listBookingStatusesForAdmin(): Promise<AdminBookingStatus[
     .orderBy(asc(bookingStatuses.displayOrder));
 
   return rows.map((r) => ({ ...r, usageCount: Number(r.usageCount) }));
+}
+
+// ── Tag categories admin (docs/DECISIONS.md — generator was the first, parking the
+// second). Every (tag, category) pairing an admin has designated, keyed for a quick
+// lookup against the live TMS tag list the admin page renders alongside it. ──
+
+export type TagCategoryAssignmentRow = { tmsTagId: number; category: TagCategory };
+
+export async function listTagCategoryAssignments(): Promise<TagCategoryAssignmentRow[]> {
+  return db.select({ tmsTagId: tagCategoryAssignments.tmsTagId, category: tagCategoryAssignments.category }).from(tagCategoryAssignments);
 }
 
 // ── TMS reference sync (docs/TMS_INTEGRATION_PLAN.md §6A) ──
