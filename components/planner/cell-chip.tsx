@@ -6,7 +6,6 @@ import {
   ArrowLeftRightIcon,
   CheckIcon,
   EraserIcon,
-  LockIcon,
   PlusIcon,
   RefreshCwIcon,
   TriangleAlertIcon,
@@ -44,6 +43,41 @@ const CHANGE_WASH_RATIO = 0.14;
 // see what was booked, not just that it's old.
 const PAST_COLOR = "#9aa1ad";
 const PAST_WASH_RATIO = 0.3;
+
+// One shared shape for every small circular status icon anchored to a chip's corner (lock,
+// TMS-conflict, collision, supersedes, selected-checkmark) — so a badge always has the same
+// size, corner inset and pill shape no matter which status it's naming. Before this, each
+// callsite duplicated the same Tailwind string with its own copy-paste drift risk; the lock
+// badge fell out of sync with the others (plain inline icon, no circle) until this fix.
+const CORNER_POSITION: Record<"top-left" | "top-right" | "bottom-left" | "bottom-right", string> = {
+  "top-left": "top-0.5 left-0.5",
+  "top-right": "top-0.5 right-0.5",
+  "bottom-left": "bottom-0.5 left-0.5",
+  "bottom-right": "bottom-0.5 right-0.5",
+};
+
+export function CornerBadge({
+  position,
+  color,
+  title,
+  children,
+}: {
+  position: keyof typeof CORNER_POSITION;
+  color: string;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      className={`absolute ${CORNER_POSITION[position]} flex h-3.5 w-3.5 items-center justify-center rounded-full text-white`}
+      style={{ background: color }}
+      aria-hidden
+      title={title}
+    >
+      {children}
+    </span>
+  );
+}
 
 // The bottom-right corner the sync dot used to occupy (docs/DECISIONS.md #43) — reused here
 // for tag dots. Different from that dot in the way that matters: this one only appears on a
@@ -168,6 +202,12 @@ type CellChipProps = {
    * See docs/CELL_STATES.md.
    */
   pendingRemoval?: string | null;
+  /**
+   * Reserves space at the chip's left edge for the "moved from" jump arrow planner-grid.tsx
+   * overlays there (a sibling of this button, not nested inside it — see the comment next to
+   * that arrow). Without this the site name renders flush left, underneath the arrow.
+   */
+  leftGutter?: boolean;
   onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
@@ -191,6 +231,7 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
   preview,
   flash,
   pendingRemoval,
+  leftGutter,
   onClick,
   onDragStart,
   onDragEnd,
@@ -374,6 +415,7 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
       }}
       {...rest}
     >
+      {leftGutter && <span className="w-6 shrink-0" aria-hidden />}
       {generatorTagId !== undefined && (
         <span
           className="absolute top-1 right-1"
@@ -384,12 +426,16 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
           <ZapIcon className="size-2.5" fill="currentColor" />
         </span>
       )}
-      {locked && (
-        <span className="shrink-0 pl-1.5 text-[#9a9a9a]" aria-hidden>
-          <LockIcon className="size-3" />
-        </span>
-      )}
-      <span className="line-clamp-2 flex-1 px-2 text-xs leading-[14px]" style={{ color: "#333333" }}>
+      {/* The lock badge is NOT rendered here. This button has `overflow-hidden` (so the
+          background wash respects the rounded corners), which would clip an absolutely-
+          positioned badge to sit inside the border instead of straddling it. planner-grid.tsx
+          renders it as a sibling of this button instead — same CornerBadge, unclipped — see
+          the comment next to the "moved from" arrow there, which reserves room for via
+          `leftGutter` above. */}
+      <span
+        className={`line-clamp-2 flex-1 pr-2 text-xs leading-[14px] ${leftGutter ? "pl-0" : "pl-2"}`}
+        style={{ color: "#333333" }}
+      >
         {booking.siteName}
       </span>
       {warning && (
@@ -398,39 +444,32 @@ export const CellChip = forwardRef<HTMLButtonElement, CellChipProps>(function Ce
         </span>
       )}
       {hasTmsConflict && (
-        <span
-          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#f17f42] text-white"
-          aria-hidden
+        <CornerBadge
+          position="bottom-left"
+          color="#f17f42"
           title="TMS also changed this booking — edit and save to resolve"
         >
           <ArrowLeftRightIcon className="size-2.5" strokeWidth={3} />
-        </span>
+        </CornerBadge>
       )}
       {collision && (
-        <span
-          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#c0392b] text-white"
-          aria-hidden
+        <CornerBadge
+          position="bottom-left"
+          color="#c0392b"
           title={`TMS also has ${booking.tmsCollision!.siteName} here — move or clear one to publish`}
         >
           <XIcon className="size-2.5" strokeWidth={3} />
-        </span>
+        </CornerBadge>
       )}
       {supersedes && (
-        <span
-          className="absolute bottom-0.5 left-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#8a3ffc] text-white"
-          aria-hidden
-          title="TMS has updated this booking since — open it to resolve"
-        >
+        <CornerBadge position="bottom-left" color="#8a3ffc" title="TMS has updated this booking since — open it to resolve">
           <RefreshCwIcon className="size-2.5" strokeWidth={3} />
-        </span>
+        </CornerBadge>
       )}
       {checked && (
-        <span
-          className="absolute top-[3px] right-[3px] flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#2b7bb9] text-white"
-          aria-hidden
-        >
+        <CornerBadge position="top-right" color="#2b7bb9">
           <CheckIcon className="size-2.5" strokeWidth={3} />
-        </span>
+        </CornerBadge>
       )}
       {dotTagIds.length > 0 && (
         <span className="absolute right-1 bottom-1 flex gap-[2px]" aria-hidden>

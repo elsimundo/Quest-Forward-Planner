@@ -13,14 +13,22 @@ export type DragSummary = {
    * since it's a real cell (not out-of-range) that just can't be dropped into. */
   pastCount: number;
   valid: boolean;
+  /** Where the cell under the pointer right now actually is — e.g. "23 Aug" / "CT19". Named
+   * explicitly rather than left for the scheduler to read off the grid underneath the drag,
+   * because a same-unit vertical drag and a diagonal one (unit AND date both shift) look the
+   * same at a glance — the pointer moved, not a labelled control — and a diagonal drag is the
+   * easy way to land on the wrong day without meaning to. */
+  targetDate: string;
+  targetUnitLabel: string;
 };
 
-function dragMessage({ total, clashes, oob, pastCount, valid }: DragSummary) {
+function dragMessage({ total, clashes, oob, pastCount, valid, targetDate, targetUnitLabel }: DragSummary) {
   const set = `${total} booking${total === 1 ? "" : "s"}`;
-  if (valid) return `${set} · all fit here — drop to move`;
-  if (oob) return `${set} · part of the set falls outside the planner range`;
-  if (pastCount > 0) return `${set} · ${pastCount} would land on a date that's passed`;
-  return `${set} · ${clashes} won't fit — drop to swap or overwrite`;
+  const dest = `→ ${targetUnitLabel}, ${targetDate}`;
+  if (valid) return `${set} ${dest} · all fit here — drop to move`;
+  if (oob) return `${set} ${dest} · part of the set falls outside the planner range`;
+  if (pastCount > 0) return `${set} ${dest} · ${pastCount} would land on a date that's passed`;
+  return `${set} ${dest} · ${clashes} won't fit — drop to swap or overwrite`;
 }
 
 export function SelectionBar({

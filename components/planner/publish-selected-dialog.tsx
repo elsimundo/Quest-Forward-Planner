@@ -3,7 +3,7 @@
 import { LockIcon } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import { PublishBreakdown, type PublishExclusion } from "./publish-breakdown";
+import { PublishBreakdown, type PublishEligibleItem, type PublishExclusion } from "./publish-breakdown";
 import type { PublishTarget } from "@/lib/actions/publish";
 import type { ChangeSummary } from "@/lib/planner-changes";
 
@@ -23,14 +23,14 @@ export function PublishSelectedDialog({
   // sheet is about is fixed when it opens (planner-grid.tsx freezes the selected keys), but
   // each one's eligibility/reason is re-derived every render so a fix made while this sheet
   // stays open (e.g. via the grid's right-click menu) shows up without closing/reopening.
-  preflight: () => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; excluded: PublishExclusion[] };
+  preflight: () => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; eligibleItems: PublishEligibleItem[]; excluded: PublishExclusion[] };
   onConfirm: () => void;
   onClose: () => void;
   onJumpToCell: (target: { unitId: number; date: string }) => void;
 }) {
-  const { eligibleSummary, excluded } = open
+  const { eligibleSummary, eligibleItems, excluded } = open
     ? preflight()
-    : { eligibleSummary: { total: 0, breakdown: [] } as ChangeSummary, excluded: [] as PublishExclusion[] };
+    : { eligibleSummary: { total: 0, breakdown: [] } as ChangeSummary, eligibleItems: [] as PublishEligibleItem[], excluded: [] as PublishExclusion[] };
   const eligibleCount = eligibleSummary.total;
   return (
     // Right-side, matching PublishRangeDialog's amended convention (docs/DECISIONS.md #49) —
@@ -51,7 +51,12 @@ export function PublishSelectedDialog({
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-4.5">
-          <PublishBreakdown eligibleSummary={eligibleSummary} excluded={excluded} onJump={onJumpToCell} />
+          <PublishBreakdown
+            eligibleSummary={eligibleSummary}
+            eligibleItems={eligibleItems}
+            excluded={excluded}
+            onJump={onJumpToCell}
+          />
         </div>
 
         <div className="flex justify-end gap-2.5 border-t px-6 pt-3.5 pb-5">

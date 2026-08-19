@@ -5,7 +5,7 @@ import { LockIcon } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { fmtDate, type DayInfo } from "@/lib/dates";
-import { PublishBreakdown, type PublishExclusion } from "./publish-breakdown";
+import { PublishBreakdown, type PublishEligibleItem, type PublishExclusion } from "./publish-breakdown";
 import type { PublishTarget } from "@/lib/actions/publish";
 import type { ChangeSummary } from "@/lib/planner-changes";
 
@@ -31,7 +31,7 @@ export function PublishRangeDialog({
   // (docs/DECISIONS.md #29). Kept as a callback so the preview updates as the range changes,
   // and — since it's called live in render, not snapshotted — as the underlying bookings
   // change too, without threading all bookings into this component.
-  preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; excluded: PublishExclusion[] };
+  preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; eligibleItems: PublishEligibleItem[]; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
   onJumpToCell: (target: { unitId: number; date: string }) => void;
@@ -78,7 +78,7 @@ function PublishRangeBody({
   days: DayInfo[];
   defaultFrom: string;
   defaultTo: string;
-  preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; excluded: PublishExclusion[] };
+  preflight: (from: string, to: string) => { eligible: PublishTarget[]; eligibleSummary: ChangeSummary; eligibleItems: PublishEligibleItem[]; excluded: PublishExclusion[] };
   onConfirm: (from: string, to: string) => void;
   onClose: () => void;
   onJumpToCell: (target: { unitId: number; date: string }) => void;
@@ -87,8 +87,8 @@ function PublishRangeBody({
   const [to, setTo] = useState(defaultTo);
 
   const invalidRange = from > to;
-  const { eligible, eligibleSummary, excluded } = invalidRange
-    ? { eligible: [], eligibleSummary: EMPTY_SUMMARY, excluded: [] }
+  const { eligible, eligibleSummary, eligibleItems, excluded } = invalidRange
+    ? { eligible: [], eligibleSummary: EMPTY_SUMMARY, eligibleItems: [], excluded: [] }
     : preflight(from, to);
   const disabled = invalidRange || eligible.length === 0;
 
@@ -143,7 +143,12 @@ function PublishRangeBody({
               Pick a &apos;From&apos; date on or before &apos;To&apos;.
             </div>
           ) : (
-            <PublishBreakdown eligibleSummary={eligibleSummary} excluded={excluded} onJump={onJumpToCell} />
+            <PublishBreakdown
+              eligibleSummary={eligibleSummary}
+              eligibleItems={eligibleItems}
+              excluded={excluded}
+              onJump={onJumpToCell}
+            />
           )}
         </div>
       </div>
